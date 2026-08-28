@@ -19,7 +19,11 @@ impl Um {
         if mm < min_mm || mm > max_mm {
             return Err(ValueError::OutOfRange(mm, min_mm, max_mm));
         }
-        Ok(Um((mm * 1000.0).round() as u16))
+        let um = (mm * 1000.0).round();
+        if !(0.0..=65535.0).contains(&um) {
+            return Err(ValueError::OutOfRange(mm, min_mm, max_mm));
+        }
+        Ok(Um(um as u16))
     }
     pub fn to_mm(self) -> f64 {
         self.0 as f64 / 1000.0
@@ -43,6 +47,15 @@ mod tests {
         assert!(Um::from_mm(4.01, 0.0, 4.0).is_err());
         assert!(Um::from_mm(-0.1, 0.0, 4.0).is_err());
         assert!(Um::from_mm(f64::NAN, 0.0, 4.0).is_err());
+    }
+
+    #[test]
+    fn from_mm_rejects_values_that_would_overflow_or_underflow_u16() {
+        // mm * 1000 exceeds u16::MAX (65535) but is within the (permissive)
+        // caller-supplied bounds, so the range check must catch it, not the cast.
+        assert!(Um::from_mm(100.0, 0.0, 200.0).is_err());
+        // Negative mm within a negative min bound would otherwise saturate to 0.
+        assert!(Um::from_mm(-0.5, -1.0, 4.0).is_err());
     }
 
     #[test]

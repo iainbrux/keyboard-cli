@@ -86,12 +86,29 @@ mod tests {
     }
 
     #[test]
+    fn checksum_pins_last_payload_byte_term() {
+        // Literal expectations so deleting the payload-last-byte term would fail:
+        // 0x35 + 0x5C + 0x02 + 0x29 + 0x02 (last byte) = 0x1BE -> 0xBE
+        assert_eq!(checksum(0x02, 0x29, &[0x01, 0x02]), 0xBE);
+        // Empty payload: no last-byte term is added.
+        // 0x35 + 0x5C + 0x00 + 0x29 = 0xBA
+        assert_eq!(checksum(0x00, 0x29, &[]), 0xBA);
+    }
+
+    #[test]
     fn frame_lays_out_header_and_pads_to_64() {
         let f = frame(0x29, &[0x01, 0x02]).unwrap();
         assert_eq!(f.len(), 64);
-        assert_eq!(&f[..4], &[0x5C, 0x02, 0x29, checksum(0x02, 0x29, &[0x01, 0x02])]);
+        assert_eq!(&f[..4], &[0x5C, 0x02, 0x29, 0xBE]);
         assert_eq!(&f[4..6], &[0x01, 0x02]);
         assert!(f[6..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn frame_with_empty_payload_is_all_zero_body() {
+        let f = frame(0x29, &[]).unwrap();
+        assert_eq!(&f[..4], &[0x5C, 0x00, 0x29, 0xBA]);
+        assert!(f[4..].iter().all(|&b| b == 0));
     }
 
     #[test]
