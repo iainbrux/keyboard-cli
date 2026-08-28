@@ -117,16 +117,21 @@ fn mode_read_lines(usage: u8, mode: u16) -> Vec<String> {
 }
 
 /// The SYNC roundtrip `ops::device_info` sends, as `[out, in]` lines: `serial` and `firmware`
-/// are padded into the reply payload at the offsets `cmds::parse_sync` reads them back from.
+/// are each written into the reply payload with the length prefix `cmds::parse_sync` reads them
+/// back through (task 19b chunk 6: both strings are length-prefixed on the wire, not fixed-width).
 /// Factored out of `build_script` so the write-path tests below can compose the same fixture
 /// shape (backup taken during `auto_backup` calls `snapshot_from_device`, which starts with
 /// this exact roundtrip) without hand-copying the payload layout a second time.
 fn sync_lines(serial: &str, firmware: &str) -> Vec<String> {
     let mut payload = vec![0u8; 60];
     let s = serial.as_bytes();
+    payload[8] = s.len() as u8;
     payload[9..9 + s.len()].copy_from_slice(s);
     let f = firmware.as_bytes();
-    payload[26..26 + f.len()].copy_from_slice(f);
+    let fw_len_pos = 9 + s.len();
+    payload[fw_len_pos] = f.len() as u8;
+    let fw_start = fw_len_pos + 1;
+    payload[fw_start..fw_start + f.len()].copy_from_slice(f);
     vec![
         out_line(&cmds::sync()),
         in_line(&reply(cmds::cmd::SYNC, &payload)),

@@ -225,20 +225,52 @@ pub struct DeviceInfo {
     pub firmware: String,
 }
 
-/// recdata.getCmdSyncRecdata: SN at bytes 9..25, firmware at 26..36.
+/// recdata.getCmdSyncRecdata: both the serial and the firmware string are length-prefixed on
+/// the wire, not fixed-width. `p[8]` is the serial's declared length, with the string itself
+/// starting at `p[9]`; the firmware's declared length follows immediately after the serial (at
+/// `p[9 + serial_len]`), with that string starting one byte later. Measured against the real
+/// device's 60-byte SYNC reply (task 19b chunk 6, `initial-load.jsonl` frames 1 and 3): the old
+/// code read the firmware from a hardcoded `payload[26..36]`, which took 10 bytes where the wire
+/// actually declares 16, truncating it.
+///
+/// A declared length that runs past the end of `payload` is a `DecodeError`, never a panic or a
+/// silent truncation: this parses whatever the device sends back, including a device in a bad
+/// state.
 pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
-    if payload.len() < 36 {
+    if payload.len() < 9 {
         return Err(DecodeError::Short(payload.len()));
     }
     let clean = |b: &[u8]| {
-        String::from_utf8_lossy(b)
-            .trim_end_matches('\0')
-            .to_string()
+        // Trim at the first NUL, then trim trailing 0xFF padding, then trim surrounding
+        // whitespace, in that order: the wire pads a string's declared length with a NUL
+        // terminator plus any remaining slack, and the payload's own tail is 0xFF-padded.
+        let nul_end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        let b = &b[..nul_end];
+        let ff_end = b.iter().rposition(|&c| c != 0xFF).map_or(0, |i| i + 1);
+        let b = &b[..ff_end];
+        String::from_utf8_lossy(b).trim().to_string()
     };
-    Ok(DeviceInfo {
-        serial: clean(&payload[9..25]),
-        firmware: clean(&payload[26..36]),
-    })
+
+    let serial_len = payload[8] as usize;
+    let serial_start = 9usize;
+    let serial_end = serial_start
+        .checked_add(serial_len)
+        .filter(|&end| end <= payload.len())
+        .ok_or(DecodeError::Short(payload.len()))?;
+    let serial = clean(&payload[serial_start..serial_end]);
+
+    if serial_end >= payload.len() {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    let firmware_len = payload[serial_end] as usize;
+    let firmware_start = serial_end + 1;
+    let firmware_end = firmware_start
+        .checked_add(firmware_len)
+        .filter(|&end| end <= payload.len())
+        .ok_or(DecodeError::Short(payload.len()))?;
+    let firmware = clean(&payload[firmware_start..firmware_end]);
+
+    Ok(DeviceInfo { serial, firmware })
 }
 
 pub const MATRIX_ROWS: u8 = 6;
@@ -451,11 +483,68 @@ mod tests {
         assert_eq!(&f[4..10], &[1, 2, 3, 4, 0xFF, 0xFF]);
 
         let mut payload = vec![0u8; 60];
+        payload[8] = 16; // serial length prefix
         payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        payload[25] = 10; // firmware length prefix
         payload[26..36].copy_from_slice(b"V1.2.3.456");
         let info = parse_sync(&payload).unwrap();
         assert_eq!(info.serial, "SN0123456789ABCD");
         assert_eq!(info.firmware, "V1.2.3.456");
+    }
+
+    /// The real device's own 60-byte SYNC reply payload, captured twice identically in
+    /// `initial-load.jsonl` (frames 1 and 3, task 19b chunk 6). This is the test that matters:
+    /// the old hardcoded `payload[26..36]` firmware slice produced `App_V1.1.0`, ten bytes where
+    /// the wire actually declares sixteen (`App_V1.1.046000`).
+    #[test]
+    fn parse_sync_reads_the_real_device_reply() {
+        let hex =
+            "00140802468002001033343833313431333933453033353032104170705f56312e312e30343630303\
+                    00000417567203230203230323600ffffffffff";
+        let payload: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let info = parse_sync(&payload).unwrap();
+        assert_eq!(info.serial, "3483141393E03502");
+        assert_eq!(info.firmware, "App_V1.1.046000");
+    }
+
+    #[test]
+    fn parse_sync_rejects_a_serial_length_prefix_that_overruns_the_payload() {
+        let mut payload = vec![0u8; 20];
+        payload[8] = 0xFF; // declares a serial far longer than the payload has room for
+        assert_eq!(
+            parse_sync(&payload).unwrap_err(),
+            DecodeError::Short(payload.len())
+        );
+    }
+
+    #[test]
+    fn parse_sync_rejects_a_firmware_length_prefix_that_overruns_the_payload() {
+        let mut payload = vec![0u8; 20];
+        payload[8] = 4; // serial: 4 bytes, well within the payload
+        payload[9..13].copy_from_slice(b"1234");
+        payload[13] = 0xFF; // firmware length prefix declares far more than remains
+        assert_eq!(
+            parse_sync(&payload).unwrap_err(),
+            DecodeError::Short(payload.len())
+        );
+    }
+
+    /// Proves the parse follows the declared length prefix rather than a hardcoded constant: a
+    /// shorter serial (6 bytes, not 16) shifts where the firmware length prefix and firmware
+    /// string are read from, and both still come back correctly.
+    #[test]
+    fn parse_sync_follows_a_shorter_declared_serial_length_not_a_constant() {
+        let mut payload = vec![0u8; 30];
+        payload[8] = 6; // serial length
+        payload[9..15].copy_from_slice(b"ABC123");
+        payload[15] = 5; // firmware length prefix, right after the 6-byte serial
+        payload[16..21].copy_from_slice(b"V9.9.");
+        let info = parse_sync(&payload).unwrap();
+        assert_eq!(info.serial, "ABC123");
+        assert_eq!(info.firmware, "V9.9.");
     }
 
     #[test]

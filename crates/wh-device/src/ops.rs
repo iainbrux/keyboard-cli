@@ -997,7 +997,9 @@ mod tests {
     #[test]
     fn device_info_reads_sync_reply() {
         let mut payload = vec![0u8; 60];
+        payload[8] = 16; // serial length prefix
         payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        payload[25] = 10; // firmware length prefix
         payload[26..36].copy_from_slice(b"V1.2.3.456");
         let lines = [
             l("out", &cmds::sync()),
