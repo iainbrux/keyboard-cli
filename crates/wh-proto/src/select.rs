@@ -142,7 +142,10 @@ mod tests {
     #[test]
     fn plain_list() {
         let sel = Selector::parse("w,a,s,d").unwrap();
-        assert_eq!(sel.resolve(&uni(), &HashMap::new()).unwrap(), vec![0x1A, 0x04, 0x16, 0x07]);
+        assert_eq!(
+            sel.resolve(&uni(), &HashMap::new()).unwrap(),
+            vec![0x1A, 0x04, 0x16, 0x07]
+        );
     }
 
     #[test]
@@ -150,9 +153,15 @@ mod tests {
         let mut groups = HashMap::new();
         groups.insert("fps".to_string(), vec![0x1A, 0x2C]);
         let sel = Selector::parse("fps,f1").unwrap();
-        assert_eq!(sel.resolve(&uni(), &groups).unwrap(), vec![0x1A, 0x2C, 0x3A]);
+        assert_eq!(
+            sel.resolve(&uni(), &groups).unwrap(),
+            vec![0x1A, 0x2C, 0x3A]
+        );
         let sel2 = Selector::parse("wasd").unwrap();
-        assert_eq!(sel2.resolve(&uni(), &HashMap::new()).unwrap(), vec![0x1A, 0x04, 0x16, 0x07]);
+        assert_eq!(
+            sel2.resolve(&uni(), &HashMap::new()).unwrap(),
+            vec![0x1A, 0x04, 0x16, 0x07]
+        );
     }
 
     #[test]
@@ -166,7 +175,10 @@ mod tests {
     #[test]
     fn ranges() {
         let sel = Selector::parse("f1-f2").unwrap();
-        assert_eq!(sel.resolve(&uni(), &HashMap::new()).unwrap(), vec![0x3A, 0x3B]);
+        assert_eq!(
+            sel.resolve(&uni(), &HashMap::new()).unwrap(),
+            vec![0x3A, 0x3B]
+        );
         // range keys outside universe are silently filtered
         let sel2 = Selector::parse("a-z").unwrap();
         let r = sel2.resolve(&uni(), &HashMap::new()).unwrap();
@@ -178,7 +190,10 @@ mod tests {
         let e = Selector::parse("w,,d").unwrap_err().to_string();
         assert!(e.contains("empty"));
         let sel = Selector::parse("shft").unwrap();
-        let e2 = sel.resolve(&uni(), &HashMap::new()).unwrap_err().to_string();
+        let e2 = sel
+            .resolve(&uni(), &HashMap::new())
+            .unwrap_err()
+            .to_string();
         assert!(e2.contains("shft"));
         let e3 = Selector::parse("z-a").unwrap_err().to_string();
         assert!(e3.contains("descending"));
@@ -198,7 +213,10 @@ mod tests {
         // A group (user or builtin) containing a key absent from the universe
         // is a query, not an assertion: it filters silently rather than erroring.
         let mut groups = HashMap::new();
-        groups.insert("myset".to_string(), vec![0x05 /* b, absent */, 0x1A /* w, present */]);
+        groups.insert(
+            "myset".to_string(),
+            vec![0x05 /* b, absent */, 0x1A /* w, present */],
+        );
         let sel = Selector::parse("myset").unwrap();
         assert_eq!(sel.resolve(&uni(), &groups).unwrap(), vec![0x1A]);
     }

@@ -113,10 +113,10 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
 /// advanced-key mode in the low nibble (recdata.getLayoutModelRecdata).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchMode {
-    Global,        // 0x0
-    Single,        // 0x1
-    Rt,            // 0x2
-    Unknown(u8),   // any other nibble; preserved so read-modify-write is lossless
+    Global,      // 0x0
+    Single,      // 0x1
+    Rt,          // 0x2
+    Unknown(u8), // any other nibble; preserved so read-modify-write is lossless
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,7 +135,10 @@ impl Mode {
             0x2 => TouchMode::Rt,
             n => TouchMode::Unknown(n),
         };
-        Mode { touch, advanced: b & 0x0F }
+        Mode {
+            touch,
+            advanced: b & 0x0F,
+        }
     }
     pub fn value(self) -> u16 {
         let t = match self.touch {
@@ -160,7 +163,10 @@ pub mod order {
 
 /// `h_args` is caller-supplied and unbounded, unlike the other encoders in
 /// this module, so overlong input is reported rather than panicking.
-pub fn cmd_order(order_id: u8, h_args: &[u8]) -> Result<[u8; REPORT_LEN], crate::frame::FrameError> {
+pub fn cmd_order(
+    order_id: u8,
+    h_args: &[u8],
+) -> Result<[u8; REPORT_LEN], crate::frame::FrameError> {
     let mut p = vec![order_id];
     p.extend_from_slice(h_args);
     p.extend([0xFF, 0xFF]);
@@ -201,8 +207,15 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     if payload.len() < 36 {
         return Err(DecodeError::Short(payload.len()));
     }
-    let clean = |b: &[u8]| String::from_utf8_lossy(b).trim_end_matches('\0').to_string();
-    Ok(DeviceInfo { serial: clean(&payload[9..25]), firmware: clean(&payload[26..36]) })
+    let clean = |b: &[u8]| {
+        String::from_utf8_lossy(b)
+            .trim_end_matches('\0')
+            .to_string()
+    };
+    Ok(DeviceInfo {
+        serial: clean(&payload[9..25]),
+        firmware: clean(&payload[26..36]),
+    })
 }
 
 pub const MATRIX_ROWS: u8 = 6;
@@ -262,7 +275,14 @@ mod tests {
         // payload: [rw, t0, t1, glo_lo, glo_hi, dp_lo, dp_hi, dr_lo, dr_hi]
         let payload = [0x00, 0, 0, 0xF4, 0x01, 0xC8, 0x00, 0x64, 0x00];
         let g = parse_global_travel(&payload).unwrap();
-        assert_eq!(g, GlobalTravel { travel: Um(500), press_dead: Um(200), release_dead: Um(100) });
+        assert_eq!(
+            g,
+            GlobalTravel {
+                travel: Um(500),
+                press_dead: Um(200),
+                release_dead: Um(100)
+            }
+        );
     }
 
     #[test]
@@ -273,11 +293,15 @@ mod tests {
     #[test]
     fn key_record_batches_of_14_with_rw_prefix() {
         let recs: Vec<KeyRecord> = (0u8..20)
-            .map(|i| KeyRecord { key: 0x04 + i, layout: layout::RT_PRESS, value: 500 })
+            .map(|i| KeyRecord {
+                key: 0x04 + i,
+                layout: layout::RT_PRESS,
+                value: 500,
+            })
             .collect();
         let frames = write_key_records(&recs);
         assert_eq!(frames.len(), 2); // 14 + 6
-        // first frame: len = 1 + 14*4 = 57 = 0x39, the vendor batch template
+                                     // first frame: len = 1 + 14*4 = 57 = 0x39, the vendor batch template
         assert_eq!(frames[0][1], 0x39);
         assert_eq!(frames[0][2], cmd::KEY);
         assert_eq!(frames[0][4], RW_WRITE);
@@ -298,7 +322,11 @@ mod tests {
         let payload = [0x00, 0x1A, layout::RT_PRESS, 0xF4, 0x01];
         assert_eq!(
             parse_key_reply(&payload).unwrap(),
-            KeyRecord { key: 0x1A, layout: layout::RT_PRESS, value: 500 }
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_PRESS,
+                value: 500
+            }
         );
     }
 
@@ -308,7 +336,10 @@ mod tests {
         assert_eq!(m.touch, TouchMode::Rt); // high nibble 2
         assert_eq!(m.advanced, 0x03);
         assert_eq!(m.value(), 0x23);
-        let g = Mode { touch: TouchMode::Global, advanced: 0x03 };
+        let g = Mode {
+            touch: TouchMode::Global,
+            advanced: 0x03,
+        };
         assert_eq!(g.value(), 0x03);
     }
 
@@ -343,7 +374,14 @@ mod tests {
         // payload: [status, order=0x25, precision_um, min lo, min hi, max lo, max hi]
         let payload = [0x00, 0x25, 10, 0x00, 0x00, 0xA0, 0x0F];
         let p = parse_precision(&payload).unwrap();
-        assert_eq!(p, Precision { step: Um(10), min: Um(0), max: Um(4000) });
+        assert_eq!(
+            p,
+            Precision {
+                step: Um(10),
+                min: Um(0),
+                max: Um(4000)
+            }
+        );
     }
 
     #[test]

@@ -45,7 +45,13 @@ pub fn read_key_settings<T: Transport>(
     let mode = Mode::from_value(read_layout_value(s, usage, layout::MODE)?);
     let rt_press = Um(read_layout_value(s, usage, layout::RT_PRESS)?);
     let rt_release = Um(read_layout_value(s, usage, layout::RT_RELEASE)?);
-    Ok(KeySettings { usage, ap, mode, rt_press, rt_release })
+    Ok(KeySettings {
+        usage,
+        ap,
+        mode,
+        rt_press,
+        rt_release,
+    })
 }
 
 /// Read one key's layout value, rejecting a reply that doesn't echo back the
@@ -90,7 +96,10 @@ fn write_and_save<T: Transport>(
     let applied = frames.len();
     s.roundtrip_many(&frames)?;
     s.roundtrip(&cmds::cmd_order(cmds::order::SAVE, &[])?)
-        .map_err(|source| DeviceError::NotPersisted { applied, source: Box::new(source) })?;
+        .map_err(|source| DeviceError::NotPersisted {
+            applied,
+            source: Box::new(source),
+        })?;
     Ok(())
 }
 
@@ -107,10 +116,25 @@ pub fn rt_records<T: Transport>(
     let mut records = Vec::new();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
-        let mode = Mode { touch: TouchMode::Rt, advanced: Mode::from_value(cur_value).advanced };
-        records.push(KeyRecord { key: u, layout: layout::MODE, value: mode.value() });
-        records.push(KeyRecord { key: u, layout: layout::RT_PRESS, value: press.0 });
-        records.push(KeyRecord { key: u, layout: layout::RT_RELEASE, value: release.0 });
+        let mode = Mode {
+            touch: TouchMode::Rt,
+            advanced: Mode::from_value(cur_value).advanced,
+        };
+        records.push(KeyRecord {
+            key: u,
+            layout: layout::MODE,
+            value: mode.value(),
+        });
+        records.push(KeyRecord {
+            key: u,
+            layout: layout::RT_PRESS,
+            value: press.0,
+        });
+        records.push(KeyRecord {
+            key: u,
+            layout: layout::RT_RELEASE,
+            value: release.0,
+        });
     }
     Ok(records)
 }
@@ -125,9 +149,15 @@ pub fn rt_off_records<T: Transport>(
     let mut records = Vec::new();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
-        let mode =
-            Mode { touch: TouchMode::Global, advanced: Mode::from_value(cur_value).advanced };
-        records.push(KeyRecord { key: u, layout: layout::MODE, value: mode.value() });
+        let mode = Mode {
+            touch: TouchMode::Global,
+            advanced: Mode::from_value(cur_value).advanced,
+        };
+        records.push(KeyRecord {
+            key: u,
+            layout: layout::MODE,
+            value: mode.value(),
+        });
     }
     Ok(records)
 }
@@ -154,7 +184,14 @@ pub fn set_rt_off<T: Transport>(s: &mut Session<T>, usages: &[u8]) -> Result<(),
 /// nibble to preserve), so it needs no session; the CLI's dry-run path can
 /// call this directly instead of re-deriving the record shape itself.
 pub fn ap_records(usages: &[u8], depth: Um) -> Vec<KeyRecord> {
-    usages.iter().map(|&u| KeyRecord { key: u, layout: layout::AP, value: depth.0 }).collect()
+    usages
+        .iter()
+        .map(|&u| KeyRecord {
+            key: u,
+            layout: layout::AP,
+            value: depth.0,
+        })
+        .collect()
 }
 
 /// Per-key actuation point (layout DB0).
@@ -197,7 +234,11 @@ mod tests {
     /// from every row rather than only the first.
     fn matrix_script() -> Vec<String> {
         let mut lines = Vec::new();
-        for (a, b, ka, kb) in [(0u8, 1u8, 0x1Au8, 0x1Bu8), (2, 3, 0x1C, 0x1D), (4, 5, 0x1E, 0x1F)] {
+        for (a, b, ka, kb) in [
+            (0u8, 1u8, 0x1Au8, 0x1Bu8),
+            (2, 3, 0x1C, 0x1D),
+            (4, 5, 0x1E, 0x1F),
+        ] {
             let req = cmds::read_defkey_rows(a, b);
             let mut payload = vec![0u8; 45];
             payload[1] = a;
@@ -226,30 +267,51 @@ mod tests {
         let lines = [l("out", &req), l("in", &bad_reply)].join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = read_matrix(&mut s).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "expected Decode, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 
     #[test]
     fn set_rt_writes_mode_and_both_sensitivities_then_saves() {
         // expected frames: write [mode, rtp, rtr] per key (one batch), then SAVE order
         let recs = vec![
-            KeyRecord { key: 0x1A, layout: layout::MODE, value: 0x20 },
-            KeyRecord { key: 0x1A, layout: layout::RT_PRESS, value: 500 },
-            KeyRecord { key: 0x1A, layout: layout::RT_RELEASE, value: 500 },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x20,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_PRESS,
+                value: 500,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_RELEASE,
+                value: 500,
+            },
         ];
         let batch = cmds::write_key_records(&recs);
         let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         let mut lines = vec![
             // set_rt first reads current mode to preserve the advanced nibble
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
-            l("in", &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x00, 0x00])),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x00, 0x00]),
+            ),
         ];
         for f in &batch {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
         lines.push(l("out", &save));
-        lines.push(l("in", &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01])));
+        lines.push(l(
+            "in",
+            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
+        ));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
 
         set_rt(&mut s, &[0x1A], Um(500), Um(500)).unwrap();
@@ -273,24 +335,50 @@ mod tests {
         let mut expected = Vec::new();
         for (&k, &m) in keys.iter().zip(cur_modes.iter()) {
             lines.push(l("out", &cmds::read_key_layout(k, layout::MODE)));
-            lines.push(l("in", &rf(cmds::cmd::KEY, &[0x00, k, layout::MODE, m, 0x00])));
+            lines.push(l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, k, layout::MODE, m, 0x00]),
+            ));
             let advanced = Mode::from_value(m as u16).advanced;
-            let new_mode = Mode { touch: TouchMode::Rt, advanced }.value();
-            expected.push(KeyRecord { key: k, layout: layout::MODE, value: new_mode });
-            expected.push(KeyRecord { key: k, layout: layout::RT_PRESS, value: press.0 });
-            expected.push(KeyRecord { key: k, layout: layout::RT_RELEASE, value: release.0 });
+            let new_mode = Mode {
+                touch: TouchMode::Rt,
+                advanced,
+            }
+            .value();
+            expected.push(KeyRecord {
+                key: k,
+                layout: layout::MODE,
+                value: new_mode,
+            });
+            expected.push(KeyRecord {
+                key: k,
+                layout: layout::RT_PRESS,
+                value: press.0,
+            });
+            expected.push(KeyRecord {
+                key: k,
+                layout: layout::RT_RELEASE,
+                value: release.0,
+            });
         }
         assert_eq!(expected.len(), 15);
 
         let batches = cmds::write_key_records(&expected);
-        assert_eq!(batches.len(), 2, "15 records should split into a 14-record and a 1-record batch");
+        assert_eq!(
+            batches.len(),
+            2,
+            "15 records should split into a 14-record and a 1-record batch"
+        );
         for f in &batches {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
         let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         lines.push(l("out", &save));
-        lines.push(l("in", &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01])));
+        lines.push(l(
+            "in",
+            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
+        ));
 
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_rt(&mut s, &keys, press, release).unwrap();
@@ -300,17 +388,34 @@ mod tests {
     #[test]
     fn rt_records_preserves_advanced_nibble_from_unknown_touch_mode() {
         // current mode byte 0x53: high nibble 5 (Unknown touch mode), low nibble 3 (advanced)
-        let lines = [l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
-            l("in", &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x53, 0x00]))]
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x53, 0x00]),
+            ),
+        ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let recs = rt_records(&mut s, &[0x1A], Um(500), Um(600)).unwrap();
         assert_eq!(
             recs,
             vec![
-                KeyRecord { key: 0x1A, layout: layout::MODE, value: 0x23 },
-                KeyRecord { key: 0x1A, layout: layout::RT_PRESS, value: 500 },
-                KeyRecord { key: 0x1A, layout: layout::RT_RELEASE, value: 600 },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x23
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 500
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 600
+                },
             ]
         );
         assert!(s.into_inner().finished());
@@ -319,30 +424,52 @@ mod tests {
     #[test]
     fn rt_off_records_sets_touch_mode_global_preserving_advanced_nibble() {
         // current mode byte 0x27: touch Rt(2), advanced nibble 7
-        let lines = [l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
-            l("in", &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x27, 0x00]))]
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x27, 0x00]),
+            ),
+        ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let recs = rt_off_records(&mut s, &[0x1A]).unwrap();
-        assert_eq!(recs, vec![KeyRecord { key: 0x1A, layout: layout::MODE, value: 0x07 }]);
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x07
+            }]
+        );
         assert!(s.into_inner().finished());
     }
 
     #[test]
     fn set_rt_off_writes_mode_global_then_saves() {
-        let rec = KeyRecord { key: 0x1A, layout: layout::MODE, value: 0x00 };
+        let rec = KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x00,
+        };
         let batch = cmds::write_key_records(&[rec]);
         let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         let mut lines = vec![
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
-            l("in", &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x20, 0x00])),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x20, 0x00]),
+            ),
         ];
         for f in &batch {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
         lines.push(l("out", &save));
-        lines.push(l("in", &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01])));
+        lines.push(l(
+            "in",
+            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
+        ));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_rt_off(&mut s, &[0x1A]).unwrap();
         assert!(s.into_inner().finished());
@@ -350,7 +477,11 @@ mod tests {
 
     #[test]
     fn set_ap_writes_ap_records_then_saves() {
-        let recs = vec![KeyRecord { key: 0x1A, layout: layout::AP, value: 1500 }];
+        let recs = vec![KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1500,
+        }];
         let batch = cmds::write_key_records(&recs);
         let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         let mut lines = Vec::new();
@@ -359,7 +490,10 @@ mod tests {
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
         lines.push(l("out", &save));
-        lines.push(l("in", &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01])));
+        lines.push(l(
+            "in",
+            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
+        ));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_ap(&mut s, &[0x1A], Um(1500)).unwrap();
         assert!(s.into_inner().finished());
@@ -371,8 +505,16 @@ mod tests {
         assert_eq!(
             recs,
             vec![
-                KeyRecord { key: 0x04, layout: layout::AP, value: 1200 },
-                KeyRecord { key: 0x05, layout: layout::AP, value: 1200 },
+                KeyRecord {
+                    key: 0x04,
+                    layout: layout::AP,
+                    value: 1200
+                },
+                KeyRecord {
+                    key: 0x05,
+                    layout: layout::AP,
+                    value: 1200
+                },
             ]
         );
     }
@@ -397,7 +539,12 @@ mod tests {
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let err = set_ap(&mut s, &usages, Um(1500)).unwrap_err();
         match err {
-            DeviceError::Batch { index, total, applied, .. } => {
+            DeviceError::Batch {
+                index,
+                total,
+                applied,
+                ..
+            } => {
                 assert_eq!(index, 1);
                 assert_eq!(total, 2);
                 assert_eq!(applied, 1);
@@ -408,7 +555,11 @@ mod tests {
 
     #[test]
     fn save_failure_after_successful_writes_is_reported_as_not_persisted() {
-        let rec = KeyRecord { key: 0x1A, layout: layout::AP, value: 1500 };
+        let rec = KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1500,
+        };
         let batch = cmds::write_key_records(&[rec]);
         let mut lines = Vec::new();
         for f in &batch {
@@ -423,7 +574,10 @@ mod tests {
         match err {
             DeviceError::NotPersisted { applied, source } => {
                 assert_eq!(applied, 1);
-                assert!(matches!(*source, DeviceError::Timeout), "expected Timeout source, got {source:?}");
+                assert!(
+                    matches!(*source, DeviceError::Timeout),
+                    "expected Timeout source, got {source:?}"
+                );
             }
             other => panic!("expected NotPersisted, got {other:?}"),
         }
@@ -443,24 +597,36 @@ mod tests {
     fn read_layout_value_rejects_reply_echoing_wrong_key() {
         let lines = [
             l("out", &cmds::read_key_layout(0x1A, layout::AP)),
-            l("in", &rf(cmds::cmd::KEY, &[0x00, 0x1B, layout::AP, 0xB0, 0x04])), // echoes key 0x1B, not 0x1A
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1B, layout::AP, 0xB0, 0x04]),
+            ), // echoes key 0x1B, not 0x1A
         ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = read_key_settings(&mut s, 0x1A).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "expected Decode, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 
     #[test]
     fn read_layout_value_rejects_reply_echoing_wrong_layout() {
         let lines = [
             l("out", &cmds::read_key_layout(0x1A, layout::AP)),
-            l("in", &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0xB0, 0x04])), // echoes layout MODE, not AP
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0xB0, 0x04]),
+            ), // echoes layout MODE, not AP
         ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = read_key_settings(&mut s, 0x1A).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "expected Decode, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 
     #[test]
@@ -475,7 +641,10 @@ mod tests {
             lines.push(l("out", &cmds::read_key_layout(0x1A, lid)));
             lines.push(l(
                 "in",
-                &rf(cmds::cmd::KEY, &[0x00, 0x1A, lid, (val & 0xFF) as u8, (val >> 8) as u8]),
+                &rf(
+                    cmds::cmd::KEY,
+                    &[0x00, 0x1A, lid, (val & 0xFF) as u8, (val >> 8) as u8],
+                ),
             ));
         }
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
@@ -488,11 +657,17 @@ mod tests {
     #[test]
     fn read_key_settings_maps_decode_failure_to_decode_error_not_timeout() {
         let bad_reply = rf(cmds::cmd::KEY, &[0x00]); // too short to decode
-        let lines = [l("out", &cmds::read_key_layout(0x1A, layout::AP)), l("in", &bad_reply)]
-            .join("\n");
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::AP)),
+            l("in", &bad_reply),
+        ]
+        .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = read_key_settings(&mut s, 0x1A).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "expected Decode, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 
     #[test]
@@ -500,8 +675,11 @@ mod tests {
         let mut payload = vec![0u8; 60];
         payload[9..25].copy_from_slice(b"SN0123456789ABCD");
         payload[26..36].copy_from_slice(b"V1.2.3.456");
-        let lines = [l("out", &cmds::sync()), l("in", &rf(cmds::cmd::SYNC, &payload))]
-            .join("\n");
+        let lines = [
+            l("out", &cmds::sync()),
+            l("in", &rf(cmds::cmd::SYNC, &payload)),
+        ]
+        .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let info = device_info(&mut s).unwrap();
         assert_eq!(info.serial, "SN0123456789ABCD");
@@ -514,14 +692,19 @@ mod tests {
         let lines = [l("out", &cmds::sync()), l("in", &bad_reply)].join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = device_info(&mut s).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "expected Decode, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 
     #[test]
     fn global_travel_reads_reply() {
         let payload = [0x00, 0, 0, 0xF4, 0x01, 0xC8, 0x00, 0x64, 0x00];
-        let lines = [l("out", &cmds::read_global_travel()),
-            l("in", &rf(cmds::cmd::DB, &payload))]
+        let lines = [
+            l("out", &cmds::read_global_travel()),
+            l("in", &rf(cmds::cmd::DB, &payload)),
+        ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let g = global_travel(&mut s).unwrap();
@@ -533,10 +716,12 @@ mod tests {
     #[test]
     fn global_travel_maps_decode_failure_to_decode_error_not_timeout() {
         let bad_reply = rf(cmds::cmd::DB, &[0x00]); // too short to decode
-        let lines =
-            [l("out", &cmds::read_global_travel()), l("in", &bad_reply)].join("\n");
+        let lines = [l("out", &cmds::read_global_travel()), l("in", &bad_reply)].join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = global_travel(&mut s).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "expected Decode, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 }

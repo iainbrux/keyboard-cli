@@ -65,7 +65,10 @@ pub struct ReplayTransport {
 
 impl ReplayTransport {
     pub fn from_jsonl(text: &str) -> Result<Self, DeviceError> {
-        Ok(Self { script: parse_jsonl(text)?, pos: 0 })
+        Ok(Self {
+            script: parse_jsonl(text)?,
+            pos: 0,
+        })
     }
     pub fn finished(&self) -> bool {
         self.pos == self.script.len()
@@ -81,11 +84,14 @@ impl Transport for ReplayTransport {
             }
             Some(Entry::Out(expected)) => Err(DeviceError::Replay(format!(
                 "send mismatch at {}: got {}, script has {}",
-                self.pos, hex(report), hex(expected)
+                self.pos,
+                hex(report),
+                hex(expected)
             ))),
             Some(Entry::In(bytes)) => Err(DeviceError::Replay(format!(
                 "unexpected send at {}: script expected a recv here (next reply is {})",
-                self.pos, hex(bytes)
+                self.pos,
+                hex(bytes)
             ))),
             None => Err(DeviceError::Replay(format!(
                 "unexpected send at {}: script is exhausted",
@@ -116,7 +122,10 @@ pub struct RecordingTransport<T: Transport> {
 
 impl<T: Transport> RecordingTransport<T> {
     pub fn new(inner: T) -> Self {
-        Self { inner, log: Vec::new() }
+        Self {
+            inner,
+            log: Vec::new(),
+        }
     }
     pub fn jsonl(&self) -> String {
         self.log
@@ -238,13 +247,19 @@ mod tests {
         let script = line("out", &out);
         let mut t = ReplayTransport::from_jsonl(&script).unwrap();
         let err = t.recv(Duration::from_millis(10)).unwrap_err();
-        assert!(matches!(err, DeviceError::Replay(_)), "expected Replay error, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Replay(_)),
+            "expected Replay error, got {err:?}"
+        );
     }
 
     #[test]
     fn recv_past_end_of_script_is_still_timeout() {
         let mut t = ReplayTransport::from_jsonl("").unwrap();
         let err = t.recv(Duration::from_millis(10)).unwrap_err();
-        assert!(matches!(err, DeviceError::Timeout), "expected Timeout, got {err:?}");
+        assert!(
+            matches!(err, DeviceError::Timeout),
+            "expected Timeout, got {err:?}"
+        );
     }
 }

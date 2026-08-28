@@ -66,12 +66,18 @@ pub fn parse(report: &[u8]) -> Result<Reply<'_>, FrameError> {
     let payload = &report[4..4 + len];
     let want = checksum(report[1], report[2], payload);
     if report[3] != want {
-        return Err(FrameError::BadChecksum { got: report[3], want });
+        return Err(FrameError::BadChecksum {
+            got: report[3],
+            want,
+        });
     }
     if report[2] == CMD_FAIL {
         return Err(FrameError::DeviceFail(*payload.first().unwrap_or(&0)));
     }
-    Ok(Reply { cmd: report[2], payload })
+    Ok(Reply {
+        cmd: report[2],
+        payload,
+    })
 }
 
 #[cfg(test)]

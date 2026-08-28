@@ -45,7 +45,10 @@ impl Transport for HidTransport {
         // Report ID 0 prepended per hidapi convention.
         let mut buf = [0u8; 65];
         buf[1..].copy_from_slice(report);
-        let n = self.dev.write(&buf).map_err(|e| DeviceError::Io(e.to_string()))?;
+        let n = self
+            .dev
+            .write(&buf)
+            .map_err(|e| DeviceError::Io(e.to_string()))?;
         if n < 65 {
             return Err(DeviceError::Io(format!("short write: {n} of 65 bytes")));
         }

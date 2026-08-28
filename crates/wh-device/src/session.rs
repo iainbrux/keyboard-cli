@@ -102,7 +102,10 @@ mod tests {
         let req = wh_proto::cmds::sync();
         let script = format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(&req));
         let mut s = Session::new(ReplayTransport::from_jsonl(&script).unwrap());
-        assert!(matches!(s.roundtrip(&req), Err(crate::transport::DeviceError::Timeout)));
+        assert!(matches!(
+            s.roundtrip(&req),
+            Err(crate::transport::DeviceError::Timeout)
+        ));
     }
 
     #[test]
@@ -133,7 +136,10 @@ mod tests {
         }
         let script = lines.join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&script).unwrap());
-        assert!(matches!(s.roundtrip(&req), Err(crate::transport::DeviceError::Timeout)));
+        assert!(matches!(
+            s.roundtrip(&req),
+            Err(crate::transport::DeviceError::Timeout)
+        ));
     }
 
     #[test]
@@ -183,12 +189,20 @@ mod tests {
     fn roundtrip_retries_past_a_read_timeout() {
         let req = wh_proto::cmds::read_global_travel();
         let good = reply_frame(req[2], &[0x00, 0, 0, 0xF4, 0x01, 0xC8, 0, 0xC8, 0]);
-        let mut t = FlakyTransport { timeouts_remaining: 2, reply: good, recv_calls: 0 };
+        let mut t = FlakyTransport {
+            timeouts_remaining: 2,
+            reply: good,
+            recv_calls: 0,
+        };
         let mut s = Session::new(t);
         let payload = s.roundtrip(&req).unwrap();
         assert_eq!(payload[3], 0xF4);
         t = s.into_inner();
-        assert!(t.recv_calls > 1, "expected more than one recv call, got {}", t.recv_calls);
+        assert!(
+            t.recv_calls > 1,
+            "expected more than one recv call, got {}",
+            t.recv_calls
+        );
     }
 
     #[test]
@@ -207,7 +221,12 @@ mod tests {
         let mut s = Session::new(ReplayTransport::from_jsonl(&script).unwrap());
         let err = s.roundtrip_many(&[req1, req2, req3]).unwrap_err();
         match err {
-            crate::transport::DeviceError::Batch { index, total, applied, .. } => {
+            crate::transport::DeviceError::Batch {
+                index,
+                total,
+                applied,
+                ..
+            } => {
                 assert_eq!(index, 1);
                 assert_eq!(total, 3);
                 assert_eq!(applied, 1);
