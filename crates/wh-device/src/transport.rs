@@ -18,6 +18,8 @@ pub enum DeviceError {
     Decode(String),
     #[error("batch failed at frame {index} of {total}; {applied} frame(s) already reached the device: {source}")]
     Batch { index: usize, total: usize, applied: usize, source: Box<DeviceError> },
+    #[error("settings were applied to the board but not saved to flash ({applied} frame(s) written); a power cycle will revert them: {source}")]
+    NotPersisted { applied: usize, source: Box<DeviceError> },
 }
 
 pub trait Transport {
