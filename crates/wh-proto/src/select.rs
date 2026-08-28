@@ -13,6 +13,8 @@ pub enum SelectError {
     BadRange(String),
     #[error("unknown key or group '{0}'{1}")]
     Unknown(String, String),
+    #[error("'{0}' is not a key on this device")]
+    NotOnDevice(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +60,11 @@ impl Selector {
                         items.push((neg, Item::Range(a, b)));
                         continue;
                     }
-                    if usage_for_name(lhs).is_some() {
+                    // If exactly one side is a valid key name, the other side
+                    // is a typo'd range end. If NEITHER side is a valid key
+                    // name, fall through to Item::Name so a hyphenated group
+                    // name (e.g. "my-fps") can still resolve.
+                    if usage_for_name(lhs).is_some() != usage_for_name(rhs).is_some() {
                         return Err(SelectError::BadRange(body.to_string()));
                     }
                 }
@@ -82,7 +88,13 @@ impl Selector {
                 Item::Range(a, b) => (*a..=*b).filter(in_universe).collect(),
                 Item::Name(n) => {
                     if let Some(u) = usage_for_name(n) {
-                        vec![u].into_iter().filter(in_universe).collect()
+                        // An explicitly named key is a user assertion that the
+                        // key exists on this device: absence is an error, not
+                        // a silent filter (unlike groups, ranges, and `all`).
+                        if !in_universe(&u) {
+                            return Err(SelectError::NotOnDevice(n.clone()));
+                        }
+                        vec![u]
                     } else if let Some(g) = builtin_group(n) {
                         g.into_iter().filter(in_universe).collect()
                     } else if let Some(g) = user_groups.get(n) {
@@ -163,5 +175,36 @@ mod tests {
         assert!(e2.contains("shft"));
         let e3 = Selector::parse("z-a").unwrap_err().to_string();
         assert!(e3.contains("descending"));
+    }
+
+    #[test]
+    fn named_key_absent_from_universe_errors() {
+        // "b" is a valid key name but not present in the test universe.
+        let sel = Selector::parse("b").unwrap();
+        let err = sel.resolve(&uni(), &HashMap::new()).unwrap_err();
+        assert_eq!(err, SelectError::NotOnDevice("b".to_string()));
+        assert!(err.to_string().contains("b"));
+    }
+
+    #[test]
+    fn group_with_absent_key_filters_silently() {
+        // A group (user or builtin) containing a key absent from the universe
+        // is a query, not an assertion: it filters silently rather than erroring.
+        let mut groups = HashMap::new();
+        groups.insert("myset".to_string(), vec![0x05 /* b, absent */, 0x1A /* w, present */]);
+        let sel = Selector::parse("myset").unwrap();
+        assert_eq!(sel.resolve(&uni(), &groups).unwrap(), vec![0x1A]);
+    }
+
+    #[test]
+    fn range_typo_diagnostics_are_symmetric() {
+        let e = Selector::parse("nonsense-f1").unwrap_err();
+        assert!(matches!(e, SelectError::BadRange(ref s) if s == "nonsense-f1"));
+        // A hyphenated non-key string still parses as a plain name so that
+        // user groups like "my-fps" can resolve.
+        let mut groups = HashMap::new();
+        groups.insert("my-fps".to_string(), vec![0x1A, 0x2C]);
+        let sel = Selector::parse("my-fps").unwrap();
+        assert_eq!(sel.resolve(&uni(), &groups).unwrap(), vec![0x1A, 0x2C]);
     }
 }
