@@ -88,13 +88,20 @@ impl Selector {
                 Item::Range(a, b) => (*a..=*b).filter(in_universe).collect(),
                 Item::Name(n) => {
                     if let Some(u) = usage_for_name(n) {
-                        // An explicitly named key is a user assertion that the
+                        // A *positively* named key is a user assertion that the
                         // key exists on this device: absence is an error, not
                         // a silent filter (unlike groups, ranges, and `all`).
+                        // Excluding a key that isn't present is a harmless
+                        // no-op, so negated names are exempt from this check.
                         if !in_universe(&u) {
-                            return Err(SelectError::NotOnDevice(n.clone()));
+                            if *neg {
+                                vec![]
+                            } else {
+                                return Err(SelectError::NotOnDevice(n.clone()));
+                            }
+                        } else {
+                            vec![u]
                         }
-                        vec![u]
                     } else if let Some(g) = builtin_group(n) {
                         g.into_iter().filter(in_universe).collect()
                     } else if let Some(g) = user_groups.get(n) {
@@ -206,5 +213,35 @@ mod tests {
         groups.insert("my-fps".to_string(), vec![0x1A, 0x2C]);
         let sel = Selector::parse("my-fps").unwrap();
         assert_eq!(sel.resolve(&uni(), &groups).unwrap(), vec![0x1A, 0x2C]);
+    }
+
+    #[test]
+    fn negated_absent_key_is_a_harmless_noop() {
+        // "f12" is a valid key name but absent from the test universe (no F-row
+        // past f2, mirroring a 65% board). Excluding it should be a silent
+        // no-op, not an error: only a *positive* named key is an assertion
+        // that the key exists.
+        let sel = Selector::parse("all,!f12").unwrap();
+        let r = sel.resolve(&uni(), &HashMap::new()).unwrap();
+        assert_eq!(r, uni());
+    }
+
+    #[test]
+    fn positively_named_absent_key_still_errors() {
+        // A universe with no dedicated `w` key: the positive name "w" is
+        // still an assertion the key exists, so it must still error.
+        let no_w = vec![0x04, 0x16, 0x07, 0x2C, 0x3A, 0x3B]; // a,s,d,space,f1,f2
+        let sel = Selector::parse("w").unwrap();
+        let err = sel.resolve(&no_w, &HashMap::new()).unwrap_err();
+        assert_eq!(err, SelectError::NotOnDevice("w".to_string()));
+    }
+
+    #[test]
+    fn negated_typo_still_errors_as_unknown() {
+        // A typo inside a negation is still a typo: SelectError::Unknown,
+        // never SelectError::NotOnDevice.
+        let sel = Selector::parse("!nonsense").unwrap();
+        let err = sel.resolve(&uni(), &HashMap::new()).unwrap_err();
+        assert!(matches!(err, SelectError::Unknown(ref n, _) if n == "nonsense"));
     }
 }
