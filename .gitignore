@@ -6,5 +6,3 @@ research/deob2.js
 research/strings.json
 research/blob.json
 /target
-# Real HID captures from the operator's own keyboard (Task 18/19): never committed.
-/captures/

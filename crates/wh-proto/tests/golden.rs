@@ -12,17 +12,45 @@
 //! codec bug, and the natural response to that failing test, weakening the
 //! assert, would throw away the only thing it exists to check.
 //!
-//! So this harness sorts every frame into one of a small number of buckets
-//! and only fails the test for the buckets that mean *our own code is wrong*.
-//! Everything else is counted and printed: that inventory is the input to any
-//! Phase 2 scoping conversation.
+//! So this harness sorts every frame into one of a small number of classes
+//! and only fails the test for the classes that mean *our own code is
+//! wrong*. Everything else is counted and attributed to the capture file and
+//! direction it came from: that inventory is the input to any Phase 2
+//! scoping conversation.
+//!
+//! A single malformed line (bad JSON, a missing "hex" field, a bad hex
+//! character, a report that is not 64 bytes) does not abort the run either:
+//! it is recorded as a failure with its file:line and the run continues, so
+//! one bad line in one of nine capture files does not hide the other eight.
+//! The summary is printed unconditionally, and written to
+//! `captures/golden-summary.txt` so it survives a swallowed-stdout `cargo
+//! test` run, before the test decides whether to fail. See fix round 1 of
+//! Task 18 (this file used to panic mid-scan, which meant a real capture
+//! that tripped a known deferred minor produced one panic and zero
+//! inventory).
+//!
+//! On what "round trips" actually means: earlier code here re-encoded every
+//! modelled frame through `frame::frame` and asserted it reproduced the wire
+//! bytes. That check is unreachable (any frame with trailing garbage is
+//! routed to `TrailingBytes` first) and, when reachable, tautological
+//! (`frame::frame` and `frame::parse` are exact structural inverses of each
+//! other given the same header layout and checksum formula, so a clean,
+//! successfully parsed frame reproduces itself by construction; 2,000,000
+//! synthetic frames confirmed zero mismatches). It has been deleted rather
+//! than kept for show. What genuinely gets checked against real firmware,
+//! for *every* class below except `FramingBug`/`LenLimitation`, is that our
+//! `0x35 + HEAD + len + cmd + payload.last()` checksum formula reproduced
+//! the checksum byte the device actually sent: that is what a successful
+//! `frame::parse` proves, and it is real, because that formula was reverse
+//! engineered from vendor JS, not measured against hardware, until now.
 //!
 //! Skips cleanly, with a printed reason, when `captures/` does not exist yet
 //! (pre-hardware CI, i.e. every run before Task 19 supplies real captures).
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use wh_proto::frame::{self, FrameError, REPORT_LEN};
 
@@ -48,34 +76,34 @@ enum Class {
     /// The declared length exceeds the 60-byte cap `parse` rejects. Kept
     /// distinct from `FramingBug` because it is the known Task 2/3 deferred
     /// minor (multi-report replies for profile/matrix reads "must bypass or
-    /// extend later"), not a random parse bug, and the two need different
-    /// responses from whoever reads the failure.
+    /// extend later"), not necessarily a random parse bug, and the two need
+    /// different responses from whoever reads the failure. `parse` checks
+    /// length before checksum, so this frame's checksum was never verified;
+    /// the message below says so rather than asserting a diagnosis it has
+    /// not confirmed.
     LenLimitation(u8),
-    /// Command byte 0xFF: the device itself reported a failure. Legitimate
-    /// protocol behaviour, not a bug in us, so it is counted rather than
-    /// failed.
+    /// Command byte 0xFF: the device itself reported a failure. Valid magic,
+    /// length and checksum, so not a codec bug: legitimate protocol
+    /// behaviour, counted rather than failed.
     DeviceFail(u8),
     /// Parsed cleanly, but bytes past the declared payload length are
     /// non-zero. Tests our zero-padding assumption against real firmware,
-    /// which nothing has checked before now. Reported, not failed.
+    /// which nothing had checked before this harness existed. Reported, not
+    /// failed.
     TrailingBytes { cmd: u8, extra_nonzero: usize },
     /// Parsed cleanly, clean trailing padding, but the command byte is not
     /// one `wh-proto` models. Reported, not failed: this is the inventory of
     /// what to scope for Phase 2.
     Unmodelled { cmd: u8 },
-    /// Parsed cleanly, clean trailing padding, command is modelled, but
-    /// re-encoding through `frame::frame` did not reproduce the wire bytes.
-    /// A real codec bug: hard failure.
-    ReencodeMismatch { cmd: u8, detail: String },
-    /// Parsed cleanly, clean trailing padding, command is modelled, and
-    /// re-encoding through `frame::frame` reproduced the wire bytes exactly.
-    /// The strict assertion the plan wanted; kept strict deliberately.
-    RoundTripped { cmd: u8 },
+    /// Parsed cleanly, clean trailing padding, command is one of the five
+    /// `wh-proto` models. See the module doc comment for what this class
+    /// does and does not prove.
+    Modelled { cmd: u8 },
 }
 
 /// Sort one already-decoded 64-byte report into a `Class`. Pure: never
-/// panics, so callers can decide how each class is handled (and tests can
-/// assert on it directly) without fighting `catch_unwind`.
+/// panics, so callers can decide how each class is handled, and tests can
+/// assert on it directly.
 fn classify(report: &[u8]) -> Class {
     match frame::parse(report) {
         Ok(reply) => {
@@ -91,30 +119,7 @@ fn classify(report: &[u8]) -> Class {
             if !MODELLED_CMDS.contains(&reply.cmd) {
                 return Class::Unmodelled { cmd: reply.cmd };
             }
-            // A successful parse() already bounds declared_len (and so
-            // reply.payload.len()) to <=60, which is frame()'s own contract,
-            // so this cannot fail in practice; treated as a hard bug if it
-            // somehow does rather than unwrapped blindly.
-            let rebuilt = match frame::frame(reply.cmd, reply.payload) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Class::ReencodeMismatch {
-                        cmd: reply.cmd,
-                        detail: format!("frame() itself rejected the decoded payload: {e}"),
-                    }
-                }
-            };
-            if rebuilt[..] != report[..REPORT_LEN] {
-                return Class::ReencodeMismatch {
-                    cmd: reply.cmd,
-                    detail: format!(
-                        "rebuilt {:02x?} vs captured {:02x?}",
-                        rebuilt,
-                        &report[..REPORT_LEN]
-                    ),
-                };
-            }
-            Class::RoundTripped { cmd: reply.cmd }
+            Class::Modelled { cmd: reply.cmd }
         }
         Err(FrameError::BadLength(len)) => Class::LenLimitation(len),
         Err(FrameError::DeviceFail(code)) => Class::DeviceFail(code),
@@ -122,125 +127,275 @@ fn classify(report: &[u8]) -> Class {
     }
 }
 
+fn hex_digit(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        other => Err(format!("invalid hex digit 0x{other:02x}")),
+    }
+}
+
+/// Byte-indexed, not `&str`-indexed: a `&str` slice index that lands inside
+/// a multi-byte UTF-8 character panics, and this decodes untrusted JSONL
+/// pasted from a browser DevTools console. `wh-device::replay::unhex` has
+/// the identical fix for the identical reason on the identical input class;
+/// `wh-proto` cannot depend on `wh-device` (wrong direction in the
+/// workspace), so it is duplicated here rather than shared.
+fn decode_hex_report(s: &str) -> Result<[u8; REPORT_LEN], String> {
+    let bytes = s.as_bytes();
+    if bytes.len() != REPORT_LEN * 2 {
+        return Err(format!(
+            "hex must be exactly {} characters ({REPORT_LEN} bytes), got {}",
+            REPORT_LEN * 2,
+            bytes.len()
+        ));
+    }
+    let mut out = [0u8; REPORT_LEN];
+    for i in 0..REPORT_LEN {
+        let hi = hex_digit(bytes[2 * i])?;
+        let lo = hex_digit(bytes[2 * i + 1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+/// Which capture file and which logged direction a frame came from. The
+/// whole capture method is one single-variable change per file (see
+/// `capture/README.md`), so a command byte or a trailing-garbage frame is
+/// only informative when it can be traced back to the scenario and
+/// direction that produced it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Origin {
+    /// The capture file's name, e.g. `"profile-switch.jsonl"`.
+    scenario: String,
+    /// The captured `"dir"` field verbatim: `"in"`, `"out"`, `"in-feature"`,
+    /// `"out-feature"`, or `"?"` if the line did not carry one.
+    dir: String,
+}
+
 #[derive(Default, Debug, PartialEq)]
 struct Summary {
     checked: usize,
-    round_tripped: usize,
-    device_fail: usize,
-    trailing_bytes_frames: usize,
-    unmodelled: BTreeMap<u8, usize>,
+    /// Modelled command, clean padding, checksum formula matched. See the
+    /// module doc comment for what this does and does not prove.
+    modelled: usize,
+    /// (origin, device failure code) -> count.
+    device_fail: BTreeMap<(Origin, u8), usize>,
+    /// (origin, cmd) -> count of frames with non-zero bytes past the
+    /// declared payload length.
+    trailing_bytes: BTreeMap<(Origin, u8), usize>,
+    /// (origin, cmd) -> count of frames whose command byte is not modelled.
+    unmodelled: BTreeMap<(Origin, u8), usize>,
+    /// report_id -> count, across every line that carried one. Exists to
+    /// confirm or refute the "report_id is always 0" assumption `hid.rs`
+    /// makes.
+    report_ids: BTreeMap<u8, usize>,
+    /// file:line-prefixed hard-failure messages: bad JSON, a malformed hex
+    /// string, a report that is not 64 bytes, a codec bug, or a length our
+    /// framing rejects. A non-empty list fails the test, but only after the
+    /// summary has already been printed and written.
+    failures: Vec<String>,
 }
 
-fn decode_hex_report(hexs: &str, ctx: &str) -> Vec<u8> {
-    assert!(
-        hexs.len().is_multiple_of(2),
-        "{ctx}: odd-length hex string ({} chars)",
-        hexs.len()
-    );
-    (0..hexs.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hexs[i..i + 2], 16)
-                .unwrap_or_else(|e| panic!("{ctx}: bad hex byte at offset {i}: {e}"))
-        })
-        .collect()
+fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summary) {
+    let ctx = format!("{scenario}:{line_no}");
+    let v: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            summary.failures.push(format!("{ctx}: invalid JSON: {e}"));
+            return;
+        }
+    };
+    let Some(hexs) = v["hex"].as_str() else {
+        summary
+            .failures
+            .push(format!("{ctx}: missing \"hex\" field"));
+        return;
+    };
+    let report = match decode_hex_report(hexs) {
+        Ok(r) => r,
+        Err(e) => {
+            summary.failures.push(format!("{ctx}: {e}"));
+            return;
+        }
+    };
+
+    summary.checked += 1;
+    if let Some(id) = v["report_id"].as_u64() {
+        *summary.report_ids.entry(id as u8).or_insert(0) += 1;
+    }
+    let origin = Origin {
+        scenario: scenario.to_string(),
+        dir: v["dir"].as_str().unwrap_or("?").to_string(),
+    };
+
+    match classify(&report) {
+        Class::FramingBug(msg) => summary.failures.push(format!("{ctx}: codec bug: {msg}")),
+        Class::LenLimitation(len) => summary.failures.push(format!(
+            "{ctx}: framing limitation: declared length {len} exceeds the 60-byte cap parse() \
+             rejects. parse() checks length before checksum, so this frame's checksum was not \
+             verified. This may be the known Task 2/3 deferred minor (a multi-report profile or \
+             matrix read), or it may be an unrelated corrupt capture; either way it needs a \
+             human look, not a guess."
+        )),
+        Class::DeviceFail(code) => {
+            *summary.device_fail.entry((origin, code)).or_insert(0) += 1;
+        }
+        Class::TrailingBytes { cmd, .. } => {
+            *summary.trailing_bytes.entry((origin, cmd)).or_insert(0) += 1;
+        }
+        Class::Unmodelled { cmd } => {
+            *summary.unmodelled.entry((origin, cmd)).or_insert(0) += 1;
+        }
+        Class::Modelled { .. } => summary.modelled += 1,
+    }
 }
 
-/// Scan `dir` for `*.jsonl` capture files, classify every report in every
-/// line, and either panic (for the classes that mean our own code is wrong)
-/// or fold the frame into `Summary`. Returns `None` only when `dir` itself
-/// does not exist, which is the pre-hardware CI case.
-fn classify_dir(dir: &Path) -> Option<Summary> {
+/// Scan `dir` for `*.jsonl` capture files and classify every report on every
+/// line. Never panics: every problem, from a malformed line to a codec bug,
+/// is collected into `Summary::failures` with its `file:line` so the caller
+/// can print and persist the whole picture before deciding whether to fail.
+/// Returns `None` only when `dir` itself does not exist, the pre-hardware CI
+/// case.
+fn scan_dir(dir: &Path) -> Option<Summary> {
     let entries = fs::read_dir(dir).ok()?;
     let mut summary = Summary::default();
-    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
         if path.extension().is_none_or(|e| e != "jsonl") {
             continue;
         }
-        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let scenario = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                summary.failures.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
         for (lineno, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            let ctx = format!("{}:{}", path.display(), lineno + 1);
-            let v: serde_json::Value =
-                serde_json::from_str(line).unwrap_or_else(|e| panic!("{ctx}: invalid JSON: {e}"));
-            let hexs = v["hex"]
-                .as_str()
-                .unwrap_or_else(|| panic!("{ctx}: missing \"hex\" field"));
-            let bytes = decode_hex_report(hexs, &ctx);
-            assert_eq!(
-                bytes.len(),
-                REPORT_LEN,
-                "{ctx}: report is {} bytes, want {REPORT_LEN}",
-                bytes.len()
-            );
-            summary.checked += 1;
-            match classify(&bytes) {
-                Class::FramingBug(msg) => panic!("{ctx}: codec bug: {msg}"),
-                Class::LenLimitation(len) => panic!(
-                    "{ctx}: framing limitation: declared length {len} exceeds the 60-byte cap \
-                     parse() rejects. Likely a multi-report reply (a profile or matrix read), \
-                     the known Task 2/3 deferred minor, not a random parse bug. This needs a \
-                     framing extension, not a codec fix."
-                ),
-                Class::ReencodeMismatch { cmd, detail } => panic!(
-                    "{ctx}: modelled cmd 0x{cmd:02X} did not re-encode byte-identically: {detail}"
-                ),
-                Class::DeviceFail(_) => summary.device_fail += 1,
-                Class::TrailingBytes { .. } => summary.trailing_bytes_frames += 1,
-                Class::Unmodelled { cmd } => {
-                    *summary.unmodelled.entry(cmd).or_insert(0) += 1;
-                }
-                Class::RoundTripped { .. } => summary.round_tripped += 1,
-            }
+            process_line(&scenario, lineno + 1, line, &mut summary);
         }
     }
     Some(summary)
 }
 
-fn print_summary(summary: &Summary) {
-    eprintln!("golden: {} reports checked", summary.checked);
-    eprintln!(
-        "golden: {} strictly round-tripped (modelled commands)",
-        summary.round_tripped
+fn render_summary(summary: &Summary) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "golden: {} reports checked", summary.checked);
+    let _ = writeln!(
+        out,
+        "golden: {} modelled-command frames, clean padding, checksum formula matched",
+        summary.modelled
     );
-    eprintln!(
-        "golden: {} device-reported failures (cmd 0xFF)",
-        summary.device_fail
+    let _ = writeln!(
+        out,
+        "golden: (every checked frame that is not a FramingBug/LenLimitation failure already \
+         confirms the checksum formula against real firmware, not just the modelled ones above)"
     );
-    eprintln!(
-        "golden: {} frames with non-zero trailing bytes past declared length",
-        summary.trailing_bytes_frames
-    );
-    if summary.unmodelled.is_empty() {
-        eprintln!("golden: 0 unmodelled command bytes");
+    if summary.report_ids.is_empty() {
+        let _ = writeln!(out, "golden: no report_id field seen on any line");
     } else {
-        eprintln!(
-            "golden: {} distinct unmodelled command byte(s):",
-            summary.unmodelled.len()
+        let ids: Vec<String> = summary
+            .report_ids
+            .iter()
+            .map(|(id, n)| format!("0x{id:02X} ({n}x)"))
+            .collect();
+        let _ = writeln!(out, "golden: report_id(s) seen: {}", ids.join(", "));
+    }
+    let _ = writeln!(
+        out,
+        "golden: {} device-reported-failure (scenario, direction, code) combination(s):",
+        summary.device_fail.len()
+    );
+    for ((origin, code), count) in &summary.device_fail {
+        let _ = writeln!(
+            out,
+            "golden:   code 0x{code:02X}: {count} frame(s) [{}] {}",
+            origin.dir, origin.scenario
         );
-        for (cmd, count) in &summary.unmodelled {
-            eprintln!("golden:   cmd 0x{cmd:02X}: {count} frame(s)");
+    }
+    let _ = writeln!(
+        out,
+        "golden: {} (scenario, direction, cmd) combination(s) with non-zero trailing bytes past \
+         declared length:",
+        summary.trailing_bytes.len()
+    );
+    for ((origin, cmd), count) in &summary.trailing_bytes {
+        let _ = writeln!(
+            out,
+            "golden:   cmd 0x{cmd:02X}: {count} frame(s) [{}] {}",
+            origin.dir, origin.scenario
+        );
+    }
+    let _ = writeln!(
+        out,
+        "golden: {} (scenario, direction, cmd) combination(s) of unmodelled command bytes:",
+        summary.unmodelled.len()
+    );
+    for ((origin, cmd), count) in &summary.unmodelled {
+        let _ = writeln!(
+            out,
+            "golden:   cmd 0x{cmd:02X}: {count} frame(s) [{}] {}",
+            origin.dir, origin.scenario
+        );
+    }
+    if !summary.failures.is_empty() {
+        let _ = writeln!(out, "golden: {} hard failure(s):", summary.failures.len());
+        for f in &summary.failures {
+            let _ = writeln!(out, "golden:   {f}");
         }
+    }
+    out
+}
+
+/// Print the summary to stderr (visible with `cargo test -- --nocapture`,
+/// still swallowed by a bare `cargo test`, see `capture/README.md`) and, so
+/// it survives either way, write it to `<dir>/golden-summary.txt`.
+fn report_summary(summary: &Summary, dir: &Path) {
+    let text = render_summary(summary);
+    eprint!("{text}");
+    let out_path = dir.join("golden-summary.txt");
+    match fs::write(&out_path, &text) {
+        Ok(()) => eprintln!("golden: summary written to {}", out_path.display()),
+        Err(e) => eprintln!(
+            "golden: could not write summary to {}: {e}",
+            out_path.display()
+        ),
     }
 }
 
-/// Every captured report must parse (magic/len/crc). Every command
-/// `wh-proto` models must re-encode byte-identically from its decoded form.
-/// Everything else, unmodelled commands, trailing padding garbage, device
-/// failure replies, is counted and printed rather than failed. See the
-/// module doc comment for why.
+fn assert_no_hard_failures(summary: &Summary) {
+    assert!(
+        summary.failures.is_empty(),
+        "{} hard failure(s):\n{}",
+        summary.failures.len(),
+        summary.failures.join("\n")
+    );
+}
+
+/// Every captured report must parse (magic/len/crc). Everything else,
+/// unmodelled commands, trailing padding garbage, device failure replies, is
+/// counted and attributed rather than failed. See the module doc comment for
+/// the full design and for why the summary is printed and persisted before
+/// the test is allowed to fail.
 #[test]
 fn all_captures_decode_and_classify() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");
-    let Some(summary) = classify_dir(&dir) else {
+    let Some(summary) = scan_dir(&dir) else {
         eprintln!("no captures/ yet, skipping");
         return;
     };
-    print_summary(&summary);
+    report_summary(&summary, &dir);
+    assert_no_hard_failures(&summary);
 }
 
 #[cfg(test)]
@@ -253,14 +408,32 @@ mod classifier_tests {
         f
     }
 
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wh-golden-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn jsonl_line(dir_field: &str, report_id: u8, report: &[u8]) -> String {
+        let hexs: String = report.iter().map(|b| format!("{b:02x}")).collect();
+        format!("{{\"ts\":0,\"dir\":\"{dir_field}\",\"report_id\":{report_id},\"hex\":\"{hexs}\"}}")
+    }
+
     #[test]
-    fn modelled_command_round_trips() {
+    fn modelled_command_is_classified_as_modelled() {
         // cmd::DB is one of the five commands wh-proto has typed support
-        // for; a clean frame for it must classify as RoundTripped.
+        // for; a clean frame for it must classify as Modelled.
         let f = frame::frame(wh_proto::cmds::cmd::DB, &[0x00, 0x01, 0x02]).unwrap();
         assert_eq!(
             classify(&f),
-            Class::RoundTripped {
+            Class::Modelled {
                 cmd: wh_proto::cmds::cmd::DB
             }
         );
@@ -313,6 +486,15 @@ mod classifier_tests {
     }
 
     #[test]
+    fn short_report_is_a_hard_failure_class() {
+        let short = [frame::HEAD, 0x00, wh_proto::cmds::cmd::DB, 0xBA];
+        match classify(&short) {
+            Class::FramingBug(_) => {}
+            other => panic!("expected FramingBug, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn declared_length_over_60_is_a_len_limitation_not_a_generic_bug() {
         // Hand-built rather than via frame::frame, which itself refuses to
         // build an oversize payload: we need to model what a real device
@@ -330,66 +512,176 @@ mod classifier_tests {
         assert_eq!(classify(&f), Class::DeviceFail(0x03));
     }
 
+    /// Mirrors `capture/hid-shim.js`'s redaction exactly: zero report bytes
+    /// 13..29 (payload bytes 9..25, the serial window `parse_sync` reads)
+    /// after the frame's checksum has already been computed, the same order
+    /// of operations the shim uses on the hex string it is about to log.
+    /// Safe because `checksum` only ever covers the payload's *last* byte,
+    /// and `parse_sync` requires `payload.len() >= 36` (firmware ends at
+    /// 26..36), so that last byte sits at index 35 or beyond: outside the
+    /// redacted window. A redacted SYNC frame must still parse and still
+    /// classify as Modelled, and the semantic decoder must still work, just
+    /// with an empty serial.
     #[test]
-    fn short_report_is_a_hard_failure_class() {
-        let short = [frame::HEAD, 0x00, wh_proto::cmds::cmd::DB, 0xBA];
-        match classify(&short) {
-            Class::FramingBug(_) => {}
-            other => panic!("expected FramingBug, got {other:?}"),
+    fn a_redacted_sync_frame_still_parses_and_classifies_as_modelled() {
+        let mut payload = vec![0u8; 60];
+        payload[9..25].copy_from_slice(b"REALSERIALNUMBER"); // 16 bytes
+        payload[26..36].copy_from_slice(b"V1.2.3.456");
+        let mut f = frame::frame(wh_proto::cmds::cmd::SYNC, &payload).unwrap();
+        let checksum_before = f[3];
+
+        for b in &mut f[13..29] {
+            *b = 0;
         }
+
+        assert_eq!(
+            f[3], checksum_before,
+            "redaction must not disturb the checksum byte"
+        );
+        assert_eq!(
+            classify(&f),
+            Class::Modelled {
+                cmd: wh_proto::cmds::cmd::SYNC
+            }
+        );
+        let reply = frame::parse(&f).unwrap();
+        let info = wh_proto::cmds::parse_sync(reply.payload).unwrap();
+        assert_eq!(info.serial, "");
+        assert_eq!(info.firmware, "V1.2.3.456");
     }
 
     /// Drives the classifier through the same file-reading, JSON-parsing and
-    /// hex-decoding path a real `captures/*.jsonl` file goes through, using
-    /// synthetic fixtures covering the non-panicking classes: one round trip,
-    /// one unmodelled command, and one frame with trailing garbage. Proves
-    /// the classifier sorts a real capture file correctly, not just a bare
-    /// byte array.
+    /// hex-decoding path a real `captures/*.jsonl` file goes through, and
+    /// checks that every count is attributed back to the scenario file and
+    /// the logged direction, not just aggregated globally.
     #[test]
-    fn a_synthetic_capture_file_sorts_into_the_expected_buckets() {
-        let dir = std::env::temp_dir().join(format!(
-            "wh-golden-classify-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
+    fn a_synthetic_capture_file_sorts_into_the_expected_buckets_with_attribution() {
+        let dir = unique_temp_dir("attribution");
+        let round_trip =
+            frame::frame(wh_proto::cmds::cmd::KEY, &[0x00, 0x1A, 0x04, 0xF4, 0x01]).unwrap();
+        let unmodelled = frame::frame(0x40, &[0x01, 0x02]).unwrap();
+        let mut trailing = frame::frame(wh_proto::cmds::cmd::DB, &[0x00]).unwrap();
+        trailing[50] = 0xEE;
+        let device_fail = frame::frame(frame::CMD_FAIL, &[0x03]).unwrap();
 
-        let round_trip = frame::frame(wh_proto::cmds::cmd::KEY, &[0x00, 0x1A, 0x04, 0xF4, 0x01])
-            .unwrap()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let unmodelled = frame::frame(0x40, &[0x01, 0x02])
-            .unwrap()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let mut trailing_bytes = frame::frame(wh_proto::cmds::cmd::DB, &[0x00]).unwrap();
-        trailing_bytes[50] = 0xEE;
-        let trailing_bytes = trailing_bytes
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
+        let lines = [
+            jsonl_line("in", 0, &round_trip),
+            String::new(), // blank lines must be skipped, not counted
+            jsonl_line("out", 0, &unmodelled),
+            jsonl_line("in", 0, &trailing),
+            jsonl_line("in", 5, &device_fail),
+        ]
+        .join("\n");
+        fs::write(dir.join("profile-switch.jsonl"), lines).unwrap();
 
-        let jsonl = format!(
-            "{{\"ts\":1,\"dir\":\"in\",\"report_id\":0,\"hex\":\"{round_trip}\"}}\n\
-             \n\
-             {{\"ts\":2,\"dir\":\"in\",\"report_id\":0,\"hex\":\"{unmodelled}\"}}\n\
-             {{\"ts\":3,\"dir\":\"in\",\"report_id\":0,\"hex\":\"{trailing_bytes}\"}}\n"
-        );
-        fs::write(dir.join("synthetic.jsonl"), jsonl).unwrap();
-
-        let summary = classify_dir(&dir).expect("dir exists, so this must be Some");
-        assert_eq!(summary.checked, 3);
-        assert_eq!(summary.round_tripped, 1);
-        assert_eq!(summary.trailing_bytes_frames, 1);
-        assert_eq!(summary.unmodelled.get(&0x40), Some(&1));
-        assert_eq!(summary.device_fail, 0);
-
+        let summary = scan_dir(&dir).expect("dir exists, so this must be Some");
         fs::remove_dir_all(&dir).unwrap();
+
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+        assert_eq!(summary.checked, 4);
+        assert_eq!(summary.modelled, 1);
+
+        let mut saw_unmodelled = false;
+        for ((origin, cmd), count) in &summary.unmodelled {
+            if *cmd == 0x40 {
+                assert_eq!(origin.scenario, "profile-switch.jsonl");
+                assert_eq!(origin.dir, "out");
+                assert_eq!(*count, 1);
+                saw_unmodelled = true;
+            }
+        }
+        assert!(
+            saw_unmodelled,
+            "0x40 must be attributed to profile-switch.jsonl/out"
+        );
+
+        let mut saw_trailing = false;
+        for ((origin, cmd), count) in &summary.trailing_bytes {
+            if *cmd == wh_proto::cmds::cmd::DB {
+                assert_eq!(origin.scenario, "profile-switch.jsonl");
+                assert_eq!(origin.dir, "in");
+                assert_eq!(*count, 1);
+                saw_trailing = true;
+            }
+        }
+        assert!(
+            saw_trailing,
+            "DB trailing bytes must be attributed to profile-switch.jsonl/in"
+        );
+
+        let mut saw_device_fail = false;
+        for ((origin, code), count) in &summary.device_fail {
+            if *code == 0x03 {
+                assert_eq!(origin.scenario, "profile-switch.jsonl");
+                assert_eq!(origin.dir, "in");
+                assert_eq!(*count, 1);
+                saw_device_fail = true;
+            }
+        }
+        assert!(
+            saw_device_fail,
+            "device failure code 0x03 must be attributed"
+        );
+
+        assert_eq!(summary.report_ids.get(&0), Some(&3));
+        assert_eq!(summary.report_ids.get(&5), Some(&1));
+    }
+
+    #[test]
+    fn a_malformed_line_is_collected_not_panicked_and_does_not_hide_the_rest_of_the_file() {
+        let dir = unique_temp_dir("malformed-line");
+        let good = frame::frame(wh_proto::cmds::cmd::DB, &[0x01]).unwrap();
+        let lines = [
+            "not json at all".to_string(),
+            "{\"dir\":\"in\",\"report_id\":0,\"hex\":\"deadbeef\"}".to_string(), // wrong length
+            jsonl_line("in", 0, &good),
+        ]
+        .join("\n");
+        fs::write(dir.join("noisy.jsonl"), lines).unwrap();
+
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+
+        // The one well-formed line must still have been checked and
+        // classified, proving the two bad lines did not abort the scan.
+        assert_eq!(summary.checked, 1);
+        assert_eq!(summary.modelled, 1);
+        assert_eq!(summary.failures.len(), 2);
+        assert!(summary.failures[0].contains("noisy.jsonl:1"));
+        assert!(summary.failures[0].contains("invalid JSON"));
+        assert!(summary.failures[1].contains("noisy.jsonl:2"));
+    }
+
+    /// Proves the two remaining hard-failure classes actually fail the test
+    /// end to end, through `scan_dir` and `assert_no_hard_failures`, the
+    /// same path `all_captures_decode_and_classify` uses; not just that
+    /// `classify` returns the right enum variant in isolation. A prior round
+    /// of this harness proved that out of band with a temporary test and
+    /// then deleted it; a deleted test is not coverage, so these stay.
+    #[test]
+    #[should_panic(expected = "hard failure")]
+    fn a_bad_checksum_frame_fails_the_whole_run() {
+        let dir = unique_temp_dir("bad-checksum-e2e");
+        let mut f = frame::frame(wh_proto::cmds::cmd::DB, &[0x01]).unwrap();
+        f[3] ^= 0xFF;
+        fs::write(dir.join("bad.jsonl"), jsonl_line("in", 0, &f)).unwrap();
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+        assert_no_hard_failures(&summary);
+    }
+
+    #[test]
+    #[should_panic(expected = "hard failure")]
+    fn a_length_over_60_frame_fails_the_whole_run() {
+        let dir = unique_temp_dir("len-over-60-e2e");
+        let mut f = [0u8; REPORT_LEN];
+        f[0] = frame::HEAD;
+        f[1] = 61;
+        f[2] = wh_proto::cmds::cmd::DB;
+        fs::write(dir.join("bad.jsonl"), jsonl_line("in", 0, &f)).unwrap();
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+        assert_no_hard_failures(&summary);
     }
 
     #[test]
@@ -403,6 +695,6 @@ mod classifier_tests {
                 .as_nanos()
         ));
         assert!(!dir.exists());
-        assert_eq!(classify_dir(&dir), None);
+        assert_eq!(scan_dir(&dir), None);
     }
 }
