@@ -1,0 +1,35 @@
+{
+  "name": "@sparklinkplayjoy/hid",
+  "version": "1.0.16",
+  "description": "",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm//types/enum.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./src/types": "./dist/esm/index.d.ts",
+    "./*": "./*"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [],
+  "author": "@sparklinkplayjoy",
+  "license": "MIT",
+  "dependencies": {
+    "async-mutex": "^0.5.0",
+    "uuid": "^11.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "buildV2": "rollup -c",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}

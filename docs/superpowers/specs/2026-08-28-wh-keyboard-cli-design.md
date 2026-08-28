@@ -93,16 +93,25 @@ One parser shared by every `--keys` flag:
 4. **No-op smoke test:** `wh selftest` writes one setting to its *current* value and verifies read-back — proves the write path without changing state.
 5. First-ever capture of a full config read is stored both as a golden test fixture and as backup #0.
 
-## Discovery workflow (precedes protocol implementation)
+## Discovery workflow — COMPLETED 2026-08-28 (static analysis)
 
-1. **Static analysis.** Fetch and prettify the JS bundles from terminal.wallhack.com. Locate WebHID call sites (`requestDevice`, `sendReport`, `sendFeatureReport`, `receiveFeatureReport`). Extract opcodes and field encodings into a first-draft `docs/protocol.md`.
-2. **Live capture.** Launch Windows Chrome with `--remote-debugging-port=9222`; inject a shim over `HIDDevice.prototype` methods logging direction, report ID, bytes, timestamp. User performs single-variable changes in the web UI (RT on W → 0.5, then 0.6; AP → 1.2; …). Each diff isolates one field.
-3. **Cross-check.** Captures are authoritative; the protocol doc is corrected to match observed bytes.
-4. Captures stored as `captures/*.jsonl` in-repo (golden fixtures).
+Static analysis of the terminal.wallhack.com bundle succeeded beyond expectations. Key findings (full detail to live in `docs/protocol.md`; source artifacts under `research/`):
 
-**Fallback:** if the bundle is obfuscated beyond use *and* the shim cannot hook the transport (e.g. WebUSB in a worker), install USBPcap + Wireshark on Windows (admin required) and sniff at the wire level.
+- **Transport confirmed: WebHID.** No WebUSB or Web Serial anywhere in the bundle. USB sniffing fallback is moot.
+- **The firmware platform is Sparklink Playjoy** (ODM shared with Chilkey, RK, AJAZZ, FL Esports, …), and the vendor SDK embedded in Wallhack's bundle is an obfuscated copy of **`@sparklinkplayjoy/protocol-keyboard` — public, MIT-licensed, full TypeScript source on npm**. The protocol does not need reverse-engineering from scratch; it needs porting from readable MIT source (`research/proto/package/src/`).
+- **Framing:** reportId 0, 64-byte zero-padded reports. `byte0=0x5C` magic, `byte1=len`, `byte2=cmd`, `byte3=crc` where `crc = (0x35 + 0x5C + len + cmd + lastPayloadByte) & 0xFF` — cross-validated between the deobfuscated bundle and upstream source.
+- **Values are mm × 1000, little-endian u16.** Defaults observed: 4.0 mm max travel, 2.0 mm AP, 0.1 mm RT, 0.01 mm step.
+- **Per-key settings** are 4-byte records `[hidUsage, layoutId, lo, hi]` batched under cmd `0x23`; layout IDs: `0x04` AP, `0x14` RT press, `0x15` RT release, `0x08` working mode (RT enable), `0x16/0x17` safe zone.
+- **Global AP** via cmd `0x29`. Polling rate, profiles (`setConfig`), SOCD/DKS/advanced keys, lighting, and bootloader commands are all mapped (91 command templates decoded in `research/blob.json`).
+- **The board is self-describing:** `READ_DEFKEY_MATRIX` (cmd `0x2B`) returns the full 6×21 HID-usage matrix — no per-model layout file needed. Key addressing is standard USB HID usage codes.
+- Second VID possible: bundle also matches `0x1CAA:0x0806` (and `0x1CAA:0xFFF6/FFF8` for bootloader); our board enumerates as `0x3879:0x0806`. Match on either.
+- The vendor collection is usage page `0xFFA0`, usage `0x01` — `wh-device` must select the HID interface by usage page, not by interface number.
 
-**Known constraint:** WebHID typically holds the interface exclusively. The web configurator and `wh` cannot both hold the device; `wh` must detect and name this conflict.
+**Remaining live-capture step (reduced scope):** everything above is static analysis, untested against hardware. Before first write: capture the web app's actual traffic for a handful of actions (Chrome `--remote-debugging-port` + `HIDDevice.prototype` logging shim) to confirm framing/CRC/scale byte-for-byte, and store as `captures/*.jsonl` golden fixtures. Cross-check rule stands: captures are authoritative.
+
+**Known constraint:** WebHID holds the interface exclusively. The web configurator and `wh` cannot both hold the device; `wh` must detect and name this conflict.
+
+**Licensing note:** implementation ports from the MIT upstream (`research/proto/`, attribution in-repo). Vendor-bundle-derived artifacts (`research/vendor-bundle/`, `deob2.js`, `strings.json`, `blob.json`) are kept locally for reference but gitignored, not distributed.
 
 ## Testing
 
@@ -130,16 +139,19 @@ One parser shared by every `--keys` flag:
 
 | Risk | Mitigation |
 |---|---|
-| JS bundle heavily obfuscated | Live capture still yields ground truth; USBPcap in reserve |
-| Transport is WebUSB/Web Serial, not WebHID | Shim strategy adjusts (`navigator.usb`/`serial` hooks); wire sniffing as fallback |
+| ~~JS bundle heavily obfuscated~~ | Retired: MIT-licensed upstream source found (`@sparklinkplayjoy/protocol-keyboard`) |
+| ~~Transport is WebUSB/Web Serial~~ | Retired: WebHID confirmed in bundle |
+| Wallhack firmware diverges from upstream SDK | Live capture cross-check before first write; captures are authoritative over the port |
 | Bad write leaves board in bad state | Auto-backup + restore; no-op selftest before first real write; vendor web app remains the recovery tool of last resort |
 | Exclusive access confusion | Dedicated error variant + message |
 | Firmware update changes protocol | Protocol doc records firmware version tested against; `wh dump` includes firmware version if readable |
 
-## Open questions (resolved during discovery, before implementation)
+## Open questions
 
-1. Which transport does the web app actually use (WebHID assumed)?
-2. Feature reports vs. output reports? Report IDs and sizes?
-3. mm-value encoding (scale, offset, lookup)?
-4. Key addressing scheme (matrix position, HID usage, vendor index)?
-5. Is config persisted to flash automatically on write, or is a "commit" command required?
+Resolved by static analysis (see Discovery section): transport = WebHID; output reports, reportId 0, 64 bytes; values = mm×1000 LE u16; key addressing = USB HID usage codes.
+
+Still open, to resolve during live capture / hardware smoke testing:
+
+1. Is config persisted to flash automatically on write, or is a "commit" command required?
+2. Does the upstream SDK version match the K-001's firmware exactly, or has Wallhack diverged? (Byte-for-byte capture comparison answers this.)
+3. Response timing/ordering: does every command ack, and how should `wh-device` frame request/response matching?

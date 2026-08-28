@@ -1,0 +1,17 @@
+export declare const bitReadWrite: (value?: boolean) => number;
+export declare const getLightBitmap: (lightSwitch: boolean, reverseEffect: boolean, superResponse: boolean) => number;
+export declare const getSomeBits: (num?: number, bit?: number) => number[];
+export declare const lowByte: (value: number) => number;
+export declare const highByte: (value: number) => number;
+export declare const highByte16: (value: number) => number;
+export declare const highByte24: (value: number) => number;
+export declare const computeHighLowByte: (value: number) => number[];
+export declare const computeHead: (len: number, cmd: number, crc: number) => number[];
+export declare const computeCRC: (len: number, cmd: number, data: number[]) => number;
+export declare const computeProtocol: (head: number[], data: number[], len?: number) => Uint8Array;
+export declare const computeProtocolSlice: (head: number[], data: number[], len?: number) => Uint8Array[];
+export declare const createProtocol: (len: number, cmd: number, data: number[]) => Uint8Array;
+export declare const createProtocolSlice: (len: number, cmd: number, data: number[]) => Uint8Array[];
+export declare const compareVersions: (version1: string, version2: string) => string;
+export declare const computeCheckSum: (pack: number[]) => number;
+export * from './decimal';

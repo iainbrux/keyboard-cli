@@ -1,1 +1,6 @@
 .remember/
+# Vendor-derived artifacts (decoded/deobfuscated from Wallhack's copyrighted bundle) — reference locally, don't distribute
+research/vendor-bundle/
+research/deob2.js
+research/strings.json
+research/blob.json
