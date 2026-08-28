@@ -252,8 +252,8 @@ fn get_rt_via_replay() {
 /// this board's matrix, must fail loudly rather than silently write nothing or, worse, write
 /// to keys the board doesn't have. This pins the specific guard at the end of `resolve_keys`
 /// (`if usages.is_empty() { bail!(...) }`): if a later change dropped that check or the
-/// universe filter stopped applying, `wh set` on top of the same `resolve_keys` would burn a
-/// flash SAVE cycle on a selector that should have refused to run at all.
+/// universe filter stopped applying, `wh set` on top of the same `resolve_keys` would send a
+/// write to the board on a selector that should have refused to run at all.
 #[test]
 fn get_on_a_group_absent_from_the_board_is_rejected() {
     let config_home = scratch_config_dir("offboard-group");
@@ -311,10 +311,10 @@ fn auto_backup_lines() -> Vec<String> {
 }
 
 /// The full script for `wh set ap --keys w --set 1.2` against the two-key board: `resolve_keys`'
-/// own matrix read, the auto-backup phase, the AP write batch and SAVE, then the readback
-/// verification's `read_key_settings` for 'w'. `readback_ap` is the AP value (micrometres) the
-/// verification reads back, letting the happy-path and mismatch tests below share this builder
-/// and diverge only on that one number.
+/// own matrix read, the auto-backup phase, the AP write batch (no SAVE follows it, see task 19b
+/// chunk 4), then the readback verification's `read_key_settings` for 'w'. `readback_ap` is the
+/// AP value (micrometres) the verification reads back, letting the happy-path and mismatch tests
+/// below share this builder and diverge only on that one number.
 fn set_ap_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
@@ -330,12 +330,8 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
+    // No SAVE order follows the write batch: the vendor was never observed sending one (task
+    // 19b chunk 4), so `write_records` does not either.
 
     // Readback verification reads all four layouts for 'w', not just AP; MODE/press/release
     // echo back unchanged so only the AP field can drive a match or mismatch here.
@@ -343,7 +339,7 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
     lines
 }
 
-/// `set ap --keys w --set 1.2` end to end: the auto-backup phase, the write batch, SAVE, and a
+/// `set ap --keys w --set 1.2` end to end: the auto-backup phase, the write batch, and a
 /// readback that matches (1200um = 1.20mm). Exit 0, "verified" in stdout, and a real backup
 /// file on disk, not just the message claiming one.
 #[test]
@@ -416,7 +412,7 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     lines.extend(mode_read_lines(0x1A, 0x01));
 
     // The write batch: MODE 0x31 (touch Rt, advanced nibble 1 preserved), press/release 400um
-    // (0.40mm), then SAVE.
+    // (0.40mm). No SAVE order follows (task 19b chunk 4).
     let recs = vec![
         KeyRecord {
             key: 0x1A,
@@ -439,12 +435,8 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
+    // No SAVE order follows the write batch: the vendor was never observed sending one (task
+    // 19b chunk 4), so `write_records` does not either.
 
     // verify_rt's readback: MODE comes back 0x30, not the 0x31 that was written, with
     // press/release otherwise matching exactly.
@@ -488,7 +480,8 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     // ops::rt_off_records' own pre-write MODE read: 0x31 (touch Rt, advanced nibble 1).
     lines.extend(mode_read_lines(0x1A, 0x31));
 
-    // The write batch: MODE 0x11 (touch Single, advanced nibble 1 preserved), then SAVE.
+    // The write batch: MODE 0x11 (touch Single, advanced nibble 1 preserved). No SAVE order
+    // follows: the vendor was never observed sending one (task 19b chunk 4).
     let recs = vec![KeyRecord {
         key: 0x1A,
         layout: layout::MODE,
@@ -499,12 +492,6 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
 
     // verify_rt_off's readback: MODE comes back 0x10, not the 0x11 that was written; press and
     // release are unrelated to this check and left at whatever the board otherwise reports.
@@ -832,12 +819,8 @@ fn restore_happy_path_backs_up_and_verifies() {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
+    // No SAVE order follows the write batch: the vendor was never observed sending one (task
+    // 19b chunk 4), so `write_records` does not either.
 
     // verify_restore reads 'w' back and finds every field matching what was restored.
     lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 600));

@@ -172,7 +172,11 @@ impl Mode {
 
 pub mod order {
     pub const PROTOCOL_VERSION: u8 = 0x01;
-    pub const SAVE: u8 = 0x02; // ORDER_TYPE_SAVING_PARAMETER
+    // ORDER_TYPE_SAVING_PARAMETER. Kept as protocol vocabulary, but never sent by `wh-device`:
+    // across 1224 captured frames covering nine scenarios and five complete write sequences
+    // (task 19b), the vendor web configurator never sends this order. Do not wire it back into
+    // a write path without first measuring what it actually does on this firmware.
+    pub const SAVE: u8 = 0x02;
     pub const FACTORY_RESET: u8 = 0x11; // not exposed in CLI; documented only
     pub const PRECISION: u8 = 0x25;
     pub const KEYBOARD_NAME: u8 = 0x26;

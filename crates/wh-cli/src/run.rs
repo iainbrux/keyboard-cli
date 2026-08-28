@@ -381,22 +381,19 @@ fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// Prints the exact reports `--dry-run` would otherwise send, plus the SAVE frame that never
-/// follows them, to `out`. Propagates a write failure rather than swallowing it (unlike
-/// `best_effort_eprintln`): this is the dry-run path's only output, and it is the one most
-/// likely to be piped into a pager (`wh set ap --keys all --set 1.2 --dry-run | less`), so a
-/// closed reader has to surface as an ordinary `io::Error` that `main.rs` recognises as a
-/// broken pipe, not a panic.
+/// Prints the exact reports `--dry-run` would otherwise send to `out`, and nothing else: a real
+/// run sends only these frames (see `write_records` in `wh-device`, which no longer sends a
+/// SAVE order either), so the dry run must print exactly them and no more, since an operator
+/// compares this output against the captures by eye. Propagates a write failure rather than
+/// swallowing it (unlike `best_effort_eprintln`): this is the dry-run path's only output, and it
+/// is the one most likely to be piped into a pager (`wh set ap --keys all --set 1.2 --dry-run |
+/// less`), so a closed reader has to surface as an ordinary `io::Error` that `main.rs`
+/// recognises as a broken pipe, not a panic.
 fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
     for f in frames {
         writeln!(out, "{}", wh_device::replay::hex(f))?;
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[])?;
-    writeln!(
-        out,
-        "dry run, no writes sent; save-to-flash frame {} would follow",
-        wh_device::replay::hex(&save)
-    )?;
+    writeln!(out, "dry run, no writes sent")?;
     Ok(())
 }
 

@@ -79,17 +79,18 @@ fn read_layout_value<T: Transport>(
     Ok(rec.value)
 }
 
-/// Write `records` in batches and, only if every batch reached the device,
-/// persist them with SAVE. A no-op selection (empty `records`) returns
-/// immediately without writing anything or burning a flash-save cycle.
+/// Write `records` in batches. A no-op selection (empty `records`) returns immediately without
+/// writing anything.
 ///
-/// Uses `roundtrip_many` rather than a hand-rolled send loop so a mid-batch
-/// failure reports how many frames already reached the device (`DeviceError::Batch`)
-/// instead of a bare timeout. A SAVE failure is wrapped separately in
-/// `DeviceError::NotPersisted`, because at that point the writes already
-/// landed on the board (a read-back would see them) but a power cycle would
-/// revert them since they were never flushed to flash.
-fn write_and_save<T: Transport>(
+/// No SAVE order follows the batch: across 1224 captured frames covering nine scenarios and
+/// five complete write sequences, the vendor web configurator never sends one (`cmds::order::SAVE`'s
+/// own comment in `wh-proto`). Either the board persists automatically, or order `0x02` means
+/// something else on this firmware, or it is unimplemented; that is unmeasured, so this function
+/// does not send it and does not claim the board persists automatically.
+///
+/// Uses `roundtrip_many` rather than a hand-rolled send loop so a mid-batch failure reports how
+/// many frames already reached the device (`DeviceError::Batch`) instead of a bare timeout.
+fn write_records<T: Transport>(
     s: &mut Session<T>,
     records: &[KeyRecord],
 ) -> Result<(), DeviceError> {
@@ -97,13 +98,7 @@ fn write_and_save<T: Transport>(
         return Ok(());
     }
     let frames = cmds::write_key_records(records);
-    let applied = frames.len();
     s.roundtrip_many(&frames)?;
-    s.roundtrip(&cmds::cmd_order(cmds::order::SAVE, &[])?)
-        .map_err(|source| DeviceError::NotPersisted {
-            applied,
-            source: Box::new(source),
-        })?;
     Ok(())
 }
 
@@ -217,7 +212,7 @@ pub fn set_rt<T: Transport>(
     release: Um,
 ) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = rt_records(s, usages, press, release)?;
-    write_and_save(s, &records)?;
+    write_records(s, &records)?;
     Ok(records)
 }
 
@@ -231,7 +226,7 @@ pub fn set_rt_off<T: Transport>(
     usages: &[u8],
 ) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = rt_off_records(s, usages)?;
-    write_and_save(s, &records)?;
+    write_records(s, &records)?;
     Ok(records)
 }
 
@@ -256,7 +251,7 @@ pub fn set_ap<T: Transport>(
     usages: &[u8],
     depth: Um,
 ) -> Result<(), DeviceError> {
-    write_and_save(s, &ap_records(usages, depth))
+    write_records(s, &ap_records(usages, depth))
 }
 
 pub fn device_info<T: Transport>(s: &mut Session<T>) -> Result<cmds::DeviceInfo, DeviceError> {
@@ -269,11 +264,11 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
     cmds::parse_global_travel(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
 }
 
-/// Write a whole snapshot back to the board: global travel first, then every per-key record,
-/// then SAVE (via `write_and_save`, which also skips SAVE when `records` is empty). Global
-/// travel goes first so a partial restore that fails partway through the per-key batch still
-/// leaves the board's overall travel consistent with what the caller intended, rather than a
-/// mix of old per-key values against a new global travel.
+/// Write a whole snapshot back to the board: global travel first, then every per-key record
+/// (via `write_records`, which skips the batch entirely when `records` is empty). Global travel
+/// goes first so a partial restore that fails partway through the per-key batch still leaves the
+/// board's overall travel consistent with what the caller intended, rather than a mix of old
+/// per-key values against a new global travel.
 pub fn restore_all<T: Transport>(
     s: &mut Session<T>,
     global: &cmds::GlobalTravel,
@@ -284,7 +279,7 @@ pub fn restore_all<T: Transport>(
         global.press_dead,
         global.release_dead,
     ))?;
-    write_and_save(s, records)
+    write_records(s, records)
 }
 
 #[cfg(test)]
@@ -351,8 +346,10 @@ mod tests {
     }
 
     #[test]
-    fn set_rt_writes_mode_and_both_sensitivities_then_saves() {
-        // expected frames: write [mode, rtp, rtr] per key (one batch), then SAVE order
+    fn set_rt_writes_mode_and_both_sensitivities_and_sends_no_save() {
+        // expected frames: write [mode, rtp, rtr] per key (one batch), then nothing else. If
+        // set_rt sent a SAVE order afterwards, ReplayTransport would reject it against this
+        // exhausted script.
         let recs = vec![
             KeyRecord {
                 key: 0x1A,
@@ -371,7 +368,6 @@ mod tests {
             },
         ];
         let batch = cmds::write_key_records(&recs);
-        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         let mut lines = vec![
             // set_rt first reads current mode to preserve the advanced nibble
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
@@ -384,11 +380,6 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        lines.push(l("out", &save));
-        lines.push(l(
-            "in",
-            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
-        ));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
 
         set_rt(&mut s, &[0x1A], Um(500), Um(500)).unwrap();
@@ -396,13 +387,13 @@ mod tests {
     }
 
     #[test]
-    fn set_rt_over_five_keys_preserves_each_advanced_nibble_and_saves_once() {
+    fn set_rt_over_five_keys_preserves_each_advanced_nibble_and_sends_no_save() {
         // Five keys, each with a different current MODE byte (so each has a
         // different advanced nibble to preserve, including 0x1 and 0xF), to
         // pin that a multi-key call keeps every key's own nibble rather than
-        // reusing the first key's, and that the resulting 15 records (3 per
-        // key) still produce exactly one SAVE regardless of how many 0x23
-        // frames the encoder splits them into.
+        // reusing the first key's. The script ends right after the write batch(es); if set_rt
+        // sent a SAVE order afterwards, ReplayTransport would reject it against this exhausted
+        // script.
         let keys = [0x04u8, 0x05, 0x06, 0x07, 0x08];
         let cur_modes = [0x01u8, 0x1F, 0x22, 0x53, 0x0F];
         let press = Um(400);
@@ -451,12 +442,6 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-        lines.push(l("out", &save));
-        lines.push(l(
-            "in",
-            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
-        ));
 
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_rt(&mut s, &keys, press, release).unwrap();
@@ -820,14 +805,13 @@ mod tests {
     }
 
     #[test]
-    fn set_rt_off_writes_mode_single_then_saves() {
+    fn set_rt_off_writes_mode_single_and_sends_no_save() {
         let rec = KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
             value: 0x10,
         };
         let batch = cmds::write_key_records(&[rec]);
-        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         let mut lines = vec![
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
@@ -839,35 +823,28 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        lines.push(l("out", &save));
-        lines.push(l(
-            "in",
-            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
-        ));
+        // Script ends right after the write batch: if set_rt_off sent a SAVE order afterwards,
+        // ReplayTransport would reject it against this exhausted script.
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_rt_off(&mut s, &[0x1A]).unwrap();
         assert!(s.into_inner().finished());
     }
 
     #[test]
-    fn set_ap_writes_ap_records_then_saves() {
+    fn set_ap_writes_ap_records_and_sends_no_save() {
         let recs = vec![KeyRecord {
             key: 0x1A,
             layout: layout::AP,
             value: 1500,
         }];
         let batch = cmds::write_key_records(&recs);
-        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
         let mut lines = Vec::new();
         for f in &batch {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        lines.push(l("out", &save));
-        lines.push(l(
-            "in",
-            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
-        ));
+        // Script ends right after the write batch: if set_ap sent a SAVE order afterwards,
+        // ReplayTransport would reject it against this exhausted script.
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_ap(&mut s, &[0x1A], Um(1500)).unwrap();
         assert!(s.into_inner().finished());
@@ -894,12 +871,12 @@ mod tests {
     }
 
     #[test]
-    fn write_and_save_uses_roundtrip_many_so_mid_batch_failure_reports_progress() {
+    fn write_records_uses_roundtrip_many_so_mid_batch_failure_reports_progress() {
         // 16 usages -> 16 AP records -> encoder splits into a 14-record and a
         // 2-record frame. Reply only to the first frame, so the second write
         // frame goes unanswered: this must surface as a Batch error with
-        // partial-progress detail, not a bare Timeout, proving write_and_save
-        // now goes through roundtrip_many rather than a hand-rolled loop.
+        // partial-progress detail, not a bare Timeout, proving write_records
+        // goes through roundtrip_many rather than a hand-rolled loop.
         let usages: Vec<u8> = (0x04u8..0x14).collect();
         let records = ap_records(&usages, Um(1500));
         let frames = cmds::write_key_records(&records);
@@ -928,40 +905,9 @@ mod tests {
     }
 
     #[test]
-    fn save_failure_after_successful_writes_is_reported_as_not_persisted() {
-        let rec = KeyRecord {
-            key: 0x1A,
-            layout: layout::AP,
-            value: 1500,
-        };
-        let batch = cmds::write_key_records(&[rec]);
-        let mut lines = Vec::new();
-        for f in &batch {
-            lines.push(l("out", f));
-            lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
-        }
-        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-        lines.push(l("out", &save));
-        // no reply for SAVE: the write succeeded but the save never confirms
-        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let err = set_ap(&mut s, &[0x1A], Um(1500)).unwrap_err();
-        match err {
-            DeviceError::NotPersisted { applied, source } => {
-                assert_eq!(applied, 1);
-                assert!(
-                    matches!(*source, DeviceError::Timeout),
-                    "expected Timeout source, got {source:?}"
-                );
-            }
-            other => panic!("expected NotPersisted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn write_and_save_skips_save_when_there_are_no_records() {
-        // An empty script: if write_and_save sent anything at all (even the
-        // SAVE order) with no usages selected, ReplayTransport would reject
-        // the unexpected send.
+    fn write_records_sends_nothing_when_there_are_no_records() {
+        // An empty script: if write_records sent anything at all with no usages selected,
+        // ReplayTransport would reject the unexpected send.
         let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
         set_ap(&mut s, &[], Um(1500)).unwrap();
         assert!(s.into_inner().finished());
@@ -1103,12 +1049,12 @@ mod tests {
         );
     }
 
-    /// `restore_all` writes the global travel DB record first, then the per-key batch(es),
-    /// then SAVE, mirroring `set_rt`/`set_ap`'s own script shape above (DB write, key
-    /// batches, SAVE) so a restore looks like one coherent write on the wire rather than a
-    /// pile of independent calls.
+    /// `restore_all` writes the global travel DB record first, then the per-key batch(es), and
+    /// sends no SAVE order afterwards, mirroring `set_rt`/`set_ap`'s own script shape above (DB
+    /// write, key batches, no SAVE) so a restore looks like one coherent write on the wire rather
+    /// than a pile of independent calls.
     #[test]
-    fn restore_all_writes_global_travel_then_key_batches_then_saves() {
+    fn restore_all_writes_global_travel_then_key_batches_and_sends_no_save() {
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
@@ -1162,7 +1108,6 @@ mod tests {
         let db_write =
             cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
         let batches = cmds::write_key_records(&recs);
-        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
 
         let mut lines = vec![
             l("out", &db_write),
@@ -1172,11 +1117,8 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        lines.push(l("out", &save));
-        lines.push(l(
-            "in",
-            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
-        ));
+        // Script ends right after the key batches: if restore_all sent a SAVE order afterwards,
+        // ReplayTransport would reject it against this exhausted script.
 
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         restore_all(&mut s, &global, &recs).unwrap();
@@ -1184,9 +1126,9 @@ mod tests {
     }
 
     #[test]
-    fn restore_all_skips_key_batch_and_save_when_there_are_no_records() {
+    fn restore_all_skips_key_batch_when_there_are_no_records() {
         // Only the global travel write should reach the wire; no records means no key batch
-        // and, per write_and_save, no SAVE either.
+        // and, per write_records, no SAVE either.
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
