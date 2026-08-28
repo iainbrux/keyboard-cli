@@ -159,11 +159,11 @@ fn build_script() -> Vec<String> {
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
 
-    // Per-key reads, in matrix order: 'w' (0x1A) then 'a' (0x04). 'w's MODE is 0x0220 (a
-    // non-zero high byte, 0x02, over the RT touch nibble and a zero advanced nibble) so the
+    // Per-key reads, in matrix order: 'w' (0x1A) then 'a' (0x04). 'w's MODE is 0x0230 (a
+    // non-zero high byte, 0x02, over the Rt touch nibble 0x3 and a zero advanced nibble) so the
     // fixture actually exercises `Mode`'s full 16-bit round trip rather than only its low
     // byte, which the wire format always carried and a truncating bug could hide behind.
-    lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 500));
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500));
     lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
 
     lines
@@ -208,9 +208,9 @@ fn dump_json_via_replay() {
     assert_eq!(v["keys"][0]["name"], "w");
     assert_eq!(v["keys"][0]["rt"], true);
     // Pins the `Mode` high-byte fix at the CLI's own boundary, not just in wh-proto's unit
-    // test: the fixture's MODE reply is 0x0220, and mode_raw must come back exactly that, not
-    // truncated to 0x20.
-    assert_eq!(v["keys"][0]["mode_raw"], 0x0220);
+    // test: the fixture's MODE reply is 0x0230, and mode_raw must come back exactly that, not
+    // truncated to 0x30.
+    assert_eq!(v["keys"][0]["mode_raw"], 0x0230);
     assert_eq!(v["keys"][1]["name"], "a");
     assert_eq!(v["keys"][1]["rt"], false);
 
@@ -227,7 +227,7 @@ fn get_rt_via_replay() {
     // Press and release are deliberately distinct (0.40mm / 0.60mm, not the same value
     // twice): equal fixture values can't catch the two being swapped anywhere between the
     // wire reply and the printed line.
-    lines.extend(key_settings_lines(0x1A, 1200, 0x20, 400, 600)); // 'w': rt on
+    lines.extend(key_settings_lines(0x1A, 1200, 0x30, 400, 600)); // 'w': rt on
     let path = write_script("get-rt", &lines);
     let config_home = scratch_config_dir("get-rt");
 
@@ -401,9 +401,9 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
 /// `verify_rt` has to compare the exact MODE value `ops::rt_records` computed (touch nibble,
 /// advanced nibble, and high byte), not just "is the touch mode Rt" plus the two sensitivities.
 /// Here the board's write drops the advanced nibble: before the write, 'w' carries MODE 0x01
-/// (touch Global, advanced nibble 1); `rt_records` reads that and builds a wanted MODE of 0x21
-/// (touch Rt, advanced nibble 1 preserved). The scripted readback instead reports 0x20 (touch
-/// Rt, advanced nibble lost), with the press/release values otherwise exactly right. A
+/// (touch Global, advanced nibble 1); `rt_records` reads that and builds a wanted MODE of 0x31
+/// (touch Rt, nibble 3, advanced nibble 1 preserved). The scripted readback instead reports 0x30
+/// (touch Rt, advanced nibble lost), with the press/release values otherwise exactly right. A
 /// verification that only checked `rt_enabled()` plus press/release would call this a pass; it
 /// has to be a mismatch, because the user's advanced-key configuration on 'w' was just
 /// silently dropped.
@@ -415,13 +415,13 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     // ops::rt_records' own pre-write MODE read: 0x01 (touch Global, advanced nibble 1).
     lines.extend(mode_read_lines(0x1A, 0x01));
 
-    // The write batch: MODE 0x21 (touch Rt, advanced nibble 1 preserved), press/release 400um
+    // The write batch: MODE 0x31 (touch Rt, advanced nibble 1 preserved), press/release 400um
     // (0.40mm), then SAVE.
     let recs = vec![
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
-            value: 0x21,
+            value: 0x31,
         },
         KeyRecord {
             key: 0x1A,
@@ -446,9 +446,9 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
         &[0x00, cmds::order::SAVE, 0x01],
     )));
 
-    // verify_rt's readback: MODE comes back 0x20, not the 0x21 that was written, with
+    // verify_rt's readback: MODE comes back 0x30, not the 0x31 that was written, with
     // press/release otherwise matching exactly.
-    lines.extend(key_settings_lines(0x1A, 1000, 0x20, 400, 400));
+    lines.extend(key_settings_lines(0x1A, 1000, 0x30, 400, 400));
 
     let path = write_script("set-rt-nibble-mismatch", &lines);
     let config_home = scratch_config_dir("set-rt-nibble-mismatch");
@@ -472,26 +472,27 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 
 /// The `verify_rt_off` sibling of the corrupted-advanced-nibble test above: `ops::rt_off_records`
 /// does the same read-modify-write as `ops::rt_records`, just forcing the touch nibble to
-/// Global instead of Rt, so it can lose the advanced nibble the same way. Before the write, 'w'
-/// carries MODE 0x21 (touch Rt, advanced nibble 1); `rt_off_records` reads that and builds a
-/// wanted MODE of 0x01 (touch Global, advanced nibble 1 preserved). The scripted readback
-/// instead reports 0x00 (advanced nibble lost). A verification that only checked
-/// `!rt_enabled()` would call this a pass, since the touch nibble genuinely did flip to
-/// Global; it has to be a mismatch, because 'w's advanced-key configuration was just silently
-/// dropped.
+/// Single (per-key actuation point, nibble 1) instead of Rt, so it can lose the advanced nibble
+/// the same way. Before the write, 'w' carries MODE 0x31 (touch Rt, advanced nibble 1);
+/// `rt_off_records` reads that and builds a wanted MODE of 0x11 (touch Single, advanced nibble 1
+/// preserved: see chunk 3 of task 19b for why the real device writes nibble 1, not 0, here). The
+/// scripted readback instead reports 0x10 (advanced nibble lost). A verification that only
+/// checked `!rt_enabled()` would call this a pass, since the touch nibble genuinely did flip
+/// away from Rt; it has to be a mismatch, because 'w's advanced-key configuration was just
+/// silently dropped.
 #[test]
 fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     let mut lines = matrix_lines(); // resolve_keys
     lines.extend(auto_backup_lines());
 
-    // ops::rt_off_records' own pre-write MODE read: 0x21 (touch Rt, advanced nibble 1).
-    lines.extend(mode_read_lines(0x1A, 0x21));
+    // ops::rt_off_records' own pre-write MODE read: 0x31 (touch Rt, advanced nibble 1).
+    lines.extend(mode_read_lines(0x1A, 0x31));
 
-    // The write batch: MODE 0x01 (touch Global, advanced nibble 1 preserved), then SAVE.
+    // The write batch: MODE 0x11 (touch Single, advanced nibble 1 preserved), then SAVE.
     let recs = vec![KeyRecord {
         key: 0x1A,
         layout: layout::MODE,
-        value: 0x01,
+        value: 0x11,
     }];
     let batch = cmds::write_key_records(&recs);
     for f in &batch {
@@ -505,9 +506,9 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
         &[0x00, cmds::order::SAVE, 0x01],
     )));
 
-    // verify_rt_off's readback: MODE comes back 0x00, not the 0x01 that was written; press and
+    // verify_rt_off's readback: MODE comes back 0x10, not the 0x11 that was written; press and
     // release are unrelated to this check and left at whatever the board otherwise reports.
-    lines.extend(key_settings_lines(0x1A, 1000, 0x00, 400, 400));
+    lines.extend(key_settings_lines(0x1A, 1000, 0x10, 400, 400));
 
     let path = write_script("set-rt-off-nibble-mismatch", &lines);
     let config_home = scratch_config_dir("set-rt-off-nibble-mismatch");
@@ -589,17 +590,17 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
 /// pinning it: `ops::rt_off_records` reads each selected key's current MODE (one read per key,
 /// to preserve the advanced nibble) on top of `resolve_keys`' matrix read, and nothing else.
 /// Both board keys are selected (`--keys all`) so this also pins the exact preview content for
-/// two keys at once: 'w' (0x1A) starts at MODE 0x0221 (touch Rt, advanced nibble 1, high byte
-/// 0x02) and wants 0x0201 after the touch nibble flips to Global; 'a' (0x04) starts at MODE
-/// 0x0027 (touch Rt, advanced nibble 7, high byte 0) and wants 0x0007. The script is exactly
-/// those two matrix-plus-MODE reads; a regression that added `ops::set_rt_off` or a bare SAVE
-/// to this branch would try to send afterwards, and `ReplayTransport` would reject it against
-/// the exhausted script.
+/// two keys at once: 'w' (0x1A) starts at MODE 0x0231 (touch Rt, advanced nibble 1, high byte
+/// 0x02) and wants 0x0211 after the touch nibble flips to Single (per-key actuation point, not
+/// Global: see chunk 3 of task 19b); 'a' (0x04) starts at MODE 0x0037 (touch Rt, advanced
+/// nibble 7, high byte 0) and wants 0x0017. The script is exactly those two matrix-plus-MODE
+/// reads; a regression that added `ops::set_rt_off` or a bare SAVE to this branch would try to
+/// send afterwards, and `ReplayTransport` would reject it against the exhausted script.
 #[test]
 fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     let mut lines = matrix_lines();
-    lines.extend(mode_read_lines(0x1A, 0x0221));
-    lines.extend(mode_read_lines(0x04, 0x0027));
+    lines.extend(mode_read_lines(0x1A, 0x0231));
+    lines.extend(mode_read_lines(0x04, 0x0037));
     let path = write_script("set-rt-off-dry-run", &lines);
     let config_home = scratch_config_dir("set-rt-off-dry-run");
 
@@ -618,19 +619,19 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
 
     // Pins the exact previewed records, not just that something printed: the touch nibble
-    // must flip to Global on both keys while each key's own advanced nibble and high byte
-    // survive independently, the same read-modify-write `verify_rt_off` checks on the real
-    // write path.
+    // must flip to Single (nibble 1, per-key actuation point) on both keys while each key's own
+    // advanced nibble and high byte survive independently, the same read-modify-write
+    // `verify_rt_off` checks on the real write path.
     let expected = cmds::write_key_records(&[
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
-            value: 0x0201,
+            value: 0x0211,
         },
         KeyRecord {
             key: 0x04,
             layout: layout::MODE,
-            value: 0x0007,
+            value: 0x0017,
         },
     ]);
     for frame in &expected {
