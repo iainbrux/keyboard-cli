@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn checksum_matches_known_global_travel_frame() {
-        // 5C 0F 29 C9 — decoded vendor template, payload ends 0x00
+        // 5C 0F 29 C9: decoded vendor template, payload ends 0x00
         let payload = [0x01, 0, 0, 0xF4, 0x01, 0xC8, 0, 0xC8, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(checksum(0x0F, 0x29, &payload), 0xC9);
     }

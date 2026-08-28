@@ -38,7 +38,7 @@ impl<T: Transport> Session<T> {
                 Err(FrameError::DeviceFail(code)) => {
                     return Err(DeviceError::Frame(FrameError::DeviceFail(code)))
                 }
-                _ => continue, // unrelated or malformed input report — skip
+                _ => continue, // unrelated or malformed input report, skip
             }
         }
         Err(DeviceError::Timeout)

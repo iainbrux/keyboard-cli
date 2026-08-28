@@ -4,7 +4,7 @@ use std::time::Duration;
 pub enum DeviceError {
     #[error("no Wallhack keyboard found (is it plugged in?)")]
     NotFound,
-    #[error("could not open the config interface — close the web configurator tab and retry")]
+    #[error("could not open the config interface, close the web configurator tab and retry")]
     Busy(String),
     #[error("timed out waiting for the keyboard to reply")]
     Timeout,
