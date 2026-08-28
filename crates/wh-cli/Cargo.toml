@@ -1,0 +1,19 @@
+[package]
+name = "wh-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wh"
+path = "src/main.rs"
+
+[dependencies]
+wh-proto = { path = "../wh-proto" }
+wh-device = { path = "../wh-device" }
+wh-config = { path = "../wh-config" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde_json.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"

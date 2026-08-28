@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/wh-proto", "crates/wh-device", "crates/wh-config", "crates/wh-cli"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"

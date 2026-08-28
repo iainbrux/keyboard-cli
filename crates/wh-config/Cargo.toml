@@ -1,0 +1,12 @@
+[package]
+name = "wh-config"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wh-proto = { path = "../wh-proto" }
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+directories = "5"
