@@ -116,9 +116,11 @@ pub fn rt_records<T: Transport>(
     let mut records = Vec::new();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
+        let cur_mode = Mode::from_value(cur_value);
         let mode = Mode {
             touch: TouchMode::Rt,
-            advanced: Mode::from_value(cur_value).advanced,
+            advanced: cur_mode.advanced,
+            high: cur_mode.high,
         };
         records.push(KeyRecord {
             key: u,
@@ -149,9 +151,11 @@ pub fn rt_off_records<T: Transport>(
     let mut records = Vec::new();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
+        let cur_mode = Mode::from_value(cur_value);
         let mode = Mode {
             touch: TouchMode::Global,
-            advanced: Mode::from_value(cur_value).advanced,
+            advanced: cur_mode.advanced,
+            high: cur_mode.high,
         };
         records.push(KeyRecord {
             key: u,
@@ -339,10 +343,11 @@ mod tests {
                 "in",
                 &rf(cmds::cmd::KEY, &[0x00, k, layout::MODE, m, 0x00]),
             ));
-            let advanced = Mode::from_value(m as u16).advanced;
+            let cur_mode = Mode::from_value(m as u16);
             let new_mode = Mode {
                 touch: TouchMode::Rt,
-                advanced,
+                advanced: cur_mode.advanced,
+                high: cur_mode.high,
             }
             .value();
             expected.push(KeyRecord {
@@ -421,6 +426,55 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
+    /// The reply's high byte (`payload[4]`, the wire byte `parse_key_reply` puts in
+    /// `KeyRecord.value`'s upper 8 bits, distinct from the low byte carrying the touch and
+    /// advanced nibbles) must survive a read-modify-write intact. Reply lo `0x31` (touch
+    /// nibble `0x3` -> `Unknown(3)`, advanced nibble `0x1`), hi `0x02`: `rt_records` forces the
+    /// touch nibble to `Rt` (`0x2`) while preserving the advanced nibble (`0x1`) and the high
+    /// byte (`0x02`), giving `0x0221`.
+    ///
+    /// That expected value is hand-written as a literal below rather than built by calling
+    /// `Mode { .. }.value()` again the way `rt_records` itself does: a test that reconstructs
+    /// its expectation through the same method under test would inherit any bug in that method
+    /// identically on both sides and assert nothing. This is the same shape of gap that let
+    /// the pre-fix `Mode` truncate its high byte silently: see `wh-proto`'s
+    /// `mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte`, which pins
+    /// `Mode` itself the same way, and this test's sibling below for `rt_off_records`.
+    #[test]
+    fn rt_records_preserves_the_high_byte_of_mode_across_a_read_modify_write() {
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x31, 0x02]),
+            ),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_records(&mut s, &[0x1A], Um(500), Um(600)).unwrap();
+        assert_eq!(
+            recs,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x0221,
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 500
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 600
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
     #[test]
     fn rt_off_records_sets_touch_mode_global_preserving_advanced_nibble() {
         // current mode byte 0x27: touch Rt(2), advanced nibble 7
@@ -440,6 +494,36 @@ mod tests {
                 key: 0x1A,
                 layout: layout::MODE,
                 value: 0x07
+            }]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The `rt_off_records` sibling of
+    /// `rt_records_preserves_the_high_byte_of_mode_across_a_read_modify_write` above: reply lo
+    /// `0x27` (touch `Rt`, advanced nibble `0x7`), hi `0x02`. `rt_off_records` forces the touch
+    /// nibble to `Global` (`0x0`) while preserving the advanced nibble (`0x7`) and the high
+    /// byte (`0x02`), giving `0x0207`, hand-written for the same reason: an expectation built
+    /// by calling `Mode { .. }.value()` again would share any bug in that method with the code
+    /// under test instead of catching it.
+    #[test]
+    fn rt_off_records_preserves_the_high_byte_of_mode_across_a_read_modify_write() {
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x27, 0x02]),
+            ),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_off_records(&mut s, &[0x1A]).unwrap();
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x0207,
             }]
         );
         assert!(s.into_inner().finished());
@@ -631,12 +715,15 @@ mod tests {
 
     #[test]
     fn read_key_settings_reads_four_layouts() {
+        // Press and release are deliberately distinct (500 vs 650, not the same value twice)
+        // and both are asserted below: equal values, or asserting only one of the two fields,
+        // can't catch the pair being swapped anywhere between the wire reply and `KeySettings`.
         let mut lines = Vec::new();
         for (lid, val) in [
             (layout::AP, 1200u16),
             (layout::MODE, 0x20),
             (layout::RT_PRESS, 500),
-            (layout::RT_RELEASE, 500),
+            (layout::RT_RELEASE, 650),
         ] {
             lines.push(l("out", &cmds::read_key_layout(0x1A, lid)));
             lines.push(l(
@@ -652,6 +739,7 @@ mod tests {
         assert_eq!(ks.ap, Um(1200));
         assert!(ks.rt_enabled());
         assert_eq!(ks.rt_press, Um(500));
+        assert_eq!(ks.rt_release, Um(650));
     }
 
     #[test]

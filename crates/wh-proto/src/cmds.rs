@@ -123,6 +123,14 @@ pub enum TouchMode {
 pub struct Mode {
     pub touch: TouchMode,
     pub advanced: u8,
+    /// The high byte (bits 8..16) of the raw 16-bit Layout_Mode value, preserved verbatim.
+    /// Nothing in this protocol interprets these bits, `touch`/`advanced` only ever read the
+    /// low byte, but `from_value`/`value` are relied on elsewhere (the CLI's `dump`/`restore`
+    /// round trip) to be a lossless identity on a value nobody has modified, and silently
+    /// clearing this byte on every pass through `Mode` would make that untrue. Set to 0 when
+    /// building a `Mode` from scratch, i.e. one with no prior device value to preserve; carry
+    /// it forward from `Mode::from_value(cur).high` on any read-modify-write.
+    pub high: u8,
 }
 
 impl Mode {
@@ -138,6 +146,7 @@ impl Mode {
         Mode {
             touch,
             advanced: b & 0x0F,
+            high: (v >> 8) as u8,
         }
     }
     pub fn value(self) -> u16 {
@@ -147,7 +156,8 @@ impl Mode {
             TouchMode::Rt => 0x2,
             TouchMode::Unknown(n) => n & 0x0F,
         };
-        ((t << 4) | (self.advanced & 0x0F)) as u16
+        let low = (t << 4) | (self.advanced & 0x0F);
+        ((self.high as u16) << 8) | low as u16
     }
 }
 
@@ -339,6 +349,7 @@ mod tests {
         let g = Mode {
             touch: TouchMode::Global,
             advanced: 0x03,
+            high: 0,
         };
         assert_eq!(g.value(), 0x03);
     }
@@ -349,6 +360,21 @@ mod tests {
         assert_eq!(m.touch, TouchMode::Unknown(0x5));
         assert_eq!(m.advanced, 0x03);
         assert_eq!(m.value(), 0x53);
+    }
+
+    /// `from_value` used to truncate to `v & 0xFF` before `value()` rebuilt a `u16`, so any
+    /// high byte the device actually sent (a real 16-bit Layout_Mode value, not merely a byte
+    /// with 8 spare bits) was silently cleared on every pass through `Mode`. `wh-cli`'s
+    /// `dump`/`restore` round trip depends on this being a true identity for a value nobody
+    /// has modified.
+    #[test]
+    fn mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte() {
+        let v = 0x0231u16; // high byte 0x02, touch nibble 0x3 (Unknown), advanced nibble 0x1
+        let m = Mode::from_value(v);
+        assert_eq!(m.high, 0x02);
+        assert_eq!(m.touch, TouchMode::Unknown(0x3));
+        assert_eq!(m.advanced, 0x01);
+        assert_eq!(m.value(), v);
     }
 
     #[test]

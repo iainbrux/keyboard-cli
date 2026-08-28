@@ -117,14 +117,23 @@ pub fn name_for_usage(usage: u8) -> Option<&'static str> {
     TABLE.iter().find(|&&(_, u)| u == usage).map(|&(k, _)| k)
 }
 
+/// The names `builtin_group` recognizes. Kept as the single source of truth so a caller
+/// that needs to list, print, or check membership against the builtin groups never has to
+/// maintain a second copy that can drift the moment a group is added or renamed.
+pub const BUILTIN_GROUPS: &[&str] = &["wasd", "arrows", "mods"];
+
 pub fn builtin_group(name: &str) -> Option<Vec<u8>> {
-    let names: &[&str] = match name.to_ascii_lowercase().as_str() {
+    let lname = name.to_ascii_lowercase();
+    if !BUILTIN_GROUPS.contains(&lname.as_str()) {
+        return None;
+    }
+    let names: &[&str] = match lname.as_str() {
         "wasd" => &["w", "a", "s", "d"],
         "arrows" => &["up", "down", "left", "right"],
         "mods" => &[
             "lctrl", "lshift", "lalt", "lgui", "rctrl", "rshift", "ralt", "rgui",
         ],
-        _ => return None,
+        _ => unreachable!("BUILTIN_GROUPS and builtin_group's match are out of sync"),
     };
     Some(names.iter().map(|n| usage_for_name(n).unwrap()).collect())
 }
@@ -176,6 +185,20 @@ mod tests {
         assert_eq!(builtin_group("arrows"), Some(vec![0x52, 0x51, 0x50, 0x4F]));
         assert_eq!(builtin_group("mods").map(|v| v.len()), Some(8));
         assert_eq!(builtin_group("none"), None);
+    }
+
+    #[test]
+    fn builtin_groups_const_matches_builtin_group_fn() {
+        // Every name BUILTIN_GROUPS claims to recognize must actually resolve, and no other
+        // name may sneak past the guard and still resolve. This is what keeps the two in sync
+        // once someone adds a group without updating both spots.
+        for &name in BUILTIN_GROUPS {
+            assert!(
+                builtin_group(name).is_some(),
+                "BUILTIN_GROUPS lists '{name}' but builtin_group does not recognize it"
+            );
+        }
+        assert_eq!(builtin_group("not-a-builtin-group"), None);
     }
 
     #[test]

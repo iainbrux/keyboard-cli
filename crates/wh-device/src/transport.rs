@@ -34,3 +34,15 @@ pub trait Transport {
     fn send(&mut self, report: &[u8; 64]) -> Result<(), DeviceError>;
     fn recv(&mut self, timeout: Duration) -> Result<[u8; 64], DeviceError>;
 }
+
+/// Lets a `Box<dyn Transport>` stand in for `T: Transport`, so callers that need to pick
+/// between concrete transports at runtime (the real device vs a replay script) can hand
+/// `Session<Box<dyn Transport>>` a single trait object instead of monomorphizing over both.
+impl Transport for Box<dyn Transport> {
+    fn send(&mut self, report: &[u8; 64]) -> Result<(), DeviceError> {
+        (**self).send(report)
+    }
+    fn recv(&mut self, timeout: Duration) -> Result<[u8; 64], DeviceError> {
+        (**self).recv(timeout)
+    }
+}
