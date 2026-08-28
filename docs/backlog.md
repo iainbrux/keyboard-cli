@@ -67,6 +67,32 @@ that keys belong to. Same wire format, different abstraction, and the TUI would 
 **Prerequisite.** Not until the write path has been exercised against hardware. A UI that makes it
 easy to change many settings quickly is the worst place to discover a write bug.
 
+### A loading spinner on CLI commands
+
+**The idea.** When a command runs, show a brief spinner cycling `|`, `/`, `-`, `\\` for something in
+the region of 100 to 300ms, so a write feels like it went somewhere rather than returning instantly.
+The board really is that fast; this is presentation.
+
+**Worth getting right rather than sprinkling in.**
+
+- The delay must not gate the actual work. Run the real operation, then hold the frame briefly, or
+  spin while it runs and stop when it finishes. A cosmetic pause that delays a write to hardware is
+  the wrong way round.
+- It must never imply success. If the command fails, the spinner should stop on the failure rather
+  than completing its cycle first and then printing an error.
+- Suppress it when stdout is not a terminal. We already have that check: Task 17 added
+  `refuse_if_not_terminal` and the picker uses `std::io::stdout().is_terminal()`, so the machinery
+  exists. A spinner in a redirected file or a pipeline is noise, and every frame would land in
+  someone's captured output.
+- Consider whether it should be suppressed for read-only commands. `wh get rt --keys w` returning
+  instantly is a feature; `wh set ap` taking a moment reads as the board thinking about it.
+- A `--no-spinner` or a respect for `NO_COLOR`-style conventions is probably worth having for anyone
+  scripting against it.
+
+**In the TUI.** Open question, and it may not belong there at all. A TUI redraws continuously, so a
+modal spinner would be a different thing from a one-shot CLI flourish. Decide when the TUI exists
+rather than now.
+
 ## Protocol gaps
 
 These are known unknowns from the hardware session, listed so nobody re-derives them.
