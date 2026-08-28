@@ -113,9 +113,10 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
 /// advanced-key mode in the low nibble (recdata.getLayoutModelRecdata).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchMode {
-    Global, // 0x0
-    Single, // 0x1
-    Rt,     // 0x2
+    Global,        // 0x0
+    Single,        // 0x1
+    Rt,            // 0x2
+    Unknown(u8),   // any other nibble; preserved so read-modify-write is lossless
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,10 +128,12 @@ pub struct Mode {
 impl Mode {
     pub fn from_value(v: u16) -> Self {
         let b = (v & 0xFF) as u8;
-        let touch = match (b >> 4) & 0x0F {
+        let nibble = (b >> 4) & 0x0F;
+        let touch = match nibble {
+            0x0 => TouchMode::Global,
             0x1 => TouchMode::Single,
             0x2 => TouchMode::Rt,
-            _ => TouchMode::Global,
+            n => TouchMode::Unknown(n),
         };
         Mode { touch, advanced: b & 0x0F }
     }
@@ -139,6 +142,7 @@ impl Mode {
             TouchMode::Global => 0x0u8,
             TouchMode::Single => 0x1,
             TouchMode::Rt => 0x2,
+            TouchMode::Unknown(n) => n & 0x0F,
         };
         ((t << 4) | (self.advanced & 0x0F)) as u16
     }
@@ -154,11 +158,13 @@ pub mod order {
     pub const CONFIG: u8 = 0x70;
 }
 
-pub fn cmd_order(order_id: u8, h_args: &[u8]) -> [u8; REPORT_LEN] {
+/// `h_args` is caller-supplied and unbounded, unlike the other encoders in
+/// this module, so overlong input is reported rather than panicking.
+pub fn cmd_order(order_id: u8, h_args: &[u8]) -> Result<[u8; REPORT_LEN], crate::frame::FrameError> {
     let mut p = vec![order_id];
     p.extend_from_slice(h_args);
     p.extend([0xFF, 0xFF]);
-    frame(cmd::CMD, &p).expect("small")
+    frame(cmd::CMD, &p)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -307,15 +313,29 @@ mod tests {
     }
 
     #[test]
+    fn mode_unknown_touch_nibble_round_trips_losslessly() {
+        let m = Mode::from_value(0x53);
+        assert_eq!(m.touch, TouchMode::Unknown(0x5));
+        assert_eq!(m.advanced, 0x03);
+        assert_eq!(m.value(), 0x53);
+    }
+
+    #[test]
     fn cmd_order_layout() {
         // CMDPack: [order, ...h_args, 0xFF, 0xFF]
-        let f = cmd_order(order::SAVE, &[]);
+        let f = cmd_order(order::SAVE, &[]).unwrap();
         assert_eq!(f[2], cmd::CMD);
         assert_eq!(f[1], 3);
         assert_eq!(&f[4..7], &[0x02, 0xFF, 0xFF]);
 
-        let f2 = cmd_order(order::CONFIG, &[0x01]);
+        let f2 = cmd_order(order::CONFIG, &[0x01]).unwrap();
         assert_eq!(&f2[4..8], &[0x70, 0x01, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn cmd_order_rejects_oversize_h_args() {
+        // payload = 1 + h_args.len() + 2 must stay within frame()'s 60-byte cap.
+        assert!(cmd_order(order::SAVE, &[0u8; 58]).is_err());
     }
 
     #[test]
@@ -354,8 +374,10 @@ mod tests {
         payload[24 + 5] = 0x1A; // row 3 col 5 = 'w'
         let rows = parse_defkey(&payload).unwrap();
         assert_eq!(rows[0].row, 2);
+        assert_eq!(rows[0].keys.len(), 1);
         assert_eq!(rows[0].keys[0], (0, 0x04));
         assert_eq!(rows[1].row, 3);
+        assert_eq!(rows[1].keys.len(), 1);
         assert_eq!(rows[1].keys[0], (5, 0x1A));
     }
 }
