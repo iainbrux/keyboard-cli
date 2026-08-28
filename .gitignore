@@ -6,7 +6,6 @@ research/deob2.js
 research/strings.json
 research/blob.json
 /target
-# The operator's local copy of the device serial, used by golden.rs's
-# find_serial_leaks to re-verify capture/hid-shim.js's redaction. Never
-# committed: see capture/README.md, "Redaction".
-capture/serial.local
+# The operator's own device traffic, captured at the keyboard with
+# capture/hid-shim.js. Stays local: see capture/README.md.
+/captures/
