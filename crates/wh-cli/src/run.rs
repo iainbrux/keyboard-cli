@@ -1,20 +1,203 @@
-//! Command dispatch. `keys list` and `keys group` work end to end here; every command that
-//! needs the physical keyboard is stubbed until Tasks 15 and 16 wire up a real `Session`.
+//! Command dispatch. `keys list`, `keys group`, `dump` and `get` work end to end here; the
+//! write commands are stubbed until Task 16 wires them up over the same `Session` plumbing.
 
 use crate::cli::{Cli, Cmd, KeysWhat};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use wh_config::store::Store;
+use wh_device::ops;
+use wh_device::session::Session;
+use wh_device::transport::Transport;
 use wh_proto::select::Selector;
 
 pub fn run(cli: Cli) -> Result<()> {
+    // Opened once, here, regardless of which command runs: `Store::open` only resolves a
+    // path, it does not touch disk, so it is cheap even for commands that never read it.
+    // Keeping the one call site at the top means `resolve_keys` and friends have to take a
+    // `&Store` rather than reaching for the user's real config directory a second time.
+    let store = Store::open()?;
     match cli.cmd {
-        Cmd::Keys { what } => {
-            let store = Store::open()?;
-            keys(what, &store)
-        }
+        Cmd::Keys { what } => keys(what, &store),
+        Cmd::Dump { json } => dump(json),
+        Cmd::Get { what } => get(what, &store),
         other => device_cmd(other),
     }
+}
+
+/// Open the real device on Windows, or a replay script when WH_REPLAY is set.
+fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
+    let t: Box<dyn Transport> = if let Ok(path) = std::env::var("WH_REPLAY") {
+        let text = std::fs::read_to_string(&path).context("reading WH_REPLAY script")?;
+        Box::new(wh_device::replay::ReplayTransport::from_jsonl(&text)?)
+    } else {
+        #[cfg(windows)]
+        {
+            Box::new(wh_device::hid::HidTransport::open()?)
+        }
+        #[cfg(not(windows))]
+        {
+            bail!(
+                "the keyboard is attached to the Windows host: run the Windows build \
+                 (bin/wh), or set WH_REPLAY=<capture.jsonl> to use a replay script instead"
+            );
+        }
+    };
+    let mut s = Session::new(t);
+    f(&mut s)
+}
+
+fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
+    let info = ops::device_info(s)?;
+    let global = ops::global_travel(s)?;
+    let matrix = ops::read_matrix(s)?;
+    let mut keys = Vec::new();
+    for usage in matrix {
+        let ks = ops::read_key_settings(s, usage)?;
+        keys.push(wh_config::snapshot::KeyToml {
+            name: wh_proto::keys::name_for_usage(usage)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("0x{usage:02X}")),
+            usage,
+            ap_mm: ks.ap.to_mm(),
+            rt: ks.rt_enabled(),
+            rt_press_mm: ks.rt_press.to_mm(),
+            rt_release_mm: ks.rt_release.to_mm(),
+            mode_raw: ks.mode.value(),
+        });
+    }
+    Ok(wh_config::snapshot::Snapshot {
+        firmware: info.firmware,
+        serial: info.serial,
+        taken_at: httpdate_now()?,
+        global: wh_config::snapshot::GlobalToml {
+            travel_mm: global.travel.to_mm(),
+            press_dead_mm: global.press_dead.to_mm(),
+            release_dead_mm: global.release_dead.to_mm(),
+        },
+        keys,
+    })
+}
+
+/// Returns the current time as an RFC3339 UTC timestamp, e.g. `"2026-08-28T12:00:00Z"`, the
+/// shape `wh-config`'s `Snapshot::taken_at` documents and its own roundtrip test uses. A
+/// `unix:<secs>` string would technically be "informational" too, but this field exists so a
+/// human can pick the right backup out of twenty others during a recovery, and a raw epoch
+/// count is not that.
+///
+/// Implemented inline with the standard days-from-civil algorithm rather than by adding a
+/// date crate: wh-cli cross-compiles for Windows, and a new dependency has to earn surviving
+/// that build. See `civil_from_days` for the algorithm itself.
+fn httpdate_now() -> Result<String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is set before the Unix epoch")?
+        .as_secs();
+    Ok(rfc3339_from_unix_secs(secs))
+}
+
+fn rfc3339_from_unix_secs(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let (y, mo, d) = civil_from_days(days);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+/// Howard Hinnant's days-from-civil / civil-from-days algorithm: converts a day count since
+/// the Unix epoch (1970-01-01) into a proleptic-Gregorian (year, month, day). See
+/// http://howardhinnant.github.io/date_algorithms.html for the derivation; this is a direct
+/// port, not a reinvention, chosen because it is exact for every day this side of year 0 and
+/// needs no lookup tables.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+fn dump(json: bool) -> Result<()> {
+    with_session(|s| {
+        let snap = snapshot_from_device(s)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&snap)?);
+        } else {
+            println!("{} (fw {})", snap.serial, snap.firmware);
+            println!(
+                "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
+                snap.global.travel_mm, snap.global.press_dead_mm, snap.global.release_dead_mm
+            );
+            println!(
+                "{:<12} {:>6} {:>4} {:>8} {:>8}",
+                "key", "ap", "rt", "press", "release"
+            );
+            for k in &snap.keys {
+                println!(
+                    "{:<12} {:>5.2}m {:>4} {:>7.2}m {:>7.2}m",
+                    k.name,
+                    k.ap_mm,
+                    if k.rt { "on" } else { "off" },
+                    k.rt_press_mm,
+                    k.rt_release_mm
+                );
+            }
+        }
+        Ok(())
+    })
+}
+
+fn resolve_keys<T: Transport>(
+    s: &mut Session<T>,
+    arg: &crate::cli::KeysArg,
+    store: &Store,
+) -> Result<Vec<u8>> {
+    let universe = ops::read_matrix(s)?;
+    if arg.pick {
+        return crate::picker::pick(&universe);
+    }
+    // Clap's `required_unless_present = "pick"` makes this unreachable today, but that
+    // guarantee lives in cli.rs, a different file from here, so a later change to the clap
+    // attributes should not be able to turn a missing selector into a crash.
+    let keys = arg
+        .keys
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("no key selector given: pass --keys or --pick"))?;
+    let sel = Selector::parse(keys)?;
+    let usages = sel.resolve(&universe, &store.groups()?)?;
+    if usages.is_empty() {
+        bail!("selector matches no keys on this board");
+    }
+    Ok(usages)
+}
+
+fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
+    with_session(|s| {
+        let (arg, show_rt) = match &what {
+            crate::cli::GetWhat::Rt(a) => (a, true),
+            crate::cli::GetWhat::Ap(a) => (a, false),
+        };
+        for usage in resolve_keys(s, arg, store)? {
+            let ks = ops::read_key_settings(s, usage)?;
+            let name = wh_proto::keys::name_for_usage(usage).unwrap_or("?");
+            if show_rt {
+                println!(
+                    "{name}: rt {} press {:.2}mm release {:.2}mm",
+                    if ks.rt_enabled() { "on" } else { "off" },
+                    ks.rt_press.to_mm(),
+                    ks.rt_release.to_mm()
+                );
+            } else {
+                println!("{name}: ap {:.2}mm", ks.ap.to_mm());
+            }
+        }
+        Ok(())
+    })
 }
 
 fn keys(what: KeysWhat, store: &Store) -> Result<()> {
@@ -223,5 +406,42 @@ mod tests {
             assert!(store.groups().unwrap().contains_key(name));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn rfc3339_at_the_unix_epoch() {
+        assert_eq!(rfc3339_from_unix_secs(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn rfc3339_on_a_leap_day() {
+        // 2020-02-29T00:00:00Z; 2020 is a leap year, so this date exists at all only if the
+        // days-from-civil arithmetic gets the leap rule right.
+        assert_eq!(
+            rfc3339_from_unix_secs(1_582_934_400),
+            "2020-02-29T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn rfc3339_crosses_a_month_boundary_right_after_a_leap_day() {
+        // The day immediately after the leap day above: 2020-03-01T00:00:00Z. An off-by-one
+        // in the leap-year handling would show up here as 2020-02-30 or 2020-03-02, not as an
+        // obviously wrong year, which is exactly the kind of mistake that stays invisible
+        // until someone reads a backup filed under the wrong day.
+        assert_eq!(
+            rfc3339_from_unix_secs(1_583_020_800),
+            "2020-03-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn rfc3339_carries_the_time_of_day() {
+        // 2026-08-28T12:34:56Z, so the test also pins that hours/minutes/seconds are not
+        // silently dropped or truncated to midnight.
+        assert_eq!(
+            rfc3339_from_unix_secs(1_787_920_496),
+            "2026-08-28T12:34:56Z"
+        );
     }
 }
