@@ -116,9 +116,11 @@ pub fn rt_records<T: Transport>(
     let mut records = Vec::new();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
+        let cur_mode = Mode::from_value(cur_value);
         let mode = Mode {
             touch: TouchMode::Rt,
-            advanced: Mode::from_value(cur_value).advanced,
+            advanced: cur_mode.advanced,
+            high: cur_mode.high,
         };
         records.push(KeyRecord {
             key: u,
@@ -149,9 +151,11 @@ pub fn rt_off_records<T: Transport>(
     let mut records = Vec::new();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
+        let cur_mode = Mode::from_value(cur_value);
         let mode = Mode {
             touch: TouchMode::Global,
-            advanced: Mode::from_value(cur_value).advanced,
+            advanced: cur_mode.advanced,
+            high: cur_mode.high,
         };
         records.push(KeyRecord {
             key: u,
@@ -339,10 +343,11 @@ mod tests {
                 "in",
                 &rf(cmds::cmd::KEY, &[0x00, k, layout::MODE, m, 0x00]),
             ));
-            let advanced = Mode::from_value(m as u16).advanced;
+            let cur_mode = Mode::from_value(m as u16);
             let new_mode = Mode {
                 touch: TouchMode::Rt,
-                advanced,
+                advanced: cur_mode.advanced,
+                high: cur_mode.high,
             }
             .value();
             expected.push(KeyRecord {

@@ -1,6 +1,6 @@
-//! End-to-end test of `wh dump --json` over a replay script, exercising the full
-//! `snapshot_from_device` pipeline (SYNC, global travel, the key matrix, then per-key reads)
-//! without a physical keyboard, via the `WH_REPLAY` seam.
+//! End-to-end tests of `wh dump` and `wh get` over replay scripts, exercising the full
+//! `snapshot_from_device` and `resolve_keys` pipelines without a physical keyboard, via the
+//! `WH_REPLAY` seam.
 
 use std::process::Command;
 use wh_device::replay::hex;
@@ -18,6 +18,18 @@ fn reply(cmd: u8, payload: &[u8]) -> [u8; 64] {
     wh_proto::frame::frame(cmd, payload).unwrap()
 }
 
+/// A scratch directory unique to this test and this process, mirroring the `test_dir` helper
+/// `run.rs`'s own unit tests use. Each test that spawns `wh` gets its own `XDG_CONFIG_HOME`
+/// rather than sharing the bare system temp directory: a shared config directory is harmless
+/// for `dump`, which writes nothing, but `wh keys group` here writes a real `config.toml`, and
+/// a later task's backup/restore tests would rotate a shared `backups/` directory across
+/// concurrent or repeated runs, deleting another test's fixtures out from under it.
+fn scratch_config_dir(tag: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("wh-cli-it-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&p);
+    p
+}
+
 /// A DEFKEY reply payload for one row pair: `[rw, row_a, 21 usages, row_b, 21 usages]`, with
 /// at most the first column of each row populated. `None` leaves a row empty (no keys), which
 /// is what the second and third row pairs of this two-key board need.
@@ -32,6 +44,25 @@ fn defkey_payload(row_a: u8, row_b: u8, a_col0: Option<u8>, b_col0: Option<u8>) 
         payload[24] = u;
     }
     payload
+}
+
+/// The three DEFKEY roundtrips that make up `ops::read_matrix` for a two-key board ('w' at
+/// usage 0x1A, 'a' at usage 0x04): only the first row pair carries keys, the other two are
+/// empty. Shared by every test in this file that needs a matrix read, so `dump`'s full script
+/// and `get`'s narrower ones can't silently drift apart on what "the board" looks like.
+fn matrix_lines() -> Vec<String> {
+    let mut lines = Vec::new();
+    let row_pairs = [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)];
+    for (i, &(a, b)) in row_pairs.iter().enumerate() {
+        lines.push(out_line(&cmds::read_defkey_rows(a, b)));
+        let payload = if i == 0 {
+            defkey_payload(a, b, Some(0x1A), Some(0x04)) // row a col0 = 'w', row b col0 = 'a'
+        } else {
+            defkey_payload(a, b, None, None)
+        };
+        lines.push(in_line(&reply(cmds::cmd::DEFKEY, &payload)));
+    }
+    lines
 }
 
 /// One key's [AP, MODE, RT_PRESS, RT_RELEASE] roundtrips, in the exact order
@@ -63,13 +94,12 @@ fn key_settings_lines(
     lines
 }
 
-/// Composes, in order, exactly the frames `snapshot_from_device` sends against a two-key
-/// board ('w' at usage 0x1A, 'a' at usage 0x04): the SYNC request and info reply, the global
-/// travel DB read and reply, the three DEFKEY roundtrips that make up the key matrix (only the
-/// first row pair carries keys), then four KEY reads and replies per key. Built with
+/// Composes, in order, exactly the frames `snapshot_from_device` sends against the two-key
+/// board: the SYNC request and info reply, the global travel DB read and reply, the matrix's
+/// three DEFKEY roundtrips, then four KEY reads and replies per key. Built with
 /// `wh_proto::cmds` encoders, not hand-written hex, so the test breaks if an encoder changes
 /// rather than silently drifting from it.
-fn build_script() -> String {
+fn build_script() -> Vec<String> {
     let mut lines = Vec::new();
 
     // SYNC: device_info
@@ -84,37 +114,40 @@ fn build_script() -> String {
     let db_payload = [0x00, 0, 0, 0xF4, 0x01, 0xC8, 0x00, 0xC8, 0x00]; // 500/200/200 um
     lines.push(in_line(&reply(cmds::cmd::DB, &db_payload)));
 
-    // 3 DEFKEY roundtrips: only the first row pair carries keys, 'w' then 'a'.
-    let row_pairs = [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)];
-    for (i, &(a, b)) in row_pairs.iter().enumerate() {
-        lines.push(out_line(&cmds::read_defkey_rows(a, b)));
-        let payload = if i == 0 {
-            defkey_payload(a, b, Some(0x1A), Some(0x04)) // row a col0 = 'w', row b col0 = 'a'
-        } else {
-            defkey_payload(a, b, None, None)
-        };
-        lines.push(in_line(&reply(cmds::cmd::DEFKEY, &payload)));
-    }
+    lines.extend(matrix_lines());
 
     // Per-key reads, in matrix order: 'w' (0x1A) then 'a' (0x04).
     lines.extend(key_settings_lines(0x1A, 1200, 0x20, 500, 500));
     lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
 
-    lines.join("\n")
+    lines
+}
+
+fn write_script(tag: &str, lines: &[String]) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("wh-{tag}-{}.jsonl", std::process::id()));
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
+}
+
+fn run_wh(
+    args: &[&str],
+    replay: &std::path::Path,
+    config_home: &std::path::Path,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_wh"))
+        .env("WH_REPLAY", replay)
+        .env("XDG_CONFIG_HOME", config_home)
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 #[test]
 fn dump_json_via_replay() {
-    let script = build_script();
-    let path = std::env::temp_dir().join(format!("wh-dump-{}.jsonl", std::process::id()));
-    std::fs::write(&path, script).unwrap();
+    let path = write_script("dump", &build_script());
+    let config_home = scratch_config_dir("dump-json");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_wh"))
-        .env("WH_REPLAY", &path)
-        .env("XDG_CONFIG_HOME", std::env::temp_dir())
-        .args(["dump", "--json"])
-        .output()
-        .unwrap();
+    let out = run_wh(&["dump", "--json"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -132,4 +165,76 @@ fn dump_json_via_replay() {
     assert_eq!(v["keys"][1]["rt"], false);
 
     std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh get rt --keys w`: pins that `resolve_keys` and `get` work end to end over a replay
+/// script, not just `dump`. Without this, nothing in the committed suite ever exercises
+/// `resolve_keys` for a *present* key, and Task 16's write commands build directly on it.
+#[test]
+fn get_rt_via_replay() {
+    let mut lines = matrix_lines();
+    lines.extend(key_settings_lines(0x1A, 1200, 0x20, 500, 500)); // 'w': rt on, 0.50/0.50mm
+    let path = write_script("get-rt", &lines);
+    let config_home = scratch_config_dir("get-rt");
+
+    let out = run_wh(&["get", "rt", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("w: rt on press 0.50mm release 0.50mm"),
+        "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// A selector that resolves to a real, stored group, but one whose keys are all absent from
+/// this board's matrix, must fail loudly rather than silently write nothing or, worse, write
+/// to keys the board doesn't have. This pins the specific guard at the end of `resolve_keys`
+/// (`if usages.is_empty() { bail!(...) }`): if a later change dropped that check or the
+/// universe filter stopped applying, `wh set` on top of the same `resolve_keys` would burn a
+/// flash SAVE cycle on a selector that should have refused to run at all.
+#[test]
+fn get_on_a_group_absent_from_the_board_is_rejected() {
+    let config_home = scratch_config_dir("offboard-group");
+
+    // Define the group against the CLI's own static key table (no device needed for this
+    // half), the same way a user would with `wh keys group`.
+    let empty_replay = write_script("offboard-group-setup", &[]);
+    let group = run_wh(
+        &["keys", "group", "offboard", "arrows"],
+        &empty_replay,
+        &config_home,
+    );
+    assert!(
+        group.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&group.stdout),
+        String::from_utf8_lossy(&group.stderr)
+    );
+
+    // The board itself only has 'w' and 'a': none of "arrows" (up/down/left/right) is present.
+    let path = write_script("offboard-group-get", &matrix_lines());
+    let out = run_wh(&["get", "rt", "--keys", "offboard"], &path, &config_home);
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("selector matches no keys on this board"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(empty_replay).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
 }

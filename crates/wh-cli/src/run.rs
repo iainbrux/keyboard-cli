@@ -24,26 +24,46 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Open the real device on Windows, or a replay script when WH_REPLAY is set.
+/// Treats `WH_REPLAY=` (present but empty, distinct from unset) the same as unset, rather
+/// than as a request to read a file literally named the empty string. `env::var` returns
+/// `Ok(String::new())` for that case, which would otherwise surface as a confusing I/O error
+/// instead of falling back to the real device.
+fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<String> {
+    raw.ok().filter(|p| !p.is_empty())
+}
+
+/// Open the real device on Windows, or a replay script when WH_REPLAY is set to a non-empty
+/// path.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
-    let t: Box<dyn Transport> = if let Ok(path) = std::env::var("WH_REPLAY") {
-        let text = std::fs::read_to_string(&path).context("reading WH_REPLAY script")?;
-        Box::new(wh_device::replay::ReplayTransport::from_jsonl(&text)?)
-    } else {
-        #[cfg(windows)]
-        {
-            Box::new(wh_device::hid::HidTransport::open()?)
-        }
-        #[cfg(not(windows))]
-        {
-            bail!(
-                "the keyboard is attached to the Windows host: run the Windows build \
+    let t: Box<dyn Transport> =
+        if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
+            let text = std::fs::read_to_string(&path).context("reading WH_REPLAY script")?;
+            Box::new(wh_device::replay::ReplayTransport::from_jsonl(&text)?)
+        } else {
+            #[cfg(windows)]
+            {
+                Box::new(wh_device::hid::HidTransport::open()?)
+            }
+            #[cfg(not(windows))]
+            {
+                bail!(
+                    "the keyboard is attached to the Windows host: run the Windows build \
                  (bin/wh), or set WH_REPLAY=<capture.jsonl> to use a replay script instead"
-            );
-        }
-    };
+                );
+            }
+        };
     let mut s = Session::new(t);
     f(&mut s)
+}
+
+/// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
+/// `wh_proto::keys::TABLE`. Shared by `dump` and `get` so a board with unnamed usages prints
+/// the same, distinguishable label in both, rather than `get` collapsing every unnamed key to
+/// an indistinguishable literal `"?"`.
+fn key_label(usage: u8) -> String {
+    wh_proto::keys::name_for_usage(usage)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("0x{usage:02X}"))
 }
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
@@ -54,9 +74,7 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
     for usage in matrix {
         let ks = ops::read_key_settings(s, usage)?;
         keys.push(wh_config::snapshot::KeyToml {
-            name: wh_proto::keys::name_for_usage(usage)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("0x{usage:02X}")),
+            name: key_label(usage),
             usage,
             ap_mm: ks.ap.to_mm(),
             rt: ks.rt_enabled(),
@@ -139,7 +157,7 @@ fn dump(json: bool) -> Result<()> {
             );
             for k in &snap.keys {
                 println!(
-                    "{:<12} {:>5.2}m {:>4} {:>7.2}m {:>7.2}m",
+                    "{:<12} {:>4.2}mm {:>4} {:>6.2}mm {:>6.2}mm",
                     k.name,
                     k.ap_mm,
                     if k.rt { "on" } else { "off" },
@@ -184,7 +202,7 @@ fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
         };
         for usage in resolve_keys(s, arg, store)? {
             let ks = ops::read_key_settings(s, usage)?;
-            let name = wh_proto::keys::name_for_usage(usage).unwrap_or("?");
+            let name = key_label(usage);
             if show_rt {
                 println!(
                     "{name}: rt {} press {:.2}mm release {:.2}mm",
@@ -443,5 +461,26 @@ mod tests {
             rfc3339_from_unix_secs(1_787_920_496),
             "2026-08-28T12:34:56Z"
         );
+    }
+
+    #[test]
+    fn empty_wh_replay_value_is_treated_as_unset() {
+        // WH_REPLAY="" (present but empty) must not be read as "open a file named the empty
+        // string"; it should fall back exactly like an absent variable does.
+        assert_eq!(non_empty_replay_path(Ok(String::new())), None);
+        assert_eq!(
+            non_empty_replay_path(Err(std::env::VarError::NotPresent)),
+            None
+        );
+        assert_eq!(
+            non_empty_replay_path(Ok("script.jsonl".to_string())),
+            Some("script.jsonl".to_string())
+        );
+    }
+
+    #[test]
+    fn key_label_falls_back_to_hex_for_an_unnamed_usage() {
+        let (unnamed, _) = two_usages_absent_from_table();
+        assert_eq!(key_label(unnamed), format!("0x{unnamed:02X}"));
     }
 }
