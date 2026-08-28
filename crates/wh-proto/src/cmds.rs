@@ -111,12 +111,19 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
 
 /// Layout_Mode value: touch mode in the high nibble of the low byte,
 /// advanced-key mode in the low nibble (recdata.getLayoutModelRecdata).
+///
+/// The nibble values were measured against the real device across 1224 captured frames
+/// (task 19b): 0 = follow global, 1 = per-key actuation point, 3 = per-key rapid trigger with
+/// continuous off, 4 = the same with continuous on. Nibble 2 never appeared on the wire in any
+/// capture; it is left folded into `Unknown` rather than given its own variant, since nothing
+/// observed writes it and there is nothing to name it after.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchMode {
-    Global,      // 0x0
-    Single,      // 0x1
-    Rt,          // 0x2
-    Unknown(u8), // any other nibble; preserved so read-modify-write is lossless
+    Global,       // 0x0
+    Single,       // 0x1
+    Rt,           // 0x3, continuous off
+    RtContinuous, // 0x4, continuous on
+    Unknown(u8),  // any other nibble (0x2 included); preserved so read-modify-write is lossless
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,7 +147,8 @@ impl Mode {
         let touch = match nibble {
             0x0 => TouchMode::Global,
             0x1 => TouchMode::Single,
-            0x2 => TouchMode::Rt,
+            0x3 => TouchMode::Rt,
+            0x4 => TouchMode::RtContinuous,
             n => TouchMode::Unknown(n),
         };
         Mode {
@@ -153,7 +161,8 @@ impl Mode {
         let t = match self.touch {
             TouchMode::Global => 0x0u8,
             TouchMode::Single => 0x1,
-            TouchMode::Rt => 0x2,
+            TouchMode::Rt => 0x3,
+            TouchMode::RtContinuous => 0x4,
             TouchMode::Unknown(n) => n & 0x0F,
         };
         let low = (t << 4) | (self.advanced & 0x0F);
@@ -342,16 +351,37 @@ mod tests {
 
     #[test]
     fn mode_nibbles() {
-        let m = Mode::from_value(0x23);
-        assert_eq!(m.touch, TouchMode::Rt); // high nibble 2
+        let m = Mode::from_value(0x33);
+        assert_eq!(m.touch, TouchMode::Rt); // high nibble 3, measured against the real device
         assert_eq!(m.advanced, 0x03);
-        assert_eq!(m.value(), 0x23);
+        assert_eq!(m.value(), 0x33);
         let g = Mode {
             touch: TouchMode::Global,
             advanced: 0x03,
             high: 0,
         };
         assert_eq!(g.value(), 0x03);
+    }
+
+    /// Nibble 4, measured against the real device (`rt-continuous-toggle.jsonl`: MODE 0x0048
+    /// with continuous on, 0x0038 with it off, everything else held constant).
+    #[test]
+    fn mode_nibble_4_is_rt_continuous() {
+        let m = Mode::from_value(0x48);
+        assert_eq!(m.touch, TouchMode::RtContinuous);
+        assert_eq!(m.advanced, 0x08);
+        assert_eq!(m.value(), 0x48);
+    }
+
+    /// Nibble 2 never appeared in any of 1224 captured frames (task 19b); it must stay folded
+    /// into `Unknown` rather than aliasing `Rt`, or a read-modify-write on a key in this state
+    /// would silently coerce it to `Rt`'s wire value instead of leaving it alone.
+    #[test]
+    fn mode_nibble_2_is_never_observed_and_stays_unknown() {
+        let m = Mode::from_value(0x23);
+        assert_eq!(m.touch, TouchMode::Unknown(0x2));
+        assert_eq!(m.advanced, 0x03);
+        assert_eq!(m.value(), 0x23);
     }
 
     #[test]
@@ -369,10 +399,10 @@ mod tests {
     /// has modified.
     #[test]
     fn mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte() {
-        let v = 0x0231u16; // high byte 0x02, touch nibble 0x3 (Unknown), advanced nibble 0x1
+        let v = 0x0221u16; // high byte 0x02, touch nibble 0x2 (Unknown, never observed), advanced nibble 0x1
         let m = Mode::from_value(v);
         assert_eq!(m.high, 0x02);
-        assert_eq!(m.touch, TouchMode::Unknown(0x3));
+        assert_eq!(m.touch, TouchMode::Unknown(0x2));
         assert_eq!(m.advanced, 0x01);
         assert_eq!(m.value(), v);
     }

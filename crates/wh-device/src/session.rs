@@ -1,6 +1,6 @@
 use crate::transport::{DeviceError, Transport};
 use std::time::{Duration, Instant};
-use wh_proto::frame::{parse, FrameError};
+use wh_proto::frame::{parse, FrameError, REPLY_BIT};
 
 pub const READ_TIMEOUT: Duration = Duration::from_millis(250);
 /// Wall-clock budget for one roundtrip. The keyboard emits unsolicited input
@@ -38,7 +38,11 @@ impl<T: Transport> Session<T> {
                 Err(e) => return Err(e),
             };
             match parse(&report) {
-                Ok(reply) if reply.cmd == req[2] => return Ok(reply.payload.to_vec()),
+                // The device always sets the high bit on the reply's command
+                // byte (see `REPLY_BIT`'s doc comment for the measured
+                // evidence); it never echoes the request's cmd byte
+                // unmodified.
+                Ok(reply) if reply.cmd == req[2] | REPLY_BIT => return Ok(reply.payload.to_vec()),
                 Err(FrameError::DeviceFail(code)) => {
                     return Err(DeviceError::Frame(FrameError::DeviceFail(code)))
                 }
@@ -77,8 +81,11 @@ mod tests {
     use super::*;
     use crate::replay::{hex, ReplayTransport};
 
+    /// Builds a reply frame the way the real device sends it: with the high
+    /// bit set on the command byte (see `wh_proto::frame::REPLY_BIT`), so
+    /// fixtures built through this helper are faithful to the wire.
     fn reply_frame(cmd: u8, payload: &[u8]) -> [u8; 64] {
-        wh_proto::frame::frame(cmd, payload).unwrap()
+        wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
     }
 
     #[test]

@@ -16,14 +16,23 @@ pub enum DeviceError {
     Io(String),
     #[error("could not decode reply: {0}")]
     Decode(String),
-    #[error("batch failed at frame {index} of {total}; {applied} frame(s) already reached the device: {source}")]
+    // `source` is deliberately not interpolated into either message below: thiserror already
+    // wires a field named exactly `source` into `std::error::Error::source()`, and `main.rs`
+    // prints the full chain via anyhow's `{e:#}`, which walks that same `source()` chain. This
+    // message is only the leaf's own text; the cause text is appended once, by that walk, not
+    // twice by also spelling it out here.
+    #[error(
+        "batch failed at frame {index} of {total}; {applied} frame(s) already reached the device"
+    )]
     Batch {
         index: usize,
         total: usize,
         applied: usize,
         source: Box<DeviceError>,
     },
-    #[error("settings were applied to the board but not saved to flash ({applied} frame(s) written); a power cycle will revert them: {source}")]
+    #[error(
+        "settings were applied to the board but not saved to flash ({applied} frame(s) written); a power cycle will revert them"
+    )]
     NotPersisted {
         applied: usize,
         source: Box<DeviceError>,

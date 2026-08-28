@@ -6,3 +6,6 @@ research/deob2.js
 research/strings.json
 research/blob.json
 /target
+# The operator's own device traffic, captured at the keyboard with
+# capture/hid-shim.js. Stays local: see capture/README.md.
+/captures/

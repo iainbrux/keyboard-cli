@@ -15,8 +15,12 @@ pub struct KeySettings {
 }
 
 impl KeySettings {
+    /// True for either RT variant, continuous or not: `TouchMode::RtContinuous` is still rapid
+    /// trigger from the CLI's point of view, just with the device's own continuous-mode toggle
+    /// (not something `wh` exposes) left on. See `rt_records`' own comment for why the CLI
+    /// preserves that variant on a read-modify-write instead of collapsing it to plain `Rt`.
     pub fn rt_enabled(&self) -> bool {
-        self.mode.touch == TouchMode::Rt
+        matches!(self.mode.touch, TouchMode::Rt | TouchMode::RtContinuous)
     }
 }
 
@@ -107,6 +111,17 @@ fn write_and_save<T: Transport>(
 /// preserving each key's advanced-mode nibble. Reads current MODE per key but
 /// sends nothing else, so a caller can inspect the records for a dry run
 /// before deciding to write them.
+///
+/// The touch nibble written is `Rt` unless the key already carries `RtContinuous`, in which
+/// case that variant is preserved rather than collapsed to plain `Rt`. The CLI has no
+/// `--continuous` flag (that is a later phase's feature decision, not a protocol correction),
+/// so there is no way for a `wh set rt` call to ask for continuous mode; but a key can already
+/// be in that state from the vendor's own web UI, and `wh set rt --keys w --set 0.5` is a
+/// sensitivity change, not a request to also turn continuous off. Writing `Rt` unconditionally
+/// would do exactly that silently, on every sensitivity tweak, which is the same class of data
+/// loss chunk 3 fixes for `rt_off_records`. Reading the current MODE before deciding what to
+/// write, the same read-modify-write that already preserves `advanced` and `high`, costs
+/// nothing extra here since that read already happens.
 pub fn rt_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -117,8 +132,12 @@ pub fn rt_records<T: Transport>(
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
+        let touch = match cur_mode.touch {
+            TouchMode::RtContinuous => TouchMode::RtContinuous,
+            _ => TouchMode::Rt,
+        };
         let mode = Mode {
-            touch: TouchMode::Rt,
+            touch,
             advanced: cur_mode.advanced,
             high: cur_mode.high,
         };
@@ -141,9 +160,25 @@ pub fn rt_records<T: Transport>(
     Ok(records)
 }
 
-/// Build the [mode] records to switch `usages` back to Global touch mode,
-/// preserving each key's advanced-mode nibble. Reads current MODE per key but
-/// sends nothing else.
+/// Build the [mode] records to turn rapid trigger off on `usages`, preserving each key's
+/// advanced-mode nibble. Reads current MODE per key but sends nothing else.
+///
+/// Only touches keys that actually have RT on (`TouchMode::Rt` or `RtContinuous`): those get
+/// rewritten to `TouchMode::Single` (nibble 1, per-key actuation point), never to `Global`
+/// (nibble 0). A key already in `Global`, `Single`, or an `Unknown` state is left exactly as
+/// read; a key with no RT to turn off has nothing for `set rt --off` to do to its mode.
+///
+/// Measured on the real device (`captures/rt-off-w.jsonl`, task 19b chunk 3): turning RT off
+/// wrote MODE nibble 1, not 0, because nibble 0 means "ignore this key's AP register and follow
+/// the global travel setting", which would silently make a per-key actuation point inert. But
+/// that capture covers exactly one transition, an RT key with an AP going to Single; no capture
+/// anywhere in the ten scenarios shows a nibble-0 (Global) key being turned "off" into nibble 1,
+/// and doing that unconditionally (the first cut of this function did) detaches every non-RT key
+/// on the board from the global travel setting on a plain `wh set rt --keys all --off`, a second
+/// data-loss bug of the same shape chunk 3 fixed. Restricting the rewrite to keys that were
+/// actually `Rt`/`RtContinuous` closes both that case and the `Unknown(n)` case at once, rather
+/// than special-casing `Global` alone: a key without RT, in whatever state, has no RT to turn
+/// off.
 pub fn rt_off_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -152,8 +187,12 @@ pub fn rt_off_records<T: Transport>(
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
+        let touch = match cur_mode.touch {
+            TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
+            other => other,
+        };
         let mode = Mode {
-            touch: TouchMode::Global,
+            touch,
             advanced: cur_mode.advanced,
             high: cur_mode.high,
         };
@@ -167,20 +206,33 @@ pub fn rt_off_records<T: Transport>(
 }
 
 /// Enable RT on `usages` with the given sensitivities (preserves advanced-key nibble).
+/// Returns the exact records that were written (one MODE/RT_PRESS/RT_RELEASE triple per key,
+/// in `usages` order), so a caller that needs to verify the write can compare against what was
+/// actually sent, advanced nibble and high byte included, rather than only the touch mode and
+/// the two sensitivities.
 pub fn set_rt<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     press: Um,
     release: Um,
-) -> Result<(), DeviceError> {
+) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = rt_records(s, usages, press, release)?;
-    write_and_save(s, &records)
+    write_and_save(s, &records)?;
+    Ok(records)
 }
 
-/// Disable RT (touch mode -> Global), preserving the advanced nibble.
-pub fn set_rt_off<T: Transport>(s: &mut Session<T>, usages: &[u8]) -> Result<(), DeviceError> {
+/// Disable RT (touch mode -> Single, per-key actuation point), preserving the advanced
+/// nibble. Returns the exact
+/// records that were written (one MODE record per key, in `usages` order), the same reason
+/// `set_rt` returns its records: a caller verifying the write needs to compare against what
+/// was actually sent, advanced nibble and high byte included, not just the touch mode.
+pub fn set_rt_off<T: Transport>(
+    s: &mut Session<T>,
+    usages: &[u8],
+) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = rt_off_records(s, usages)?;
-    write_and_save(s, &records)
+    write_and_save(s, &records)?;
+    Ok(records)
 }
 
 /// Build the [ap] records to set `usages`' actuation point (layout DB0).
@@ -217,6 +269,24 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
     cmds::parse_global_travel(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
 }
 
+/// Write a whole snapshot back to the board: global travel first, then every per-key record,
+/// then SAVE (via `write_and_save`, which also skips SAVE when `records` is empty). Global
+/// travel goes first so a partial restore that fails partway through the per-key batch still
+/// leaves the board's overall travel consistent with what the caller intended, rather than a
+/// mix of old per-key values against a new global travel.
+pub fn restore_all<T: Transport>(
+    s: &mut Session<T>,
+    global: &cmds::GlobalTravel,
+    records: &[KeyRecord],
+) -> Result<(), DeviceError> {
+    s.roundtrip(&cmds::write_global_travel(
+        global.travel,
+        global.press_dead,
+        global.release_dead,
+    ))?;
+    write_and_save(s, records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,8 +299,11 @@ mod tests {
     fn l(dir: &str, b: &[u8; 64]) -> String {
         format!("{{\"dir\":\"{dir}\",\"hex\":\"{}\"}}", hex(b))
     }
+    /// Builds a reply frame the way the real device sends it: with the high
+    /// bit set on the command byte (see `wh_proto::frame::REPLY_BIT`), so
+    /// fixtures built through this helper are faithful to the wire.
     fn rf(cmd: u8, payload: &[u8]) -> [u8; 64] {
-        wh_proto::frame::frame(cmd, payload).unwrap()
+        wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
     }
 
     /// Script a full read_matrix: 3 DEFKEY roundtrips, each row pair carrying
@@ -284,7 +357,7 @@ mod tests {
             KeyRecord {
                 key: 0x1A,
                 layout: layout::MODE,
-                value: 0x20,
+                value: 0x30,
             },
             KeyRecord {
                 key: 0x1A,
@@ -409,7 +482,7 @@ mod tests {
                 KeyRecord {
                     key: 0x1A,
                     layout: layout::MODE,
-                    value: 0x23
+                    value: 0x33
                 },
                 KeyRecord {
                     key: 0x1A,
@@ -426,12 +499,76 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
+    /// The design decision behind `rt_records`' touch-mode choice: a key that already carries
+    /// `RtContinuous` (nibble 4, the vendor UI's continuous-mode toggle, which the CLI has no
+    /// flag for) must keep that variant when `wh set rt` only changes the sensitivity. Forcing
+    /// plain `Rt` unconditionally here would silently turn continuous off on every sensitivity
+    /// tweak, the same class of data loss chunk 3 fixes for `rt_off_records`; there is no way for
+    /// this call to ask for continuous mode back once lost, since `wh` has no `--continuous`
+    /// flag (a later phase's feature decision). Current mode byte 0x48: touch RtContinuous(4),
+    /// advanced nibble 8.
+    #[test]
+    fn rt_records_preserves_the_continuous_variant_when_the_key_already_has_it() {
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x48, 0x00]),
+            ),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_records(&mut s, &[0x1A], Um(700), Um(750)).unwrap();
+        assert_eq!(
+            recs,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x48, // still RtContinuous: only the sensitivity changed
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 700
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 750
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The other half of the same design decision: a key that is not already RT-enabled at all
+    /// (touch mode `Global` here) gets plain `Rt` (nibble 3, continuous off), not
+    /// `RtContinuous`, since `wh` has no way to ask for continuous mode on a key that never had
+    /// it. Only an already-continuous key keeps that variant; enabling RT fresh always starts
+    /// from continuous off, matching the measured default (chunk 2).
+    #[test]
+    fn rt_records_defaults_a_freshly_enabled_key_to_non_continuous_rt() {
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x00, 0x00]),
+            ),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_records(&mut s, &[0x1A], Um(500), Um(500)).unwrap();
+        assert_eq!(recs[0].value, 0x30); // Rt, not RtContinuous
+        assert!(s.into_inner().finished());
+    }
+
     /// The reply's high byte (`payload[4]`, the wire byte `parse_key_reply` puts in
     /// `KeyRecord.value`'s upper 8 bits, distinct from the low byte carrying the touch and
-    /// advanced nibbles) must survive a read-modify-write intact. Reply lo `0x31` (touch
-    /// nibble `0x3` -> `Unknown(3)`, advanced nibble `0x1`), hi `0x02`: `rt_records` forces the
-    /// touch nibble to `Rt` (`0x2`) while preserving the advanced nibble (`0x1`) and the high
-    /// byte (`0x02`), giving `0x0221`.
+    /// advanced nibbles) must survive a read-modify-write intact. Reply lo `0x21` (touch
+    /// nibble `0x2` -> `Unknown(2)`, never observed on the wire, advanced nibble `0x1`), hi
+    /// `0x02`: `rt_records` forces the touch nibble to `Rt` (`0x3`) while preserving the
+    /// advanced nibble (`0x1`) and the high byte (`0x02`), giving `0x0231`.
     ///
     /// That expected value is hand-written as a literal below rather than built by calling
     /// `Mode { .. }.value()` again the way `rt_records` itself does: a test that reconstructs
@@ -446,7 +583,7 @@ mod tests {
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
                 "in",
-                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x31, 0x02]),
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x21, 0x02]),
             ),
         ]
         .join("\n");
@@ -458,7 +595,7 @@ mod tests {
                 KeyRecord {
                     key: 0x1A,
                     layout: layout::MODE,
-                    value: 0x0221,
+                    value: 0x0231,
                 },
                 KeyRecord {
                     key: 0x1A,
@@ -476,13 +613,15 @@ mod tests {
     }
 
     #[test]
-    fn rt_off_records_sets_touch_mode_global_preserving_advanced_nibble() {
-        // current mode byte 0x27: touch Rt(2), advanced nibble 7
+    fn rt_off_records_sets_touch_mode_single_preserving_advanced_nibble() {
+        // current mode byte 0x37: touch Rt(3), advanced nibble 7. rt_off_records must write
+        // touch Single(1), not Global(0): see rt_off_records' own doc comment, and chunk 3 of
+        // task 19b, for why nibble 0 would silently discard this key's per-key actuation point.
         let lines = [
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
                 "in",
-                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x27, 0x00]),
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x37, 0x00]),
             ),
         ]
         .join("\n");
@@ -493,7 +632,7 @@ mod tests {
             vec![KeyRecord {
                 key: 0x1A,
                 layout: layout::MODE,
-                value: 0x07
+                value: 0x17
             }]
         );
         assert!(s.into_inner().finished());
@@ -501,9 +640,9 @@ mod tests {
 
     /// The `rt_off_records` sibling of
     /// `rt_records_preserves_the_high_byte_of_mode_across_a_read_modify_write` above: reply lo
-    /// `0x27` (touch `Rt`, advanced nibble `0x7`), hi `0x02`. `rt_off_records` forces the touch
-    /// nibble to `Global` (`0x0`) while preserving the advanced nibble (`0x7`) and the high
-    /// byte (`0x02`), giving `0x0207`, hand-written for the same reason: an expectation built
+    /// `0x37` (touch `Rt`, advanced nibble `0x7`), hi `0x02`. `rt_off_records` forces the touch
+    /// nibble to `Single` (`0x1`) while preserving the advanced nibble (`0x7`) and the high
+    /// byte (`0x02`), giving `0x0217`, hand-written for the same reason: an expectation built
     /// by calling `Mode { .. }.value()` again would share any bug in that method with the code
     /// under test instead of catching it.
     #[test]
@@ -512,7 +651,7 @@ mod tests {
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
                 "in",
-                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x27, 0x02]),
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x37, 0x02]),
             ),
         ]
         .join("\n");
@@ -523,18 +662,169 @@ mod tests {
             vec![KeyRecord {
                 key: 0x1A,
                 layout: layout::MODE,
-                value: 0x0207,
+                value: 0x0217,
             }]
         );
         assert!(s.into_inner().finished());
     }
 
+    /// Chunk 3's own regression test: on a key with a per-key actuation point (touch mode
+    /// already `Single`, i.e. not even RT-enabled from this call's perspective), turning "RT
+    /// off" again must not silently coerce it to `Global` and thereby drop that AP. This is the
+    /// exact data-loss shape measured on the real device in `captures/rt-off-w.jsonl`.
     #[test]
-    fn set_rt_off_writes_mode_global_then_saves() {
+    fn rt_off_records_writes_single_not_global_so_the_per_key_actuation_point_survives() {
+        let lines = [
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x18, 0x00]),
+            ),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_off_records(&mut s, &[0x1A]).unwrap();
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x18,
+            }],
+            "touch mode must stay Single (nibble 1), not fall back to Global (nibble 0)"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The regression this fix round exists for: replaying every one of the 68 real per-key
+    /// MODE values read from the device in `captures/initial-load.jsonl` (extracted with
+    /// `layout == 0x08` from the KEY-reply frames in that capture; every one is a key that has
+    /// never had RT on) through `rt_off_records`, exactly what `wh set rt --keys all --off`
+    /// sends. The first cut of this function detached all 58 nibble-0 keys among these from the
+    /// global travel setting by rewriting their MODE to nibble 1 unconditionally; the fix must
+    /// leave every one of these 68 values completely unchanged, since none of them is
+    /// `Rt`/`RtContinuous`. The one key at nibble 1 already (`0x0010`, 10 of the 68) staying at
+    /// nibble 1 is not itself proof of the fix (a no-op happens to look identical either way);
+    /// the 58 nibble-0 keys staying at nibble 0 is.
+    #[test]
+    fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
+        // (key, MODE value), verbatim from captures/initial-load.jsonl.
+        const REAL_MODES: &[(u8, u16)] = &[
+            (0x01, 0x0010),
+            (0x04, 0x0018),
+            (0x05, 0x0000),
+            (0x06, 0x0000),
+            (0x07, 0x0018),
+            (0x08, 0x0000),
+            (0x09, 0x0000),
+            (0x0A, 0x0000),
+            (0x0B, 0x0000),
+            (0x0C, 0x0000),
+            (0x0D, 0x0000),
+            (0x0E, 0x0000),
+            (0x0F, 0x0000),
+            (0x10, 0x0000),
+            (0x11, 0x0000),
+            (0x12, 0x0000),
+            (0x13, 0x0000),
+            (0x14, 0x0000),
+            (0x15, 0x0000),
+            (0x16, 0x0018),
+            (0x17, 0x0000),
+            (0x18, 0x0000),
+            (0x19, 0x0000),
+            (0x1A, 0x0018),
+            (0x1B, 0x0000),
+            (0x1C, 0x0000),
+            (0x1D, 0x0000),
+            (0x1E, 0x0000),
+            (0x1F, 0x0000),
+            (0x20, 0x0000),
+            (0x21, 0x0000),
+            (0x22, 0x0000),
+            (0x23, 0x0000),
+            (0x24, 0x0000),
+            (0x25, 0x0000),
+            (0x26, 0x0000),
+            (0x27, 0x0000),
+            (0x28, 0x0000),
+            (0x29, 0x0010),
+            (0x2A, 0x0000),
+            (0x2B, 0x0000),
+            (0x2C, 0x0000),
+            (0x2D, 0x0000),
+            (0x2E, 0x0000),
+            (0x2F, 0x0000),
+            (0x30, 0x0000),
+            (0x31, 0x0000),
+            (0x33, 0x0000),
+            (0x34, 0x0000),
+            (0x36, 0x0000),
+            (0x37, 0x0000),
+            (0x38, 0x0000),
+            (0x39, 0x0000),
+            (0x4F, 0x0000),
+            (0x50, 0x0000),
+            (0x51, 0x0000),
+            (0x52, 0x0000),
+            (0xD6, 0x0010),
+            (0xE0, 0x0000),
+            (0xE1, 0x0000),
+            (0xE2, 0x0000),
+            (0xE3, 0x0000),
+            (0xE4, 0x0000),
+            (0xE5, 0x0000),
+            (0xE6, 0x0000),
+            (0xFA, 0x0010),
+            (0xFB, 0x0010),
+            (0xFC, 0x0010),
+        ];
+        assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");
+        assert_eq!(
+            REAL_MODES
+                .iter()
+                .filter(|&&(_, v)| matches!(
+                    Mode::from_value(v).touch,
+                    TouchMode::Rt | TouchMode::RtContinuous
+                ))
+                .count(),
+            0,
+            "none of the real captured keys have RT on; that is what makes this a regression test"
+        );
+
+        let mut lines = Vec::new();
+        let usages: Vec<u8> = REAL_MODES.iter().map(|&(k, _)| k).collect();
+        for &(k, v) in REAL_MODES {
+            lines.push(l("out", &cmds::read_key_layout(k, layout::MODE)));
+            lines.push(l(
+                "in",
+                &rf(
+                    cmds::cmd::KEY,
+                    &[0x00, k, layout::MODE, (v & 0xFF) as u8, (v >> 8) as u8],
+                ),
+            ));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let recs = rt_off_records(&mut s, &usages).unwrap();
+
+        assert_eq!(recs.len(), 68);
+        for (rec, &(k, v)) in recs.iter().zip(REAL_MODES.iter()) {
+            assert_eq!(rec.key, k);
+            assert_eq!(
+                rec.value, v,
+                "key {k:#04x}: MODE must be left exactly as read ({v:#06x}), not rewritten \
+                 to Single, since it never had RT on"
+            );
+        }
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn set_rt_off_writes_mode_single_then_saves() {
         let rec = KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
-            value: 0x00,
+            value: 0x10,
         };
         let batch = cmds::write_key_records(&[rec]);
         let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
@@ -542,7 +832,7 @@ mod tests {
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
                 "in",
-                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x20, 0x00]),
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x30, 0x00]),
             ),
         ];
         for f in &batch {
@@ -721,7 +1011,7 @@ mod tests {
         let mut lines = Vec::new();
         for (lid, val) in [
             (layout::AP, 1200u16),
-            (layout::MODE, 0x20),
+            (layout::MODE, 0x30),
             (layout::RT_PRESS, 500),
             (layout::RT_RELEASE, 650),
         ] {
@@ -811,5 +1101,106 @@ mod tests {
             matches!(err, DeviceError::Decode(_)),
             "expected Decode, got {err:?}"
         );
+    }
+
+    /// `restore_all` writes the global travel DB record first, then the per-key batch(es),
+    /// then SAVE, mirroring `set_rt`/`set_ap`'s own script shape above (DB write, key
+    /// batches, SAVE) so a restore looks like one coherent write on the wire rather than a
+    /// pile of independent calls.
+    #[test]
+    fn restore_all_writes_global_travel_then_key_batches_then_saves() {
+        let global = cmds::GlobalTravel {
+            travel: Um(2000),
+            press_dead: Um(100),
+            release_dead: Um(150),
+        };
+        // Two keys, each with distinct ap/mode/press/release values, so a swapped field or a
+        // key mix-up would show up as a wrong assertion rather than passing by coincidence.
+        let recs = vec![
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::AP,
+                value: 1200,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x20,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_PRESS,
+                value: 500,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_RELEASE,
+                value: 650,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::AP,
+                value: 1500,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::MODE,
+                value: 0x00,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::RT_PRESS,
+                value: 0,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::RT_RELEASE,
+                value: 0,
+            },
+        ];
+
+        let db_write =
+            cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
+        let batches = cmds::write_key_records(&recs);
+        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+
+        let mut lines = vec![
+            l("out", &db_write),
+            l("in", &rf(cmds::cmd::DB, &[0x01, 0, 0])),
+        ];
+        for f in &batches {
+            lines.push(l("out", f));
+            lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
+        }
+        lines.push(l("out", &save));
+        lines.push(l(
+            "in",
+            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
+        ));
+
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        restore_all(&mut s, &global, &recs).unwrap();
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn restore_all_skips_key_batch_and_save_when_there_are_no_records() {
+        // Only the global travel write should reach the wire; no records means no key batch
+        // and, per write_and_save, no SAVE either.
+        let global = cmds::GlobalTravel {
+            travel: Um(2000),
+            press_dead: Um(100),
+            release_dead: Um(150),
+        };
+        let db_write =
+            cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
+        let lines = [
+            l("out", &db_write),
+            l("in", &rf(cmds::cmd::DB, &[0x01, 0, 0])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        restore_all(&mut s, &global, &[]).unwrap();
+        assert!(s.into_inner().finished());
     }
 }
