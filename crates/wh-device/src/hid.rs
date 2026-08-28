@@ -45,17 +45,24 @@ impl Transport for HidTransport {
         // Report ID 0 prepended per hidapi convention.
         let mut buf = [0u8; 65];
         buf[1..].copy_from_slice(report);
-        self.dev.write(&buf).map_err(|e| DeviceError::Io(e.to_string()))?;
+        let n = self.dev.write(&buf).map_err(|e| DeviceError::Io(e.to_string()))?;
+        if n < 65 {
+            return Err(DeviceError::Io(format!("short write: {n} of 65 bytes")));
+        }
         Ok(())
     }
     fn recv(&mut self, timeout: Duration) -> Result<[u8; 64], DeviceError> {
         let mut buf = [0u8; 64];
+        let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
         let n = self
             .dev
-            .read_timeout(&mut buf, timeout.as_millis() as i32)
+            .read_timeout(&mut buf, millis)
             .map_err(|e| DeviceError::Io(e.to_string()))?;
         if n == 0 {
             return Err(DeviceError::Timeout);
+        }
+        if n < 4 || n < 4 + buf[1] as usize {
+            return Err(DeviceError::Io(format!("short read: {n} bytes")));
         }
         Ok(buf)
     }

@@ -32,7 +32,11 @@ impl<T: Transport> Session<T> {
             attempts += 1;
             let remaining = deadline.saturating_duration_since(Instant::now());
             let timeout = READ_TIMEOUT.min(remaining);
-            let report = self.t.recv(timeout)?;
+            let report = match self.t.recv(timeout) {
+                Ok(r) => r,
+                Err(DeviceError::Timeout) => continue,
+                Err(e) => return Err(e),
+            };
             match parse(&report) {
                 Ok(reply) if reply.cmd == req[2] => return Ok(reply.payload.to_vec()),
                 Err(FrameError::DeviceFail(code)) => {
@@ -150,6 +154,41 @@ mod tests {
         assert_eq!(replies.len(), 2);
         assert_eq!(replies[0][3], 0xF4);
         assert_eq!(replies[1], vec![0x07]);
+    }
+
+    /// Transport double that returns `Timeout` a fixed number of times before
+    /// handing back a valid reply, to prove a read timeout no longer aborts
+    /// the whole roundtrip.
+    struct FlakyTransport {
+        timeouts_remaining: usize,
+        reply: [u8; 64],
+        recv_calls: usize,
+    }
+
+    impl Transport for FlakyTransport {
+        fn send(&mut self, _req: &[u8; 64]) -> Result<(), DeviceError> {
+            Ok(())
+        }
+        fn recv(&mut self, _timeout: Duration) -> Result<[u8; 64], DeviceError> {
+            self.recv_calls += 1;
+            if self.timeouts_remaining > 0 {
+                self.timeouts_remaining -= 1;
+                return Err(DeviceError::Timeout);
+            }
+            Ok(self.reply)
+        }
+    }
+
+    #[test]
+    fn roundtrip_retries_past_a_read_timeout() {
+        let req = wh_proto::cmds::read_global_travel();
+        let good = reply_frame(req[2], &[0x00, 0, 0, 0xF4, 0x01, 0xC8, 0, 0xC8, 0]);
+        let mut t = FlakyTransport { timeouts_remaining: 2, reply: good, recv_calls: 0 };
+        let mut s = Session::new(t);
+        let payload = s.roundtrip(&req).unwrap();
+        assert_eq!(payload[3], 0xF4);
+        t = s.into_inner();
+        assert!(t.recv_calls > 1, "expected more than one recv call, got {}", t.recv_calls);
     }
 
     #[test]
