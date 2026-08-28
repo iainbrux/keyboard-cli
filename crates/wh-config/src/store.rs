@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -25,6 +26,12 @@ pub struct Store {
 }
 
 pub const KEEP_BACKUPS: usize = 20;
+
+/// Monotonic counter used to make each `save_backup` temp filename unique within this process,
+/// regardless of clock resolution. See `save_backup` for why a repeated temp name would be
+/// dangerous, not merely wasteful: `hard_link` shares an inode rather than copying bytes, so a
+/// later write into a reused temp path would silently corrupt every backup still linked to it.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl Store {
     /// Default per-user location: `%APPDATA%\wh\config` on Windows, `~/.config/wh` on Linux
@@ -57,7 +64,15 @@ impl Store {
     ///
     /// 1. The full content is written to a temp file first, under a name that starts with `.`
     ///    and does not end in `.toml`, so `list_backups` can never mistake it (or an orphan left
-    ///    behind by a crash on this step) for a backup.
+    ///    behind by a crash on this step) for a backup. The temp name pairs the process id with
+    ///    a process-wide monotonic counter, so it can never repeat within this process
+    ///    regardless of clock resolution, and the file is opened with `create_new`, so a same-
+    ///    name collision with another process's in-flight temp file fails loudly and retries
+    ///    with the next counter value rather than truncating whatever that other writer had
+    ///    already put there. This matters more than an ordinary collision would: the next step
+    ///    publishes the final name via `hard_link`, which shares an inode rather than copying
+    ///    bytes, so a reused temp path is not just overwritten, it corrupts every backup still
+    ///    linked to it, in place, with that backup's own name and timestamp untouched.
     /// 2. Only once that write has succeeded is a final `<secs>.<nanos>.toml` name chosen, by
     ///    `fs::hard_link`-ing the temp file onto it. `hard_link` fails if the destination
     ///    already exists, which is what gives two saves landing in the same nanosecond a
@@ -65,8 +80,8 @@ impl Store {
     ///    silently overwriting. Because the temp file's content is already complete before the
     ///    link is created, the final name never exists half-written: there is no window where a
     ///    reader could see it empty or truncated. This is why `create_new` on the final name
-    ///    (the previous round's approach) cannot be used here: reserving the final name before
-    ///    the content behind it exists is exactly the defect being fixed.
+    ///    (an earlier round's approach) cannot be used there: reserving the final name before
+    ///    the content behind it exists is exactly the defect that approach caused.
     ///
     /// `fs::hard_link`'s "fails if the destination exists" behaviour is a documented, general
     /// contract of the standard library function, not a Unix-specific note, so it is relied on
@@ -77,12 +92,26 @@ impl Store {
         let dir = self.backups_dir();
         fs::create_dir_all(&dir)?;
 
-        let tmp_nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let tmp_path = dir.join(format!(".save-{}-{tmp_nonce}.partial", std::process::id()));
-        fs::write(&tmp_path, toml_text)?;
+        let pid = std::process::id();
+        let (tmp_path, mut tmp_file) = loop {
+            let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = dir.join(format!(".save-{pid}-{counter}.partial"));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (candidate, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        };
+        if let Err(e) = std::io::Write::write_all(&mut tmp_file, toml_text.as_bytes()) {
+            drop(tmp_file);
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+        drop(tmp_file);
 
         let stamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(stamp) => stamp,
@@ -429,6 +458,25 @@ mod tests {
         assert_eq!(backups.len(), 1);
         let newest = store.load_backup(None).unwrap();
         assert_eq!(newest, "older-real");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Pins the property that a reused temp filename would silently break: two `save_backup`
+    /// calls made back to back, in the same process, must produce two distinct backups whose
+    /// contents are both intact. This does not reproduce the inode-aliasing mechanism itself,
+    /// which needs an injected `fs::remove_file` failure between the `hard_link` and the temp
+    /// cleanup to trigger; it guards the process-wide counter against being dropped or narrowed
+    /// in a later refactor, which is the failure mode this test can catch without failure-
+    /// injection machinery.
+    #[test]
+    fn same_process_saves_never_share_a_temp_name() {
+        let dir = test_dir("no-temp-name-reuse");
+        let store = Store::at(dir.clone());
+        let first = store.save_backup("first content").unwrap();
+        let second = store.save_backup("second content").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first content");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second content");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
