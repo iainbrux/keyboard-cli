@@ -58,6 +58,92 @@ pub fn parse_global_travel(payload: &[u8]) -> Result<GlobalTravel, DecodeError> 
     })
 }
 
+pub mod layout {
+    pub const AP: u8 = 0x04; // Layout_DB0
+    pub const MODE: u8 = 0x08; // Layout_Mode
+    pub const RT_PRESS: u8 = 0x14; // Layout_RTP
+    pub const RT_RELEASE: u8 = 0x15; // Layout_RTR
+}
+
+/// MaxPack from constants/byte.ts.
+pub const MAX_RECORDS_PER_REPORT: usize = 14;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyRecord {
+    pub key: u8,    // USB HID keyboard usage
+    pub layout: u8, // layout::* id
+    pub value: u16,
+}
+
+/// KeyDataPack batches, <=14 records per report, rw-prefixed.
+pub fn write_key_records(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
+    records
+        .chunks(MAX_RECORDS_PER_REPORT)
+        .map(|chunk| {
+            let mut p = Vec::with_capacity(1 + chunk.len() * 4);
+            p.push(RW_WRITE);
+            for r in chunk {
+                p.push(r.key);
+                p.push(r.layout);
+                p.extend(r.value.to_le_bytes());
+            }
+            frame(cmd::KEY, &p).expect("<=57 bytes")
+        })
+        .collect()
+}
+
+/// cmdLayout with rw=read: single [key, layout, 0, 0] record.
+pub fn read_key_layout(key: u8, layout_id: u8) -> [u8; REPORT_LEN] {
+    frame(cmd::KEY, &[RW_READ, key, layout_id, 0, 0]).expect("5 bytes")
+}
+
+/// Reply payload [rw, key, layout, lo, hi] (recdata.getSingleTravelRecdata).
+pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
+    if payload.len() < 5 {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    Ok(KeyRecord {
+        key: payload[1],
+        layout: payload[2],
+        value: u16::from_le_bytes([payload[3], payload[4]]),
+    })
+}
+
+/// Layout_Mode value: touch mode in the high nibble of the low byte,
+/// advanced-key mode in the low nibble (recdata.getLayoutModelRecdata).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchMode {
+    Global, // 0x0
+    Single, // 0x1
+    Rt,     // 0x2
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mode {
+    pub touch: TouchMode,
+    pub advanced: u8,
+}
+
+impl Mode {
+    pub fn from_value(v: u16) -> Self {
+        let b = (v & 0xFF) as u8;
+        let touch = match (b >> 4) & 0x0F {
+            0x1 => TouchMode::Single,
+            0x2 => TouchMode::Rt,
+            _ => TouchMode::Global,
+        };
+        Mode { touch, advanced: b & 0x0F }
+    }
+    pub fn value(self) -> u16 {
+        let t = match self.touch {
+            TouchMode::Global => 0x0u8,
+            TouchMode::Single => 0x1,
+            TouchMode::Rt => 0x2,
+        };
+        ((t << 4) | (self.advanced & 0x0F)) as u16
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +176,47 @@ mod tests {
     #[test]
     fn parse_global_travel_rejects_short() {
         assert!(parse_global_travel(&[0x00, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn key_record_batches_of_14_with_rw_prefix() {
+        let recs: Vec<KeyRecord> = (0u8..20)
+            .map(|i| KeyRecord { key: 0x04 + i, layout: layout::RT_PRESS, value: 500 })
+            .collect();
+        let frames = write_key_records(&recs);
+        assert_eq!(frames.len(), 2); // 14 + 6
+        // first frame: len = 1 + 14*4 = 57 = 0x39, the vendor batch template
+        assert_eq!(frames[0][1], 0x39);
+        assert_eq!(frames[0][2], cmd::KEY);
+        assert_eq!(frames[0][4], RW_WRITE);
+        assert_eq!(&frames[0][5..9], &[0x04, layout::RT_PRESS, 0xF4, 0x01]);
+        // second frame: 1 + 6*4 = 25
+        assert_eq!(frames[1][1], 25);
+    }
+
+    #[test]
+    fn read_key_layout_is_single_record_read() {
+        let f = read_key_layout(0x1A, layout::AP); // 'w'
+        assert_eq!(f[1], 5); // rw + one record
+        assert_eq!(&f[4..9], &[RW_READ, 0x1A, layout::AP, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn parse_key_reply_reads_record() {
+        let payload = [0x00, 0x1A, layout::RT_PRESS, 0xF4, 0x01];
+        assert_eq!(
+            parse_key_reply(&payload).unwrap(),
+            KeyRecord { key: 0x1A, layout: layout::RT_PRESS, value: 500 }
+        );
+    }
+
+    #[test]
+    fn mode_nibbles() {
+        let m = Mode::from_value(0x23);
+        assert_eq!(m.touch, TouchMode::Rt); // high nibble 2
+        assert_eq!(m.advanced, 0x03);
+        assert_eq!(m.value(), 0x23);
+        let g = Mode { touch: TouchMode::Global, advanced: 0x03 };
+        assert_eq!(g.value(), 0x03);
     }
 }
