@@ -582,6 +582,66 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The `--off` sibling of the dry-run test above, the last dry-run branch that had nothing
+/// pinning it: `ops::rt_off_records` reads each selected key's current MODE (one read per key,
+/// to preserve the advanced nibble) on top of `resolve_keys`' matrix read, and nothing else.
+/// Both board keys are selected (`--keys all`) so this also pins the exact preview content for
+/// two keys at once: 'w' (0x1A) starts at MODE 0x0221 (touch Rt, advanced nibble 1, high byte
+/// 0x02) and wants 0x0201 after the touch nibble flips to Global; 'a' (0x04) starts at MODE
+/// 0x0027 (touch Rt, advanced nibble 7, high byte 0) and wants 0x0007. The script is exactly
+/// those two matrix-plus-MODE reads; a regression that added `ops::set_rt_off` or a bare SAVE
+/// to this branch would try to send afterwards, and `ReplayTransport` would reject it against
+/// the exhausted script.
+#[test]
+fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
+    let mut lines = matrix_lines();
+    lines.extend(mode_read_lines(0x1A, 0x0221));
+    lines.extend(mode_read_lines(0x04, 0x0027));
+    let path = write_script("set-rt-off-dry-run", &lines);
+    let config_home = scratch_config_dir("set-rt-off-dry-run");
+
+    let out = run_wh(
+        &["set", "rt", "--keys", "all", "--off", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+
+    // Pins the exact previewed records, not just that something printed: the touch nibble
+    // must flip to Global on both keys while each key's own advanced nibble and high byte
+    // survive independently, the same read-modify-write `verify_rt_off` checks on the real
+    // write path.
+    let expected = cmds::write_key_records(&[
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x0201,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x0007,
+        },
+    ]);
+    for frame in &expected {
+        assert!(
+            stdout.contains(&hex(frame)),
+            "expected frame {} in stdout: {stdout}",
+            hex(frame)
+        );
+    }
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// Pins that `--dry-run` previews an operation that could actually happen: 'z' (usage 0x1D) is
 /// a real key in `wh_proto::keys::TABLE` but is not on this two-key fixture board (only 'w' and
 /// 'a' are). A dry run that resolved selectors against the full static table instead of the
@@ -756,6 +816,11 @@ fn restore_happy_path_backs_up_and_verifies() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+    // Pins the singular grammar for a one-key snapshot ("1 key", not "1 keys").
+    assert!(
+        stdout.contains("restored 1 key from snapshot"),
+        "unexpected stdout: {stdout}"
+    );
 
     let backups = std::fs::read_dir(config_home.join("wh").join("backups"))
         .unwrap()

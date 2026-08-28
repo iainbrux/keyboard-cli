@@ -402,8 +402,8 @@ fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
 
 /// Shared tail of every write command's readback verification: `bad` is one already-formatted
 /// line per key (or field) that failed to match, built by the caller so each verifier can name
-/// exactly what differed (press vs release vs the enabled flag, in `verify_rt`'s case) rather
-/// than this shared code guessing which field to report.
+/// exactly what differed (mode vs press vs release, in `verify_rt`'s case) rather than this
+/// shared code guessing which field to report.
 fn report_verification(
     out: &mut impl Write,
     what: &str,
@@ -425,27 +425,32 @@ fn report_verification(
     )
 }
 
+/// Verifies an RT-on write by reading back every key `records` names and comparing the full
+/// MODE value against what `ops::rt_records` computed for it, advanced nibble and high byte
+/// included, not just "the touch nibble says Rt": a firmware that clears the advanced nibble
+/// when the touch mode changes has to show up here as a mismatch, not pass silently because
+/// only the touch nibble and the two sensitivities were checked.
+///
+/// Takes only `records`, not a separate `usages` list: `records` already carries one key per
+/// MODE entry (`ops::rt_records` builds exactly one MODE/RT_PRESS/RT_RELEASE triple per key,
+/// for the same `usages` this was called with), so a second, independently passed key list
+/// could disagree with it. Deriving the keys from `records` removes that disagreement
+/// structurally instead of asserting it away with an `expect` on the write path.
 fn verify_rt<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
-    usages: &[u8],
     press: Um,
     release: Um,
     records: &[KeyRecord],
 ) -> Result<()> {
     let mut bad = Vec::new();
-    for &u in usages {
+    let mut usages = Vec::new();
+    for r in records.iter().filter(|r| r.layout == layout::MODE) {
+        let u = r.key;
+        let want_mode = r.value;
+        usages.push(u);
         let ks = ops::read_key_settings(s, u)?;
         let name = key_label(u);
-        // The exact MODE value `ops::rt_records` computed for this key, advanced nibble and
-        // high byte included, not just "the touch nibble says Rt": a firmware that clears the
-        // advanced nibble when the touch mode changes has to show up here as a mismatch, not
-        // pass silently because only the touch nibble and the two sensitivities were checked.
-        let want_mode = records
-            .iter()
-            .find(|r| r.key == u && r.layout == layout::MODE)
-            .map(|r| r.value)
-            .expect("ops::rt_records emits one MODE record per key in usages");
         if ks.mode.value() != want_mode {
             bad.push(format!(
                 "{name}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt on, \
@@ -474,28 +479,30 @@ fn verify_rt<T: Transport>(
             press.to_mm(),
             release.to_mm()
         ),
-        usages,
+        &usages,
         &bad,
     )
 }
 
+/// The `verify_rt_off` sibling of `verify_rt` above, same reasoning: `records` (built by
+/// `ops::rt_off_records`, one MODE record per key) is the sole source of both the key list and
+/// the wanted MODE value, so there is nothing for a separate `usages` parameter to disagree
+/// with.
 fn verify_rt_off<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
-    usages: &[u8],
     records: &[KeyRecord],
 ) -> Result<()> {
     let mut bad = Vec::new();
-    for &u in usages {
+    let mut usages = Vec::new();
+    for r in records {
+        let u = r.key;
+        let want_mode = r.value;
+        usages.push(u);
         let ks = ops::read_key_settings(s, u)?;
         // The exact MODE value `ops::rt_off_records` computed for this key, advanced nibble
         // and high byte included, not just "the touch nibble says not-Rt": the same read-
         // modify-write `verify_rt` now checks on the enable path, mirrored here for disable.
-        let want_mode = records
-            .iter()
-            .find(|r| r.key == u && r.layout == layout::MODE)
-            .map(|r| r.value)
-            .expect("ops::rt_off_records emits one MODE record per key in usages");
         if ks.mode.value() != want_mode {
             bad.push(format!(
                 "{}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt off, \
@@ -507,7 +514,17 @@ fn verify_rt_off<T: Transport>(
             ));
         }
     }
-    report_verification(out, "rt off", usages, &bad)
+    report_verification(out, "rt off", &usages, &bad)
+}
+
+/// What `wh set rt` asked for, resolved once, up front, into a shape where "on" and "off"
+/// cannot disagree with themselves the way a bare `off: bool` plus a separately computed
+/// `Option<(Um, Um)>` could: matching `RtAction` exhaustively means there is no branch where
+/// the sensitivities the caller wanted are simply absent, so nothing downstream needs to
+/// `expect` its way past that possibility on the write path.
+enum RtAction {
+    Off,
+    On { press: Um, release: Um },
 }
 
 fn set(what: SetWhat, store: &Store) -> Result<()> {
@@ -523,15 +540,16 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             // Validated before a session ever opens, the same way `Ap`'s `mm(set)?` below is:
             // a malformed `--set`/`--press`/`--release` is refused before the three DEFKEY
             // roundtrips `resolve_keys` sends, not after.
-            let sensitivities = if off {
-                None
+            let action = if off {
+                RtAction::Off
             } else {
                 let base = set.ok_or_else(|| {
                     anyhow::anyhow!("--set, --press/--release, or --off required")
                 })?;
-                let p = mm(press.unwrap_or(base))?;
-                let r = mm(release.unwrap_or(base))?;
-                Some((p, r))
+                RtAction::On {
+                    press: mm(press.unwrap_or(base))?,
+                    release: mm(release.unwrap_or(base))?,
+                }
             };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
@@ -541,26 +559,28 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 // an operation that could never happen for real, and `--pick` needs a live
                 // board regardless of `--dry-run`. Only writes and SAVE are skipped below.
                 let usages = resolve_keys(s, &keys, store)?;
-                if off {
-                    if dry_run {
-                        // rt_off_records reads each key's current MODE to preserve the
-                        // advanced nibble in the preview: a read, not a write, so it is fine
-                        // for a dry run to send it.
-                        let records = ops::rt_off_records(s, &usages)?;
-                        return print_frames(&mut out, &cmds::write_key_records(&records));
+                match action {
+                    RtAction::Off => {
+                        if dry_run {
+                            // rt_off_records reads each key's current MODE to preserve the
+                            // advanced nibble in the preview: a read, not a write, so it is
+                            // fine for a dry run to send it.
+                            let records = ops::rt_off_records(s, &usages)?;
+                            return print_frames(&mut out, &cmds::write_key_records(&records));
+                        }
+                        auto_backup(s, store)?;
+                        let records = ops::set_rt_off(s, &usages)?;
+                        verify_rt_off(&mut out, s, &records)
                     }
-                    auto_backup(s, store)?;
-                    let records = ops::set_rt_off(s, &usages)?;
-                    verify_rt_off(&mut out, s, &usages, &records)
-                } else {
-                    let (p, r) = sensitivities.expect("validated above when off is false");
-                    if dry_run {
-                        let records = ops::rt_records(s, &usages, p, r)?;
-                        return print_frames(&mut out, &cmds::write_key_records(&records));
+                    RtAction::On { press, release } => {
+                        if dry_run {
+                            let records = ops::rt_records(s, &usages, press, release)?;
+                            return print_frames(&mut out, &cmds::write_key_records(&records));
+                        }
+                        auto_backup(s, store)?;
+                        let records = ops::set_rt(s, &usages, press, release)?;
+                        verify_rt(&mut out, s, press, release, &records)
                     }
-                    auto_backup(s, store)?;
-                    let records = ops::set_rt(s, &usages, p, r)?;
-                    verify_rt(&mut out, s, &usages, p, r, &records)
                 }
             })
         }
@@ -756,10 +776,11 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Resul
         // this line is never reached, so stdout never claims success while stderr reports a
         // mismatch on the same run.
         verify_restore(&mut out, s, &keys)?;
+        let n = snap.keys.len();
+        let key_or_keys = if n == 1 { "key" } else { "keys" };
         writeln!(
             out,
-            "restored {} keys from snapshot ({})",
-            snap.keys.len(),
+            "restored {n} {key_or_keys} from snapshot ({})",
             snap.taken_at
         )?;
         Ok(())
