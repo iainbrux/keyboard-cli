@@ -144,6 +144,92 @@ impl Mode {
     }
 }
 
+pub mod order {
+    pub const PROTOCOL_VERSION: u8 = 0x01;
+    pub const SAVE: u8 = 0x02; // ORDER_TYPE_SAVING_PARAMETER
+    pub const FACTORY_RESET: u8 = 0x11; // not exposed in CLI; documented only
+    pub const PRECISION: u8 = 0x25;
+    pub const KEYBOARD_NAME: u8 = 0x26;
+    pub const POLLING: u8 = 0x50;
+    pub const CONFIG: u8 = 0x70;
+}
+
+pub fn cmd_order(order_id: u8, h_args: &[u8]) -> [u8; REPORT_LEN] {
+    let mut p = vec![order_id];
+    p.extend_from_slice(h_args);
+    p.extend([0xFF, 0xFF]);
+    frame(cmd::CMD, &p).expect("small")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Precision {
+    pub step: Um,
+    pub min: Um,
+    pub max: Um,
+}
+
+/// recdata.getCmdRecdata ORDER_TYPE_PRECISION_STROKE branch.
+pub fn parse_precision(payload: &[u8]) -> Result<Precision, DecodeError> {
+    if payload.len() < 7 || payload[1] != order::PRECISION {
+        return Err(DecodeError::Shape);
+    }
+    Ok(Precision {
+        step: Um(payload[2] as u16),
+        min: Um::from_le(payload[3], payload[4]),
+        max: Um::from_le(payload[5], payload[6]),
+    })
+}
+
+pub fn sync() -> [u8; REPORT_LEN] {
+    frame(cmd::SYNC, &[1, 2, 3, 4, 0xFF, 0xFF]).expect("6 bytes")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceInfo {
+    pub serial: String,
+    pub firmware: String,
+}
+
+/// recdata.getCmdSyncRecdata: SN at bytes 9..25, firmware at 26..36.
+pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
+    if payload.len() < 36 {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    let clean = |b: &[u8]| String::from_utf8_lossy(b).trim_end_matches('\0').to_string();
+    Ok(DeviceInfo { serial: clean(&payload[9..25]), firmware: clean(&payload[26..36]) })
+}
+
+pub const MATRIX_ROWS: u8 = 6;
+pub const MATRIX_COLS: usize = 21;
+
+pub fn read_defkey_rows(row_a: u8, row_b: u8) -> [u8; REPORT_LEN] {
+    frame(cmd::DEFKEY, &[RW_READ, row_a, row_b]).expect("3 bytes")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefKeyRow {
+    pub row: u8,
+    /// (col, hid usage) for non-zero cells
+    pub keys: Vec<(u8, u8)>,
+}
+
+/// recdata.getDefKeyRecdata: [rw, rowA, 21 usages, rowB, 21 usages].
+pub fn parse_defkey(payload: &[u8]) -> Result<[DefKeyRow; 2], DecodeError> {
+    if payload.len() < 45 {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    let row_at = |row_idx: usize, data_idx: usize| DefKeyRow {
+        row: payload[row_idx],
+        keys: payload[data_idx..data_idx + MATRIX_COLS]
+            .iter()
+            .enumerate()
+            .filter(|(_, &u)| u != 0)
+            .map(|(c, &u)| (c as u8, u))
+            .collect(),
+    };
+    Ok([row_at(1, 2), row_at(23, 24)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +304,58 @@ mod tests {
         assert_eq!(m.value(), 0x23);
         let g = Mode { touch: TouchMode::Global, advanced: 0x03 };
         assert_eq!(g.value(), 0x03);
+    }
+
+    #[test]
+    fn cmd_order_layout() {
+        // CMDPack: [order, ...h_args, 0xFF, 0xFF]
+        let f = cmd_order(order::SAVE, &[]);
+        assert_eq!(f[2], cmd::CMD);
+        assert_eq!(f[1], 3);
+        assert_eq!(&f[4..7], &[0x02, 0xFF, 0xFF]);
+
+        let f2 = cmd_order(order::CONFIG, &[0x01]);
+        assert_eq!(&f2[4..8], &[0x70, 0x01, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn parse_precision_reply() {
+        // payload: [status, order=0x25, precision_um, min lo, min hi, max lo, max hi]
+        let payload = [0x00, 0x25, 10, 0x00, 0x00, 0xA0, 0x0F];
+        let p = parse_precision(&payload).unwrap();
+        assert_eq!(p, Precision { step: Um(10), min: Um(0), max: Um(4000) });
+    }
+
+    #[test]
+    fn sync_request_and_reply() {
+        let f = sync();
+        assert_eq!(f[2], cmd::SYNC);
+        assert_eq!(&f[4..10], &[1, 2, 3, 4, 0xFF, 0xFF]);
+
+        let mut payload = vec![0u8; 60];
+        payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        payload[26..36].copy_from_slice(b"V1.2.3.456");
+        let info = parse_sync(&payload).unwrap();
+        assert_eq!(info.serial, "SN0123456789ABCD");
+        assert_eq!(info.firmware, "V1.2.3.456");
+    }
+
+    #[test]
+    fn defkey_request_and_reply() {
+        let f = read_defkey_rows(2, 3);
+        assert_eq!(f[2], cmd::DEFKEY);
+        assert_eq!(&f[4..7], &[RW_READ, 2, 3]);
+
+        // payload: [rw, rowA, 21 usages, rowB, 21 usages]
+        let mut payload = vec![0u8; 45];
+        payload[1] = 2;
+        payload[2] = 0x04; // col 0 = 'a'
+        payload[23] = 3;
+        payload[24 + 5] = 0x1A; // row 3 col 5 = 'w'
+        let rows = parse_defkey(&payload).unwrap();
+        assert_eq!(rows[0].row, 2);
+        assert_eq!(rows[0].keys[0], (0, 0x04));
+        assert_eq!(rows[1].row, 3);
+        assert_eq!(rows[1].keys[0], (5, 0x1A));
     }
 }
