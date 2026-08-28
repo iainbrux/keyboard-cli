@@ -1,0 +1,756 @@
+import KeyboardService from './KeyboardService';
+import { useBatchProcessing } from '../composables/useBatchProcessing';
+import type { KeyboardConfig, Keyboards } from '@sparklinkplayjoy/sdk-keyboard/dist/esm/src/utils/validate';
+
+class ExportService {
+  private processBatches = useBatchProcessing().processBatches;
+  private globalTravelCache: number | null = null;
+
+  private async retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    maxRetries: number = 2,
+    backoffMs: number = 200
+  ): Promise<T> {
+    let lastError: any;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, backoffMs * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  async gatherDeviceInfo(): Promise<Partial<KeyboardConfig['system']>> {
+    try {
+      const baseInfo = await KeyboardService.getBaseInfo();
+      if (baseInfo instanceof Error) {
+        console.error('Failed to get base info:', baseInfo);
+        return {};
+      }
+
+      const pollingRateResult = await KeyboardService.getApi({ type: 'ORDER_TYPE_ROES' });
+      const pollingRate = pollingRateResult instanceof Error ? 3 : pollingRateResult.sArg || 3;
+
+      const topDeadBandResult = await KeyboardService.getApi({ type: 'ORDER_TYPE_TOP_DEAD_SWITCH' });
+      const topDeadBand = topDeadBandResult instanceof Error ? 0 : topDeadBandResult.sArg || 0;
+
+      return {
+        rateOfReturn: pollingRate,
+        topDeadBandSwitch: topDeadBand,
+        productId: baseInfo.productId || 0,
+        vendorId: baseInfo.vendorId || 0,
+        keyboardName: baseInfo.keyboardName || '',
+        usage: baseInfo.usage || 0,
+        usagePage: baseInfo.usagePage || 0,
+      };
+    } catch (error) {
+      console.error('Error gathering device info:', error);
+      return {};
+    }
+  }
+
+  async gatherLightingConfig(): Promise<Partial<KeyboardConfig['light']>> {
+    try {
+      const lighting = await KeyboardService.getLighting();
+      const logoLighting = await KeyboardService.getLogoLighting();
+      const specialLighting = await KeyboardService.getSpecialLighting();
+
+      return {
+        main: lighting instanceof Error ? this.getDefaultLightConfig() : this.convertLightingToConfig(lighting),
+        logo: logoLighting instanceof Error ? this.getDefaultLightConfig() : this.convertLightingToConfig(logoLighting),
+        other: specialLighting instanceof Error ? this.getDefaultLightConfig() : this.convertLightingToConfig(specialLighting),
+      };
+    } catch (error) {
+      console.error('Error gathering lighting config:', error);
+      return {
+        main: this.getDefaultLightConfig(),
+        logo: this.getDefaultLightConfig(),
+        other: this.getDefaultLightConfig(),
+      };
+    }
+  }
+
+  private convertLightingToConfig(lighting: any): KeyboardConfig['light']['main'] {
+    return {
+      open: lighting.open ?? true,
+      mode: lighting.type ?? 'static',
+      staticColors: lighting.colors || ['#FF0000'],
+      selectStaticColor: lighting.staticColor ?? 0,
+      luminance: lighting.luminance ?? 100,
+      speed: lighting.speed ?? 50,
+      sleepTime: lighting.sleepDelay ?? 0,
+      direction: lighting.direction ?? true,
+      dynamic: lighting.mode ?? 0,
+    };
+  }
+
+  private getDefaultLightConfig(): KeyboardConfig['light']['main'] {
+    return {
+      open: true,
+      mode: 'static',
+      staticColors: ['#FF0000'],
+      selectStaticColor: 0,
+      luminance: 100,
+      speed: 50,
+      sleepTime: 0,
+      direction: true,
+      dynamic: 0,
+    };
+  }
+
+  async gatherKeyboardsConfig(): Promise<Keyboards[]> {
+    try {
+      const layout = await KeyboardService.defKey();
+      if (layout instanceof Error) {
+        console.error('Failed to get keyboard layout:', layout);
+        return [];
+      }
+
+      const allKeys: number[] = [];
+      layout.forEach(layer => {
+        layer.forEach(key => {
+          if (!allKeys.includes(key.keyValue)) {
+            allKeys.push(key.keyValue);
+          }
+        });
+      });
+
+      const keyboardsData: Map<number, Partial<Keyboards>> = new Map();
+
+      allKeys.forEach(keyValue => {
+        const keyLocation = this.findKeyLocation(layout, keyValue);
+        keyboardsData.set(keyValue, {
+          col: keyLocation?.col ?? 0,
+          row: keyLocation?.row ?? 0,
+          keyValue,
+          performance: this.getDefaultPerformance(),
+          advancedKeys: { advancedType: 'none', value: 0 },
+          customKeys: { fn0: null, fn1: null, fn2: null, fn3: null },
+          light: { custom: { R: 255, G: 255, B: 255, key: keyValue } },
+        });
+      });
+
+      await this.gatherCustomKeyBindings(allKeys, keyboardsData);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      await this.processBatches(allKeys, async (keyValue) => {
+        await this.gatherPerformanceData(keyValue, keyboardsData);
+      }, 80, 100);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      await this.processBatches(allKeys, async (keyValue) => {
+        await this.gatherAdvancedKeyData(keyValue, keyboardsData);
+      }, 80, 100);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      await this.processBatches(allKeys, async (keyValue) => {
+        await this.gatherLightingData(keyValue, keyboardsData);
+      }, 80, 100);
+
+      return Array.from(keyboardsData.values()) as Keyboards[];
+    } catch (error) {
+      console.error('Error gathering keyboards config:', error);
+      return [];
+    }
+  }
+
+  private async gatherCustomKeyBindings(keys: number[], dataMap: Map<number, Partial<Keyboards>>): Promise<void> {
+    try {
+      const fnLayers = [0, 1, 2, 3];
+      const batchSize = 10;
+      
+      for (const layer of fnLayers) {
+        for (let i = 0; i < keys.length; i += batchSize) {
+          const keyBatch = keys.slice(i, i + batchSize);
+          const params = keyBatch.map(key => ({ key, layout: layer }));
+          
+          const layoutInfo = await this.retryWithBackoff(() => KeyboardService.getLayoutKeyInfo(params));
+          
+          if (!(layoutInfo instanceof Error) && Array.isArray(layoutInfo)) {
+            layoutInfo.forEach((keyInfo: any, index) => {
+              const keyValue = params[index].key;
+              const keyData = dataMap.get(keyValue);
+              if (keyData) {
+                const fnKey = `fn${layer}` as 'fn0' | 'fn1' | 'fn2' | 'fn3';
+                const bindValue = Number(keyInfo?.value);
+                if (!isNaN(bindValue) && typeof keyInfo?.value !== 'undefined') {
+                  keyData.customKeys![fnKey] = {
+                    keyValue: keyValue,
+                    bindKeyValue: bindValue
+                  };
+                } else {
+                  keyData.customKeys![fnKey] = null;
+                }
+              }
+            });
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } catch (error) {
+      console.error('Error gathering custom key bindings:', error);
+    }
+  }
+
+  private findKeyLocation(layout: any[][], keyValue: number): { row: number; col: number } | null {
+    for (const layer of layout) {
+      for (const key of layer) {
+        if (key.keyValue === keyValue) {
+          return { row: key.location.row, col: key.location.col };
+        }
+      }
+    }
+    return null;
+  }
+
+  private async gatherPerformanceData(keyValue: number, dataMap: Map<number, Partial<Keyboards>>): Promise<void> {
+    const keyData = dataMap.get(keyValue);
+    if (!keyData) return;
+
+    try {
+      const performanceMode = await this.retryWithBackoff(() => KeyboardService.getPerformanceMode(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const rtTravel = await this.retryWithBackoff(() => KeyboardService.getRtTravel(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const dpDr = await this.retryWithBackoff(() => KeyboardService.getDpDr(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const axis = await this.retryWithBackoff(() => KeyboardService.getAxis(keyValue));
+
+      if (!(performanceMode instanceof Error)) {
+        keyData.performance!.advancedKeyMode = performanceMode.advancedKeyMode ?? 0;
+        
+        // Parse touchMode to set boolean flags
+        const touchMode = performanceMode.touchMode;
+        keyData.performance!.isRt = touchMode === 'rt';
+        keyData.performance!.isGlobalTriggering = touchMode === 'global';
+        keyData.performance!.isSingle = touchMode === 'single';
+      }
+      
+      // ALWAYS collect all travel values (hardware preserves them regardless of active mode)
+      // Global travel value (same for all keys)
+      if (this.globalTravelCache === null) {
+        const globalTravel = await this.retryWithBackoff(() => KeyboardService.getGlobalTouchTravel());
+        if (!(globalTravel instanceof Error)) {
+          this.globalTravelCache = globalTravel.globalTouchTravel ?? 0;
+        }
+      }
+      keyData.performance!.globalTriggeringValue = this.globalTravelCache ?? 0;
+      
+      // Single travel value (per-key)
+      const singleTravel = await this.retryWithBackoff(() => KeyboardService.getSingleTravel(keyValue));
+      if (!(singleTravel instanceof Error)) {
+        keyData.performance!.singleTriggeringValue = singleTravel ?? 0;
+      }
+
+      if (!(rtTravel instanceof Error)) {
+        keyData.performance!.rtPressValue = rtTravel.pressTravel ?? 0;
+        keyData.performance!.rtReleaseValue = rtTravel.releaseTravel ?? 0;
+      }
+
+      if (!(dpDr instanceof Error)) {
+        keyData.performance!.deadBandPressValue = dpDr.dpThreshold ?? 0;
+        keyData.performance!.deadBandReleaseValue = dpDr.drThreshold ?? 0;
+      }
+
+      if (!(axis instanceof Error)) {
+        keyData.performance!.axisID = axis.axis ?? 0;
+      }
+    } catch (error) {
+      console.error(`Error gathering performance data for key ${keyValue}:`, error);
+    }
+  }
+
+  private async gatherAdvancedKeyData(keyValue: number, dataMap: Map<number, Partial<Keyboards>>): Promise<void> {
+    const keyData = dataMap.get(keyValue);
+    if (!keyData) return;
+
+    try {
+      const dks = await this.retryWithBackoff(() => KeyboardService.getDks(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const mpt = await this.retryWithBackoff(() => KeyboardService.getMpt(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const socd = await this.retryWithBackoff(() => KeyboardService.getSocd(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const mt = await this.retryWithBackoff(() => KeyboardService.getMT(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const tgl = await this.retryWithBackoff(() => KeyboardService.getTGL(keyValue));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const end = await this.retryWithBackoff(() => KeyboardService.getEND(keyValue));
+
+      const advancedKeys: Keyboards['advancedKeys'] = {};
+      let activeType: string | undefined;
+      let activeValue: number = 0;
+
+      if (!(dks instanceof Error) && dks) {
+        advancedKeys.dks = dks;
+        if (dks.enable) {
+          activeType = 'dks';
+          activeValue = dks.keyValue;
+        }
+      }
+
+      if (!(mpt instanceof Error) && mpt) {
+        advancedKeys.mpt = mpt;
+        if (mpt.enable && !activeType) {
+          activeType = 'mpt';
+          activeValue = mpt.triggeringPoint;
+        }
+      }
+
+      if (!(socd instanceof Error) && socd) {
+        advancedKeys.socd = socd;
+        if (socd.enable && !activeType) {
+          activeType = 'socd';
+          activeValue = socd.mode;
+        }
+      }
+
+      if (!(mt instanceof Error) && mt) {
+        advancedKeys.mt = mt;
+        if (mt.enable && !activeType) {
+          activeType = 'mt';
+          activeValue = mt.mode;
+        }
+      }
+
+      if (!(tgl instanceof Error) && tgl) {
+        advancedKeys.tgl = tgl;
+        if (tgl.enable && !activeType) {
+          activeType = 'tgl';
+          activeValue = 0;
+        }
+      }
+
+      if (!(end instanceof Error) && end) {
+        advancedKeys.end = end;
+      }
+
+      if (activeType) {
+        advancedKeys.advancedType = activeType;
+        advancedKeys.value = activeValue;
+      } else {
+        advancedKeys.advancedType = 'none';
+        advancedKeys.value = 0;
+      }
+
+      keyData.advancedKeys = advancedKeys;
+    } catch (error) {
+      console.error(`Error gathering advanced key data for key ${keyValue}:`, error);
+    }
+  }
+
+  private async withCustomModeForExport<T>(callback: () => Promise<T>): Promise<T> {
+    interface LightingSnapshot {
+      main: any;
+      logo: any;
+      other: any;
+    }
+
+    let snapshot: LightingSnapshot | null = null;
+    let wasAlreadyCustom = false;
+
+    try {
+      const mainLighting = await KeyboardService.getLighting();
+      const logoLighting = await KeyboardService.getLogoLighting();
+      const otherLighting = await KeyboardService.getSpecialLighting();
+
+      if (mainLighting instanceof Error) {
+        throw new Error('Failed to get current main lighting state');
+      }
+
+      snapshot = {
+        main: mainLighting,
+        logo: logoLighting instanceof Error ? null : logoLighting,
+        other: otherLighting instanceof Error ? null : otherLighting,
+      };
+
+      wasAlreadyCustom = mainLighting.mode === 21 && (mainLighting.open === true || mainLighting.open === 1);
+
+      if (!wasAlreadyCustom) {
+        const { dynamicColorId, ...filteredParams } = mainLighting;
+        filteredParams.mode = 21;
+        filteredParams.type = 'custom';
+        filteredParams.open = true;
+
+        const switchResult = await KeyboardService.setLighting(filteredParams);
+        if (switchResult instanceof Error) {
+          throw new Error(`Failed to switch to custom mode: ${switchResult.message}`);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      const result = await callback();
+      return result;
+
+    } finally {
+      if (snapshot && !wasAlreadyCustom) {
+        try {
+          const mainWasOff = snapshot.main.open === false || snapshot.main.open === 0;
+          
+          if (mainWasOff) {
+            const { dynamicColorId, ...mainParams } = snapshot.main;
+            mainParams.open = false;
+            const mainResult = await KeyboardService.setLighting(mainParams);
+            if (mainResult instanceof Error) {
+              console.error('Failed to restore main zone OFF:', mainResult.message);
+            }
+          } else {
+            const { dynamicColorId, ...mainParams } = snapshot.main;
+            const mainResult = await KeyboardService.setLighting(mainParams);
+            if (mainResult instanceof Error) {
+              console.error('Failed to restore main lighting:', mainResult.message);
+            }
+          }
+
+          if (snapshot.logo) {
+            const logoWasOn = snapshot.logo.open === true || snapshot.logo.open === 1;
+            if (logoWasOn) {
+              const { dynamicColorId, ...logoParams } = snapshot.logo;
+              const logoResult = await KeyboardService.setLogoLighting(logoParams);
+              if (logoResult instanceof Error) {
+                console.error('Failed to restore logo lighting:', logoResult.message);
+              }
+            }
+          }
+
+          if (snapshot.other) {
+            const otherWasOn = snapshot.other.open === true || snapshot.other.open === 1;
+            if (otherWasOn) {
+              const { dynamicColorId, ...otherParams } = snapshot.other;
+              const otherResult = await KeyboardService.setSpecialLighting(otherParams);
+              if (otherResult instanceof Error) {
+                console.error('Failed to restore special lighting:', otherResult.message);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error restoring lighting state:', error);
+        }
+      }
+    }
+  }
+
+  private async gatherLightingData(keyValue: number, dataMap: Map<number, Partial<Keyboards>>): Promise<void> {
+    const keyData = dataMap.get(keyValue);
+    if (!keyData) return;
+
+    try {
+      const customLight = await this.retryWithBackoff(() => KeyboardService.getCustomLighting(keyValue));
+
+      if (!(customLight instanceof Error) && customLight.R !== undefined) {
+        keyData.light = {
+          custom: {
+            R: customLight.R,
+            G: customLight.G,
+            B: customLight.B,
+            key: keyValue,
+          },
+        };
+      }
+    } catch (error) {
+      console.error(`Error gathering lighting data for key ${keyValue}:`, error);
+    }
+  }
+
+  private getDefaultPerformance(): Keyboards['performance'] {
+    return {
+      isGlobalTriggering: true,
+      globalTriggeringValue: 0,
+      isRt: false,
+      isSingle: false,
+      singleTriggeringValue: 0,
+      rtPressValue: 0,
+      rtReleaseValue: 0,
+      axisID: 0,
+      deadBandPressValue: 0,
+      deadBandReleaseValue: 0,
+      advancedKeyMode: 0,
+    };
+  }
+
+  async buildMacroLibrary(): Promise<KeyboardConfig['macro']> {
+    try {
+      const layout = await KeyboardService.defKey();
+      if (layout instanceof Error) {
+        return { list: [], v2list: [] };
+      }
+
+      const allKeys: number[] = [];
+      layout.forEach(layer => {
+        layer.forEach(key => {
+          if (!allKeys.includes(key.keyValue)) {
+            allKeys.push(key.keyValue);
+          }
+        });
+      });
+
+      const macros: KeyboardConfig['macro']['list'] = [];
+      let macroId = 1;
+
+      await this.processBatches(allKeys, async (keyValue) => {
+        const macroResult = await KeyboardService.getMacro(keyValue);
+        if (!(macroResult instanceof Error) && macroResult && macroResult.macros && macroResult.macros.length > 0) {
+          macros.push({
+            date: new Date().toISOString(),
+            id: macroId++,
+            name: `Macro ${keyValue}`,
+            step: macroResult.macros.map((m: any, idx: number) => ({
+              id: idx,
+              keyValue: m.keyCode || 0,
+              status: m.status === 'press' ? 1 : 0,
+              delay: m.timeDifference || 0,
+            })),
+          });
+        }
+      }, 40);
+
+      return { list: macros, v2list: [] };
+    } catch (error) {
+      console.error('Error building macro library:', error);
+      return { list: [], v2list: [] };
+    }
+  }
+
+  async gatherKeyboardSnapshot(): Promise<KeyboardConfig> {
+    this.globalTravelCache = null;
+
+    let originalLighting: any = null;
+    let originalLogo: any = null;
+    let originalSpecial: any = null;
+
+    try {
+      originalLighting = await KeyboardService.getLighting();
+      originalLogo = await KeyboardService.getLogoLighting();
+      originalSpecial = await KeyboardService.getSpecialLighting();
+
+      if (originalLighting instanceof Error) {
+        throw new Error('Failed to capture original lighting state');
+      }
+
+      const { dynamicColorId, ...originalParams } = originalLighting;
+      const tempCustomParams: any = {
+        ...originalParams,
+        type: 'custom',
+        mode: 21,
+        open: true,
+      };
+
+      const switchResult = await KeyboardService.setLighting(tempCustomParams);
+      if (switchResult instanceof Error) {
+        throw new Error(`Failed to switch to custom mode: ${switchResult.message}`);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      const system = await this.gatherDeviceInfo();
+      const light = await this.gatherLightingConfig();
+      const keyboards = await this.gatherKeyboardsConfig();
+      const macro = await this.buildMacroLibrary();
+
+      const config: KeyboardConfig = {
+        system: system as KeyboardConfig['system'],
+        light: light as KeyboardConfig['light'],
+        keyboards: keyboards as Keyboards[],
+        macro,
+      };
+      
+      return config;
+
+    } finally {
+      if (originalLighting && !(originalLighting instanceof Error)) {
+        try {
+          const { dynamicColorId, ...mainParams } = originalLighting;
+          const restoreResult = await KeyboardService.setLighting(mainParams);
+          if (restoreResult instanceof Error) {
+            console.error('Failed to restore main lighting:', restoreResult.message);
+          }
+
+          if (originalLogo && !(originalLogo instanceof Error)) {
+            const logoWasOn = originalLogo.open === true || originalLogo.open === 1;
+            if (logoWasOn) {
+              const { dynamicColorId: logoColorId, ...logoParams } = originalLogo;
+              await KeyboardService.setLogoLighting(logoParams);
+            }
+          }
+
+          if (originalSpecial && !(originalSpecial instanceof Error)) {
+            const specialWasOn = originalSpecial.open === true || originalSpecial.open === 1;
+            if (specialWasOn) {
+              const { dynamicColorId: specialColorId, ...specialParams} = originalSpecial;
+              await KeyboardService.setSpecialLighting(specialParams);
+            }
+          }
+        } catch (error) {
+          console.error('Error restoring original lighting:', error);
+        }
+      }
+    }
+  }
+
+  async exportProfile(filename: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const config = await this.gatherKeyboardSnapshot();
+      KeyboardService.exportConfig(config, filename);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to export profile:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  private convertLightConfigToSDKFormat(lightConfig: KeyboardConfig['light']['main']): any {
+    const sdkFormat: any = {
+      direction: lightConfig.direction,
+      speed: lightConfig.speed,
+      colors: lightConfig.staticColors,
+      luminance: lightConfig.luminance,
+      sleepDelay: lightConfig.sleepTime,
+      staticColor: lightConfig.selectStaticColor,
+      type: lightConfig.mode,
+    };
+
+    if (lightConfig.mode === 'static') {
+      sdkFormat.mode = 0;
+    } else if (lightConfig.mode === 'dynamic') {
+      sdkFormat.mode = lightConfig.dynamic;
+    } else if (lightConfig.mode === 'custom') {
+      sdkFormat.mode = 21;
+    }
+
+    return sdkFormat;
+  }
+
+  private async applyLightingZones(config: KeyboardConfig): Promise<void> {
+    const anyZoneOff = 
+      (config.light?.main && !config.light.main.open) ||
+      (config.light?.logo && !config.light.logo.open) ||
+      (config.light?.other && !config.light.other.open);
+
+    if (anyZoneOff) {
+      const closeResult = await KeyboardService.closedLighting();
+      if (closeResult instanceof Error) {
+        console.error('Failed to turn off lighting:', closeResult.message);
+      }
+    }
+
+    if (config.light?.main && config.light.main.open) {
+      const mainLighting = this.convertLightConfigToSDKFormat(config.light.main);
+      const result = await KeyboardService.setLighting(mainLighting);
+      if (result instanceof Error) {
+        console.error('Failed to apply main lighting:', result.message);
+      }
+    }
+
+    if (config.light?.logo && config.light.logo.open) {
+      const logoLighting = this.convertLightConfigToSDKFormat(config.light.logo);
+      const result = await KeyboardService.setLogoLighting(logoLighting);
+      if (result instanceof Error) {
+        console.error('Failed to apply logo lighting:', result.message);
+      }
+    }
+
+    if (config.light?.other && config.light.other.open) {
+      const otherLighting = this.convertLightConfigToSDKFormat(config.light.other);
+      const result = await KeyboardService.setSpecialLighting(otherLighting);
+      if (result instanceof Error) {
+        console.error('Failed to apply special lighting:', result.message);
+      }
+    }
+  }
+
+  async applyImportedConfig(config: KeyboardConfig): Promise<void> {
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const saveResult = await KeyboardService.saveCustomLighting();
+      if (saveResult instanceof Error) {
+        console.error('Failed to save custom lighting:', saveResult.message);
+      }
+    } catch (error) {
+      console.error('Failed to apply imported configuration:', error);
+      throw error;
+    }
+  }
+
+  async importProfile(file: File): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Switch to custom mode before import to ensure RGB data loads correctly
+      const currentState = await KeyboardService.getLighting();
+      
+      if (!(currentState instanceof Error)) {
+        const { open, dynamicColorId, ...filteredParams } = currentState;
+        filteredParams.mode = 21;
+        filteredParams.type = 'custom';
+        
+        const switchResult = await KeyboardService.setLighting(filteredParams);
+        if (switchResult instanceof Error) {
+          console.error('Failed to switch to custom mode:', switchResult.message);
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+      }
+      
+      const result = await KeyboardService.importConfig(file);
+      
+      if (result instanceof Error) {
+        return { success: false, error: result.message };
+      }
+
+      if (result.success === false) {
+        return { success: false, error: result.error || 'Import failed' };
+      }
+
+      const text = await file.text();
+      const config: KeyboardConfig = JSON.parse(text);
+      
+      // Wait for SDK import to complete, then save custom RGB to flash
+      await this.applyImportedConfig(config);
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to import profile:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  async exportProfileDebug(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const config = await this.gatherKeyboardSnapshot();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `debug-profile-${timestamp}.json`;
+      const jsonStr = JSON.stringify(config, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to export debug profile:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+}
+
+export default new ExportService();
