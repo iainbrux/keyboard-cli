@@ -49,20 +49,44 @@
 //!
 //! Feature reports (`sendFeatureReport`/`receiveFeatureReport`, logged by
 //! the shim as `dir` `"out-feature"`/`"in-feature"`) are not required to be
-//! exactly `REPORT_LEN` bytes; a length other than 64 on one of those lines
-//! is reported, not a hard failure. Everything else (`"in"`/`"out"`) is our
-//! own fixed HID report framing and must be exactly 64 bytes, or it is a
-//! hard failure. See fix round 2, Important 2.
+//! exactly `REPORT_LEN` bytes, in either direction: a length mismatch is
+//! reported, never a hard failure. An INBOUND one gets an extra `WARNING:`
+//! callout, since the WebHID specification allows `receiveFeatureReport()`
+//! to prefix the report ID as byte 0 "if the device uses report IDs" (unlike
+//! `inputreport`'s data, which never does), so this may be exactly that and
+//! is worth a human's attention, without being a safety question any more
+//! (see Redaction, below, for why not). Everything else (`"in"`/`"out"`) is
+//! our own fixed HID report framing and must be exactly 64 bytes, or it is a
+//! hard failure.
 //!
-//! Redaction: an inbound (`dir` starting with `"in"`) SYNC (cmd 0x01) frame
-//! must be marked `"redacted": true` by whatever produced the JSONL, or this
-//! harness hard-fails on it. `capture/hid-shim.js` is the only thing that
-//! should ever produce these lines and it always stamps this field, so a
-//! missing or false value means either an older copy of the shim was used,
-//! or the shim itself declined to redact because the expected serial window
-//! did not look like a serial (see `capture/README.md`, "Redaction"): both
-//! cases need a human to look before anything is committed. See fix round
-//! 2, Important 1.
+//! # Redaction: rebuilt from scratch in fix round 3
+//!
+//! Every defect in the redaction design across three rounds of review,
+//! traced back to one root cause: guessing WHERE a serial number would be
+//! (a byte offset, a command byte, a direction, a shape). This version does
+//! not guess. It knows the VALUE, supplied by the operator, and matches on
+//! that instead.
+//!
+//! `capture/hid-shim.js` exposes `window.__wh.protect(serial)`. From that
+//! point on, every logged entry has the serial's ASCII-bytes hex encoding
+//! replaced with zeros wherever it appears in the report's hex text, an
+//! exact, case-insensitive substring match, independent of command,
+//! direction, or frame length. `jsonl()` refuses to emit anything until
+//! `protect()` has been called. See that file's own header comment for the
+//! full design and its one disclosed limit (it can only catch the encoding
+//! it was told about; a serial the device emits in some other encoding,
+//! BCD or byte-reversed for example, would not match).
+//!
+//! This file re-verifies that independently, on the Rust side, rather than
+//! trust the shim's self-report: if `capture/serial.local` (gitignored, one
+//! line, the plain-text serial) exists, `find_serial_leaks` scans the raw
+//! text of every `captures/*.jsonl` file, byte for byte, for that same
+//! ASCII-hex needle, and hard-fails on any hit, anywhere, regardless of
+//! what field it is in or what frame it belongs to. If `capture/serial.local`
+//! is absent, that is not silently treated as "nothing to check": the
+//! summary prints a prominent warning that the check was **skipped**, not
+//! passed, since a missing file and a clean result must never look the
+//! same.
 //!
 //! Skips cleanly, with a printed reason, when `captures/` does not exist yet
 //! (pre-hardware CI, i.e. every run before Task 19 supplies real captures).
@@ -121,22 +145,6 @@ enum Class {
     /// `wh-proto` models. See the module doc comment for what this class
     /// does and does not prove.
     Modelled { cmd: u8 },
-}
-
-impl Class {
-    /// The command byte, for every class where `frame::parse` succeeded and
-    /// so a command byte genuinely exists. `None` for `FramingBug` (parse
-    /// never got far enough to know), `LenLimitation` (same), and
-    /// `DeviceFail` (the command byte there is always the fixed 0xFF
-    /// sentinel, not a protocol command).
-    fn cmd(&self) -> Option<u8> {
-        match self {
-            Class::TrailingBytes { cmd, .. }
-            | Class::Unmodelled { cmd }
-            | Class::Modelled { cmd } => Some(*cmd),
-            Class::FramingBug(_) | Class::LenLimitation(_) | Class::DeviceFail(_) => None,
-        }
-    }
 }
 
 /// Sort one already-decoded 64-byte report into a `Class`. Pure: never
@@ -248,11 +256,16 @@ struct Summary {
     /// legitimate reasons could produce it too, and the operator needs to
     /// decide whether to re-capture.
     scenario_directions: BTreeMap<String, (bool, bool)>,
+    /// `true` when `capture/serial.local` did not exist, so
+    /// `find_serial_leaks` was never run at all. Printed as a prominent
+    /// warning: the absence of a failure here must never be mistaken for
+    /// "checked and clean" when it might mean "not checked".
+    serial_check_skipped: bool,
     /// file:line-prefixed hard-failure messages: bad JSON, a malformed hex
     /// string, a non-feature report that is not 64 bytes, a codec bug, a
-    /// length our framing rejects, or an inbound SYNC frame missing
-    /// `"redacted": true`. A non-empty list fails the test, but only after
-    /// the summary has already been printed and written.
+    /// length our framing rejects, or a capture containing the protected
+    /// serial's hex encoding. A non-empty list fails the test, but only
+    /// after the summary has already been printed and written.
     failures: Vec<String>,
 }
 
@@ -298,10 +311,17 @@ fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summar
 
     if bytes.len() != REPORT_LEN {
         if dir.ends_with("-feature") {
-            // A feature report legitimately need not be REPORT_LEN bytes:
-            // report it, do not fail. Un-redactable and un-classifiable
-            // (our `classify` assumes the fixed 64-byte layout), but its
-            // length and direction are themselves useful data.
+            // A feature report (either direction) is not required to be
+            // REPORT_LEN bytes. Not a hard failure: redaction (see the
+            // module doc comment, capture/hid-shim.js's protect()-based
+            // exact substring match over the serial's hex encoding) does
+            // not depend on frame shape, length, command, or direction at
+            // all, so a length mismatch here carries no special safety
+            // risk. Still worth a human's attention on the INBOUND side
+            // specifically, since the WebHID spec allows
+            // receiveFeatureReport() to prefix the report ID as byte 0 "if
+            // the device uses report IDs", so this may be exactly that:
+            // flagged in the WARNING: block by render_summary, not failed.
             summary.checked += 1;
             if let Some(id) = v["report_id"].as_u64() {
                 *summary.report_ids.entry(id as u8).or_insert(0) += 1;
@@ -329,32 +349,7 @@ fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summar
     }
     note_direction(summary, scenario, &dir);
 
-    let class = classify(&report);
-
-    // An inbound SYNC frame that is not stamped "redacted": true is a hard
-    // stop: either an older shim copy produced it, or the current shim
-    // examined it and declined to scrub (its own safety net, see
-    // hid-shim.js), and either way a real serial number may be about to be
-    // committed to a public repository. Checked against `class.cmd()`
-    // rather than the raw byte so this only fires for frames `classify`
-    // actually recognised as parseable; a frame that is already a
-    // FramingBug/LenLimitation gets exactly one failure message, not two.
-    if class.cmd() == Some(wh_proto::cmds::cmd::SYNC) && dir.starts_with("in") {
-        let redacted = v["redacted"].as_bool().unwrap_or(false);
-        if !redacted {
-            summary.failures.push(format!(
-                "{ctx}: inbound SYNC (cmd 0x{:02X}) frame is not marked \"redacted\": true. \
-                 This may be an unredacted device serial number about to be committed. \
-                 capture/hid-shim.js always stamps every inbound SYNC frame either \
-                 \"redacted\":true or \"redacted\":false with a \"redaction_skipped\" reason; \
-                 a missing field means an older copy of the shim produced this line. Do not \
-                 commit until a human has confirmed no real serial is present.",
-                wh_proto::cmds::cmd::SYNC
-            ));
-        }
-    }
-
-    match class {
+    match classify(&report) {
         Class::FramingBug(msg) => summary.failures.push(format!("{ctx}: codec bug: {msg}")),
         Class::LenLimitation(len) => summary.failures.push(format!(
             "{ctx}: framing limitation: declared length {len} exceeds the 60-byte cap parse() \
@@ -412,6 +407,66 @@ fn scan_dir(dir: &Path) -> Option<Summary> {
     Some(summary)
 }
 
+/// Reads `capture/serial.local` (gitignored: one line, the plain-text
+/// device serial as printed on the vendor configurator's Device tab, the
+/// operator's own local copy of the value they also gave
+/// `window.__wh.protect()`) and returns its ASCII bytes' lowercase hex
+/// encoding: the exact needle `find_serial_leaks` searches every capture
+/// for. `None` if the file does not exist or is blank; the caller must
+/// treat that as "the check was skipped", never as "the check passed".
+fn load_protected_serial_hex(capture_src_dir: &Path) -> Option<String> {
+    let contents = fs::read_to_string(capture_src_dir.join("serial.local")).ok()?;
+    let serial = contents.trim();
+    if serial.is_empty() {
+        return None;
+    }
+    Some(serial.bytes().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Scans the raw text of every `*.jsonl` file directly under `captures_dir`
+/// for a case-insensitive occurrence of `serial_hex` anywhere on any line,
+/// not just inside a `"hex"` field: if it is anywhere in the raw line, it
+/// is a problem regardless of why. This is deliberately independent of
+/// everything else in this file. It does not care what command a frame
+/// carries, which direction it came from, whether it parses at all, or
+/// what length it is: that is the whole point, since every previous,
+/// shape-based version of this check could be defeated by a shape it did
+/// not anticipate. This is the ground-truth re-verification of
+/// `capture/hid-shim.js`'s own `protect()`-based redaction, not a
+/// restatement of it: it does not trust the shim's self-report, it
+/// independently confirms the one fact that actually matters.
+fn find_serial_leaks(captures_dir: &Path, serial_hex: &str) -> Vec<String> {
+    let mut hits = Vec::new();
+    let needle = serial_hex.to_lowercase();
+    let Ok(entries) = fs::read_dir(captures_dir) else {
+        return hits;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.extension().is_none_or(|e| e != "jsonl") {
+            continue;
+        }
+        let scenario = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for (lineno, line) in text.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                hits.push(format!(
+                    "{scenario}:{}: contains the protected serial's hex encoding. This must \
+                     never be committed.",
+                    lineno + 1
+                ));
+            }
+        }
+    }
+    hits
+}
+
 /// Sums a `(Origin, K) -> usize` map down to a plain `K -> usize` aggregate,
 /// so the summary can show a total per command byte or failure code first,
 /// with the per-scenario/direction attribution underneath it, rather than
@@ -428,6 +483,14 @@ fn aggregate<K: Ord + Copy>(map: &BTreeMap<(Origin, K), usize>) -> BTreeMap<K, u
 
 fn render_summary(summary: &Summary) -> String {
     let mut out = String::new();
+    if summary.serial_check_skipped {
+        let _ = writeln!(
+            out,
+            "golden: WARNING: capture/serial.local not found. The serial-leak check was \
+             SKIPPED, not passed. This does NOT mean the captures are safe, only that they \
+             were not checked. See capture/README.md, \"Redaction\"."
+        );
+    }
     let _ = writeln!(out, "golden: {} reports checked", summary.checked);
     let _ = writeln!(
         out,
@@ -506,6 +569,22 @@ fn render_summary(summary: &Summary) -> String {
     }
 
     if !summary.feature_length_mismatch.is_empty() {
+        let inbound_total: usize = summary
+            .feature_length_mismatch
+            .iter()
+            .filter(|((origin, _), _)| origin.dir.starts_with("in"))
+            .map(|(_, count)| *count)
+            .sum();
+        if inbound_total > 0 {
+            let _ = writeln!(
+                out,
+                "golden: WARNING: {inbound_total} inbound feature-report frame(s) with a \
+                 length other than {REPORT_LEN} bytes. Not a failure (redaction does not \
+                 depend on frame shape), but the WebHID specification allows \
+                 receiveFeatureReport() to prefix the report ID as byte 0 \"if the device \
+                 uses report IDs\", so this may be exactly that; see capture/README.md."
+            );
+        }
         let _ = writeln!(
             out,
             "golden: {} feature-report length-mismatch combination(s) (not a failure: a \
@@ -581,16 +660,25 @@ fn assert_no_hard_failures(summary: &Summary) {
 
 /// Every captured report must parse (magic/len/crc). Everything else,
 /// unmodelled commands, trailing padding garbage, device failure replies, is
-/// counted and attributed rather than failed. See the module doc comment for
-/// the full design and for why the summary is printed and persisted before
-/// the test is allowed to fail.
+/// counted and attributed rather than failed. Independently of all of that,
+/// every capture is re-scanned for the protected serial's hex encoding, if
+/// `capture/serial.local` exists; see the module doc comment for the full
+/// design and for why the summary is printed and persisted before the test
+/// is allowed to fail.
 #[test]
 fn all_captures_decode_and_classify() {
+    let capture_src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../capture");
     let captures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");
-    let Some(summary) = scan_dir(&captures_dir) else {
+    let Some(mut summary) = scan_dir(&captures_dir) else {
         eprintln!("no captures/ yet, skipping");
         return;
     };
+    match load_protected_serial_hex(&capture_src_dir) {
+        Some(serial_hex) => summary
+            .failures
+            .extend(find_serial_leaks(&captures_dir, &serial_hex)),
+        None => summary.serial_check_skipped = true,
+    }
     report_summary(&summary, Path::new(env!("CARGO_TARGET_TMPDIR")));
     assert_no_hard_failures(&summary);
 }
@@ -618,15 +706,9 @@ mod classifier_tests {
         dir
     }
 
-    fn jsonl_line_ext(dir_field: &str, report_id: u8, report: &[u8], extra_json: &str) -> String {
-        let hexs: String = report.iter().map(|b| format!("{b:02x}")).collect();
-        format!(
-            "{{\"ts\":0,\"dir\":\"{dir_field}\",\"report_id\":{report_id},\"hex\":\"{hexs}\"{extra_json}}}"
-        )
-    }
-
     fn jsonl_line(dir_field: &str, report_id: u8, report: &[u8]) -> String {
-        jsonl_line_ext(dir_field, report_id, report, "")
+        let hexs: String = report.iter().map(|b| format!("{b:02x}")).collect();
+        format!("{{\"ts\":0,\"dir\":\"{dir_field}\",\"report_id\":{report_id},\"hex\":\"{hexs}\"}}")
     }
 
     #[test]
@@ -713,44 +795,6 @@ mod classifier_tests {
     fn device_reported_failure_is_counted_not_failed() {
         let f = frame::frame(frame::CMD_FAIL, &[0x03]).unwrap();
         assert_eq!(classify(&f), Class::DeviceFail(0x03));
-    }
-
-    /// Mirrors `capture/hid-shim.js`'s redaction exactly: zero report bytes
-    /// 13..29 (payload bytes 9..25, the serial window `parse_sync` reads)
-    /// after the frame's checksum has already been computed, the same order
-    /// of operations the shim uses on the hex string it is about to log.
-    /// Safe because `checksum` only ever covers the payload's *last* byte,
-    /// and `parse_sync` requires `payload.len() >= 36` (firmware ends at
-    /// 26..36), so that last byte sits at index 35 or beyond: outside the
-    /// redacted window. A redacted SYNC frame must still parse and still
-    /// classify as Modelled, and the semantic decoder must still work, just
-    /// with an empty serial.
-    #[test]
-    fn a_redacted_sync_frame_still_parses_and_classifies_as_modelled() {
-        let mut payload = vec![0u8; 60];
-        payload[9..25].copy_from_slice(b"REALSERIALNUMBER"); // 16 bytes
-        payload[26..36].copy_from_slice(b"V1.2.3.456");
-        let mut f = frame::frame(wh_proto::cmds::cmd::SYNC, &payload).unwrap();
-        let checksum_before = f[3];
-
-        for b in &mut f[13..29] {
-            *b = 0;
-        }
-
-        assert_eq!(
-            f[3], checksum_before,
-            "redaction must not disturb the checksum byte"
-        );
-        assert_eq!(
-            classify(&f),
-            Class::Modelled {
-                cmd: wh_proto::cmds::cmd::SYNC
-            }
-        );
-        let reply = frame::parse(&f).unwrap();
-        let info = wh_proto::cmds::parse_sync(reply.payload).unwrap();
-        assert_eq!(info.serial, "");
-        assert_eq!(info.firmware, "V1.2.3.456");
     }
 
     /// Drives the classifier through the same file-reading, JSON-parsing and
@@ -896,96 +940,76 @@ mod classifier_tests {
         assert_no_hard_failures(&summary);
     }
 
-    /// The redaction contract (Important 1, fix round 2): an inbound SYNC
-    /// frame with no `"redacted"` field at all, e.g. pasted from a capture
-    /// made with an older copy of the shim before this field existed, must
-    /// fail the whole run rather than silently let a real serial number
-    /// through.
+    /// Important 2, fix round 2: an OUTBOUND feature report is not required
+    /// to be REPORT_LEN bytes, and carries no device-originated data (the
+    /// operator/page controls what is sent), so a length mismatch on one
+    /// must be reported, not treated as a hard failure the way it would be
+    /// for a plain "in"/"out" line.
     #[test]
-    #[should_panic(expected = "hard failure")]
-    fn an_unredacted_inbound_sync_frame_fails_the_whole_run() {
-        let dir = unique_temp_dir("unredacted-sync-e2e");
-        let mut payload = vec![0u8; 60];
-        payload[9..25].copy_from_slice(b"REALSERIALNUMBER");
-        let f = frame::frame(wh_proto::cmds::cmd::SYNC, &payload).unwrap();
-        fs::write(dir.join("bad.jsonl"), jsonl_line("in", 0, &f)).unwrap(); // no "redacted" field
-        let summary = scan_dir(&dir).expect("dir exists");
-        fs::remove_dir_all(&dir).unwrap();
-        assert_no_hard_failures(&summary);
-    }
-
-    /// The positive case for the same contract: a properly redacted inbound
-    /// SYNC frame, correctly stamped, must not trip the new check.
-    #[test]
-    fn a_properly_redacted_inbound_sync_frame_does_not_fail() {
-        let dir = unique_temp_dir("redacted-sync-ok");
-        let mut payload = vec![0u8; 60];
-        payload[26..36].copy_from_slice(b"V1.2.3.456"); // serial window already zero
-        let f = frame::frame(wh_proto::cmds::cmd::SYNC, &payload).unwrap();
+    fn an_outbound_feature_report_of_unexpected_length_is_reported_not_failed() {
+        let dir = unique_temp_dir("feature-length-out");
+        let long = vec![0xBBu8; 65];
         fs::write(
-            dir.join("good.jsonl"),
-            jsonl_line_ext("in", 0, &f, ",\"redacted\":true"),
+            dir.join("feature-probe.jsonl"),
+            jsonl_line("out-feature", 0, &long),
         )
         .unwrap();
-        let summary = scan_dir(&dir).expect("dir exists");
-        fs::remove_dir_all(&dir).unwrap();
-        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
-        assert_eq!(summary.modelled, 1);
-    }
-
-    /// An outgoing SYNC request (same cmd byte, no serial) must not be
-    /// required to be flagged "redacted", since the shim only ever flags
-    /// inbound lines: this proves the check does not spuriously fire on it.
-    #[test]
-    fn an_outgoing_sync_request_does_not_need_a_redacted_flag() {
-        let dir = unique_temp_dir("outgoing-sync-ok");
-        let f = wh_proto::cmds::sync();
-        fs::write(dir.join("good.jsonl"), jsonl_line("out", 0, &f)).unwrap();
-        let summary = scan_dir(&dir).expect("dir exists");
-        fs::remove_dir_all(&dir).unwrap();
-        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
-    }
-
-    /// Important 2, fix round 2: a feature report is not required to be
-    /// REPORT_LEN bytes, so a length mismatch on one must be reported, not
-    /// treated as a hard failure the way it would be for a plain "in"/"out"
-    /// line.
-    #[test]
-    fn a_feature_report_of_unexpected_length_is_reported_not_failed() {
-        let dir = unique_temp_dir("feature-length");
-        let short = vec![0xAAu8; 32];
-        let long = vec![0xBBu8; 65];
-        let lines = [
-            jsonl_line("in-feature", 0, &short),
-            jsonl_line("out-feature", 0, &long),
-        ]
-        .join("\n");
-        fs::write(dir.join("feature-probe.jsonl"), lines).unwrap();
 
         let summary = scan_dir(&dir).expect("dir exists");
         fs::remove_dir_all(&dir).unwrap();
 
         assert!(summary.failures.is_empty(), "{:?}", summary.failures);
-        assert_eq!(summary.checked, 2);
-        let mut saw_32 = false;
+        assert_eq!(summary.checked, 1);
         let mut saw_65 = false;
         for ((origin, len), count) in &summary.feature_length_mismatch {
-            if *len == 32 {
-                assert_eq!(origin.dir, "in-feature");
-                assert_eq!(*count, 1);
-                saw_32 = true;
-            }
             if *len == 65 {
                 assert_eq!(origin.dir, "out-feature");
                 assert_eq!(*count, 1);
                 saw_65 = true;
             }
         }
-        assert!(saw_32 && saw_65);
+        assert!(saw_65);
+    }
+
+    /// Important 2, kept from the round 3 dispatch for a different reason
+    /// after the redesign: redaction no longer depends on frame shape at
+    /// all (see the module doc comment), so an inbound feature report of
+    /// unexpected length is no longer a safety gap the way it was under
+    /// the old offset-based design. It is still not routine, though: it
+    /// may be exactly the WebHID report-ID-prefix behaviour the spec
+    /// allows, so it must be called out in the `WARNING:` block, not
+    /// described as benign, even though it does not fail the test.
+    #[test]
+    fn an_inbound_feature_report_of_the_wrong_length_is_reported_with_a_warning_not_failed() {
+        let dir = unique_temp_dir("feature-length-in");
+        let suspect = vec![0xAAu8; 65];
+        fs::write(
+            dir.join("feature-probe.jsonl"),
+            jsonl_line("in-feature", 0, &suspect),
+        )
+        .unwrap();
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+        assert_eq!(summary.checked, 1);
+        let mut saw_65 = false;
+        for ((origin, len), count) in &summary.feature_length_mismatch {
+            if *len == 65 {
+                assert_eq!(origin.dir, "in-feature");
+                assert_eq!(*count, 1);
+                saw_65 = true;
+            }
+        }
+        assert!(saw_65);
+
+        let text = render_summary(&summary);
+        assert!(text.contains("WARNING"), "{text}");
+        assert!(text.contains("inbound feature-report"), "{text}");
     }
 
     /// A non-feature line ("in"/"out") of the wrong length is still a hard
-    /// failure: only `"*-feature"` directions get the pass.
+    /// failure: only `"*-feature"` directions get any kind of pass.
     #[test]
     #[should_panic(expected = "hard failure")]
     fn a_non_feature_line_of_the_wrong_length_still_fails() {
@@ -994,6 +1018,155 @@ mod classifier_tests {
         let summary = scan_dir(&dir).expect("dir exists");
         fs::remove_dir_all(&dir).unwrap();
         assert_no_hard_failures(&summary);
+    }
+
+    /// `find_serial_leaks` is a raw text scan, deliberately independent of
+    /// JSON structure, command byte, direction or frame length: it must
+    /// find the needle wherever it is on a line, and report the right
+    /// file:line.
+    #[test]
+    fn find_serial_leaks_detects_the_serial_hex_anywhere_in_a_capture_file() {
+        let dir = unique_temp_dir("serial-leak-scan");
+        let serial_hex: String = "3483141393E03502"
+            .bytes()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        fs::write(
+            dir.join("clean.jsonl"),
+            "{\"dir\":\"in\",\"hex\":\"5c00010203\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("leaky.jsonl"),
+            format!("line one, unrelated\nsomething {serial_hex} something\n"),
+        )
+        .unwrap();
+
+        let hits = find_serial_leaks(&dir, &serial_hex);
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].contains("leaky.jsonl:2"), "{hits:?}");
+    }
+
+    #[test]
+    fn find_serial_leaks_is_case_insensitive() {
+        let dir = unique_temp_dir("serial-leak-case");
+        let serial_hex = "3a4b5c";
+        fs::write(
+            dir.join("f.jsonl"),
+            format!("{}\n", serial_hex.to_uppercase()),
+        )
+        .unwrap();
+        let hits = find_serial_leaks(&dir, serial_hex);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+    }
+
+    #[test]
+    fn find_serial_leaks_finds_nothing_in_a_clean_directory() {
+        let dir = unique_temp_dir("serial-leak-clean");
+        fs::write(
+            dir.join("clean.jsonl"),
+            "{\"dir\":\"in\",\"hex\":\"5c00010203\"}\n",
+        )
+        .unwrap();
+        let hits = find_serial_leaks(&dir, "deadbeef");
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    #[test]
+    fn load_protected_serial_hex_reads_and_hex_encodes_the_file() {
+        let dir = unique_temp_dir("serial-local-present");
+        fs::write(dir.join("serial.local"), "3483141393E03502\n").unwrap();
+        let got = load_protected_serial_hex(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        let want: String = "3483141393E03502"
+            .bytes()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn load_protected_serial_hex_is_none_when_the_file_is_absent() {
+        let dir = unique_temp_dir("serial-local-absent");
+        assert_eq!(load_protected_serial_hex(&dir), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_protected_serial_hex_is_none_when_the_file_is_blank() {
+        let dir = unique_temp_dir("serial-local-blank");
+        fs::write(dir.join("serial.local"), "   \n").unwrap();
+        assert_eq!(load_protected_serial_hex(&dir), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Exercises the same sequence `all_captures_decode_and_classify` uses
+    /// (`scan_dir` + `load_protected_serial_hex` + `find_serial_leaks`),
+    /// against temp directories standing in for `capture/` and
+    /// `captures/`, to prove the wiring end to end, not just the pieces
+    /// independently: a captured line containing the protected serial's
+    /// hex encoding fails the whole run, even buried in a shape (a
+    /// non-SYNC command, an unusual length) that every deleted, shape-based
+    /// check from earlier rounds would have missed entirely.
+    #[test]
+    #[should_panic(expected = "hard failure")]
+    fn a_capture_containing_the_protected_serial_fails_the_whole_run() {
+        let capture_src = unique_temp_dir("e2e-leak-capture-src");
+        let captures = unique_temp_dir("e2e-leak-captures");
+        fs::write(capture_src.join("serial.local"), "3483141393E03502\n").unwrap();
+        let serial_hex: String = "3483141393E03502"
+            .bytes()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        fs::write(
+            captures.join("leaky.jsonl"),
+            format!("{{\"dir\":\"out-feature\",\"report_id\":0,\"hex\":\"aa{serial_hex}bb\"}}\n"),
+        )
+        .unwrap();
+
+        let mut summary = scan_dir(&captures).expect("dir exists");
+        let serial = load_protected_serial_hex(&capture_src).expect("serial.local present");
+        summary
+            .failures
+            .extend(find_serial_leaks(&captures, &serial));
+        fs::remove_dir_all(&capture_src).unwrap();
+        fs::remove_dir_all(&captures).unwrap();
+        assert_no_hard_failures(&summary);
+    }
+
+    #[test]
+    fn a_capture_without_the_serial_does_not_fail_when_protected() {
+        let capture_src = unique_temp_dir("e2e-clean-capture-src");
+        let captures = unique_temp_dir("e2e-clean-captures");
+        fs::write(capture_src.join("serial.local"), "3483141393E03502\n").unwrap();
+        let clean = frame::frame(wh_proto::cmds::cmd::DB, &[0x01]).unwrap();
+        fs::write(captures.join("clean.jsonl"), jsonl_line("in", 0, &clean)).unwrap();
+
+        let mut summary = scan_dir(&captures).expect("dir exists");
+        let serial = load_protected_serial_hex(&capture_src).expect("serial.local present");
+        summary
+            .failures
+            .extend(find_serial_leaks(&captures, &serial));
+        fs::remove_dir_all(&capture_src).unwrap();
+        fs::remove_dir_all(&captures).unwrap();
+
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+    }
+
+    #[test]
+    fn render_summary_warns_prominently_when_the_serial_check_was_skipped() {
+        let summary = Summary {
+            serial_check_skipped: true,
+            ..Summary::default()
+        };
+        let text = render_summary(&summary);
+        assert!(text.contains("WARNING"), "{text}");
+        assert!(text.contains("serial.local"), "{text}");
+        assert!(text.contains("SKIPPED"), "{text}");
     }
 
     /// Important 3, fix round 2: the visibility fix itself (both Criticals'

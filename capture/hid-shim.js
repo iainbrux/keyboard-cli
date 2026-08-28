@@ -1,32 +1,50 @@
 // WebHID logging shim for terminal.wallhack.com.
 // Paste into DevTools console BEFORE the page opens the device (i.e. right
 // after a hard reload), or inject via CDP Page.addScriptToEvaluateOnNewDocument.
+//
+// BEFORE capturing anything, tell the shim the device's serial number, read
+// off the vendor configurator's Device tab:
+//   window.__wh.protect("3483141393E03502")
 // Dump with: copy(window.__wh.jsonl())
 // Start a fresh scenario with: window.__wh.begin("scenario-name")
 //
-// Redaction: an inbound SYNC reply (cmd 0x01) has its serial number, payload
-// bytes 9..25, zeroed before it is ever emitted by jsonl(), since captures
-// are committed to a public repository. This scrub is guarded, not blind:
+// Redaction: every prior version of this shim guessed WHERE the serial
+// number would be (a fixed byte offset, a command byte, a direction) and
+// scrubbed that location. Every defect found across three rounds of review
+// traced back to that one root cause: guessing the location. This version
+// does not guess. The operator supplies the serial's VALUE via protect();
+// every logged entry then has the serial's hex encoding replaced with
+// zeros, an exact case-insensitive substring match over the report's hex
+// text, wherever it appears, regardless of which command carries it,
+// which direction it came from, or whether the frame is 64 bytes.
 //
-//   1. Before scrubbing, the window is checked to actually look like a
-//      serial (every byte printable ASCII or 0x00). If it does not, the
-//      shim refuses to scrub, warns loudly, and stamps the entry
-//      "redacted": false, "redaction_skipped": "..." instead of destroying
-//      data that might not be a serial at all.
-//   2. After scrubbing, the rest of the frame is scanned for any run of six
-//      or more printable ASCII bytes. If found, that is very likely the
-//      real serial sitting somewhere other than where this shim expects it
-//      (a wrong offset assumption), and it is warned about and stamped on
-//      the entry as "possible_leak" rather than silently committed anyway.
-//   3. The pre-redaction bytes are kept in a second, separate log that
-//      jsonl() never touches: window.__wh.rawJsonl(). It exists purely so a
-//      botched redaction is recoverable while still at the keyboard, in the
-//      one dataset this whole project is read against. NEVER paste
-//      rawJsonl() output into a committed file.
+//   - `jsonl()` throws if `protect()` was never called. There is no
+//     "forgot to protect" failure mode: it is a hard stop, not a
+//     best-effort default.
+//   - Each entry is stamped `redactions: N`, a count, not a boolean: a
+//     boolean would be an assertion this shim cannot back ("I found and
+//     removed everything"); a count is just what happened.
+//   - Calling `protect()` re-scrubs every entry already logged, not just
+//     future ones, in case the device connected before `protect()` was
+//     called.
+//   - The pre-redaction bytes are kept in a second, separate log that
+//     `jsonl()` never touches: `window.__wh.rawJsonl()`. It exists purely
+//     so a botched capture is recoverable while still at the keyboard, in
+//     the one dataset this whole project is read against. NEVER paste
+//     `rawJsonl()` output into a committed file.
 //
-// The Rust side additionally hard-fails the whole golden test if any
-// inbound SYNC frame in captures/ lacks "redacted": true, which closes the
-// hole where a capture was pasted from an older copy of this file.
+// This is exact and shape-independent: it does not matter which command
+// carries the serial, whether the frame is a feature report, or whether a
+// report-ID byte shifts everything by one, because none of that changes
+// what the serial's own bytes look like once hex-encoded. Its one known
+// limit: it can only catch the serial in the encoding protect() was told
+// about (its ASCII bytes, hex-encoded). If the device also emits it BCD-
+// packed, byte-reversed, or in some other encoding, this will not catch
+// that occurrence either. Nothing in any earlier version of this shim
+// could catch that case either, and would additionally have scrubbed the
+// wrong bytes while claiming success. The Rust-side check in golden.rs
+// (`find_serial_leaks`) re-verifies the ASCII-hex occurrence independently
+// before anything is allowed to pass; see that file's module doc comment.
 //
 // The prime directive of this shim is that the page behaves exactly as if
 // it were not here. Every patched method calls straight through to the
@@ -36,6 +54,7 @@
 (() => {
   const log = [];
   const rawLog = [];
+  let serialHex = null; // lowercase hex encoding of the protected serial's ASCII bytes, or null
 
   // `sendReport`'s `data` and `inputreport`'s `event.data` are both a
   // BufferSource: a DataView, a typed array, or a plain ArrayBuffer.
@@ -59,122 +78,60 @@
 
   const hex = (buf) => hexOfBytes(bytesOf(buf));
 
-  const bytesFromHex = (h) => {
-    const out = new Uint8Array(h.length / 2);
-    for (let i = 0; i < out.length; i++) {
-      out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  // The ASCII-bytes hex encoding of a plain string, e.g. "AB" -> "4142".
+  // This is what a device would produce if it stored the serial as ASCII
+  // text in a report, which is the assumption every earlier version of
+  // this shim also made; the difference now is that this is the thing we
+  // search FOR, not a location we scrub blind.
+  const hexOfAsciiString = (s) => {
+    let out = "";
+    for (let i = 0; i < s.length; i++) {
+      out += s.charCodeAt(i).toString(16).padStart(2, "0");
     }
     return out;
   };
 
-  const isPrintable = (b) => b >= 0x20 && b <= 0x7e;
-
-  // Every byte in [start, end) is either printable ASCII or 0x00 (the
-  // shape a null-padded ASCII serial takes). If anything else is in there,
-  // this is not a serial and must not be scrubbed.
-  const looksLikeSerial = (bytes, start, end) => {
-    for (let i = start; i < end; i++) {
-      const b = bytes[i];
-      if (!(b === 0x00 || isPrintable(b))) return false;
+  // Replaces every case-insensitive occurrence of `serialHex` in `hex` with
+  // an equal-length run of zero bytes, non-overlapping, left to right.
+  // Returns the redacted hex and how many occurrences were found. If
+  // `protect()` has not been called yet, this is a no-op: `jsonl()`
+  // refuses to emit anything in that state (see below), so a no-op here
+  // cannot itself leak anything, but rebuildLog() still needs a well-formed
+  // return value to work with before protect() has ever run.
+  const redactSerialFromHex = (h) => {
+    if (!serialHex) return { hex: h, redactions: 0 };
+    const lower = h.toLowerCase();
+    let redactions = 0;
+    let result = "";
+    let from = 0;
+    for (;;) {
+      const pos = lower.indexOf(serialHex, from);
+      if (pos === -1) {
+        result += h.slice(from);
+        break;
+      }
+      result += h.slice(from, pos) + "00".repeat(serialHex.length / 2);
+      redactions++;
+      from = pos + serialHex.length;
     }
-    return true;
+    return { hex: result, redactions };
   };
 
-  const MIN_LEAK_RUN = 6;
-  // Scans for the first run of MIN_LEAK_RUN or more consecutive printable
-  // ASCII bytes anywhere in `bytes`. Used after redaction to check whether
-  // something that looks like text, plausibly the real serial at an offset
-  // this shim did not expect, is still sitting in the frame.
-  const findPrintableRun = (bytes) => {
-    let runStart = -1;
-    for (let i = 0; i <= bytes.length; i++) {
-      const printable = i < bytes.length && isPrintable(bytes[i]);
-      if (printable) {
-        if (runStart === -1) runStart = i;
-        continue;
-      }
-      if (runStart !== -1) {
-        const len = i - runStart;
-        if (len >= MIN_LEAK_RUN) {
-          return { start: runStart, end: i };
-        }
-      }
-      runStart = -1;
-    }
-    return null;
+  // Returns a NEW entry: never mutates its argument, so `rawLog` and `log`
+  // can each hold their own independent copy of the same underlying event.
+  const redactEntry = (raw) => {
+    const { hex: redactedHex, redactions } = redactSerialFromHex(raw.hex);
+    return { ...raw, hex: redactedHex, redactions };
   };
 
-  const asciiOf = (bytes, start, end) =>
-    Array.from(bytes.slice(start, end))
-      .map((b) => String.fromCharCode(b))
-      .join("");
-
-  // cmd byte 0x01 is SYNC. A SYNC reply carries the serial number at
-  // payload bytes 9..25, which is report bytes 13..29 once the 4-byte
-  // header (magic, len, cmd, checksum) is accounted for. Only redact
-  // inbound frames: the outgoing SYNC request has the same cmd byte but no
-  // serial in it, and redacting it would just be a confusing false
-  // positive in the "redacted": true flag.
-  const SYNC_CMD = 0x01;
-  const SERIAL_BYTE_START = 13;
-  const SERIAL_BYTE_END = 29;
-
-  // parse_sync also expects a firmware string at payload bytes 26..36
-  // (report bytes 30..40), which is printable ASCII by design and always
-  // present on a genuine SYNC reply. Left in the post-redaction leak scan
-  // below, it would fire on every single well-formed capture, which is not
-  // a leak, it is supposed to be there, and would drown out the one time
-  // the scan finds something real. Excluded from the scan for that reason
-  // only: it is still emitted in the output hex untouched, same as always.
-  const FIRMWARE_BYTE_START = 30;
-  const FIRMWARE_BYTE_END = 40;
-
-  // Returns a NEW entry: never mutates its argument, so the caller can keep
-  // the original around (see rawLog below).
-  const redact = (entry) => {
-    const bytes = bytesFromHex(entry.hex);
-    const isInbound = entry.dir.startsWith("in");
-    const cmdByte = bytes.length > 2 ? bytes[2] : -1;
-    if (!isInbound || cmdByte !== SYNC_CMD || bytes.length < SERIAL_BYTE_END) {
-      return { ...entry, redacted: false };
-    }
-
-    if (!looksLikeSerial(bytes, SERIAL_BYTE_START, SERIAL_BYTE_END)) {
-      console.warn(
-        `[wh] DECLINED to redact ${entry.dir} report: bytes ${SERIAL_BYTE_START}..` +
-          `${SERIAL_BYTE_END} do not look like a serial (not all printable ASCII or 0x00). ` +
-          "The serial offset assumption (payload 9..25) may be wrong for this device. This " +
-          "frame will NOT be scrubbed. Do not commit it until a human has confirmed no real " +
-          "serial number is present anywhere in it (check rawJsonl() and search for the " +
-          "serial printed on the device)."
-      );
-      return {
-        ...entry,
-        redacted: false,
-        redaction_skipped: "window did not look like a serial",
-      };
-    }
-
-    const redactedBytes = bytes.slice();
-    for (let i = SERIAL_BYTE_START; i < SERIAL_BYTE_END; i++) redactedBytes[i] = 0;
-
-    const out = { ...entry, hex: hexOfBytes(redactedBytes), redacted: true };
-    const scanBytes = redactedBytes.slice();
-    for (let i = FIRMWARE_BYTE_START; i < Math.min(FIRMWARE_BYTE_END, scanBytes.length); i++) {
-      scanBytes[i] = 0x00;
-    }
-    const leak = findPrintableRun(scanBytes);
-    if (leak) {
-      const ascii = asciiOf(redactedBytes, leak.start, leak.end);
-      console.warn(
-        `[wh] redacted bytes ${SERIAL_BYTE_START}..${SERIAL_BYTE_END}, but bytes ` +
-          `${leak.start}..${leak.end} STILL look like text after redaction: "${ascii}". ` +
-          "This may be the real serial sitting at a different offset than expected. Do not " +
-          "commit this capture without checking (rawJsonl() has the unredacted original)."
-      );
-      out.possible_leak = `bytes ${leak.start}..${leak.end}: "${ascii}"`;
-    }
-    return out;
+  // Re-derives every entry in `log` from `rawLog`, in place (same array
+  // reference, since `window.__wh.log` was already handed out). Called by
+  // `protect()` so that any report captured BEFORE `protect()` was called
+  // still gets scrubbed once the serial is known, rather than sitting in
+  // `log` forever in its unredacted form.
+  const rebuildLog = () => {
+    log.length = 0;
+    for (const raw of rawLog) log.push(redactEntry(raw));
   };
 
   // Records one entry: the raw (never redacted, never emitted by jsonl())
@@ -184,7 +141,7 @@
   const recordEntry = (fields) => {
     const raw = { ts: performance.now(), ...fields };
     rawLog.push(raw);
-    log.push(redact(raw));
+    log.push(redactEntry(raw));
   };
 
   const origSend = HIDDevice.prototype.sendReport;
@@ -256,10 +213,41 @@
     // real report, so record installedAt yourself, e.g. as a note when you
     // save the capture file.
     installedAt: new Date().toISOString(),
-    jsonl: () => log.map((e) => JSON.stringify(e)).join("\n"),
+    // Tells the shim the device's serial number (read off the Device tab),
+    // so every currently-logged and every future entry gets it scrubbed.
+    // Safe to call more than once, e.g. if you mistype it the first time:
+    // each call re-derives `log` from `rawLog` from scratch with whatever
+    // serial was passed most recently.
+    protect: (serial) => {
+      if (typeof serial !== "string" || serial.length === 0) {
+        throw new Error(
+          '[wh] protect(serial) needs a non-empty string, e.g. window.__wh.protect("3483141393E03502")'
+        );
+      }
+      serialHex = hexOfAsciiString(serial).toLowerCase();
+      rebuildLog();
+      const hit = log.filter((e) => e.redactions > 0).length;
+      console.log(
+        `[wh] serial protected (${serial.length} char(s), ${serialHex.length}-char hex needle). ` +
+          `Re-scrubbed ${log.length} existing entr${log.length === 1 ? "y" : "ies"}, ` +
+          `${hit} of which contained it.`
+      );
+    },
+    // Refuses to emit anything until protect() has been called: there is
+    // no "forgot to protect" failure mode, only a hard stop.
+    jsonl: () => {
+      if (serialHex === null) {
+        throw new Error(
+          '[wh] jsonl() refused: call window.__wh.protect("<serial>") first, with the serial ' +
+            "printed on the Device tab. Pasting an unprotected capture is the one mistake this " +
+            "project cannot recover from."
+        );
+      }
+      return log.map((e) => JSON.stringify(e)).join("\n");
+    },
     // The pre-redaction log. NEVER paste this into a file under captures/;
-    // it exists only to recover from a declined or wrong redaction while
-    // still at the keyboard.
+    // it exists only to recover from a botched capture while still at the
+    // keyboard.
     rawJsonl: () => rawLog.map((e) => JSON.stringify(e)).join("\n"),
     clear: () => {
       log.length = 0;
@@ -273,7 +261,8 @@
     // harness on the Rust side would have to special-case a non-report
     // line. The filename the operator saves to already carries the
     // scenario name; this is the at-the-keyboard signal, not a second copy
-    // of it in the data.
+    // of it in the data. Does NOT clear the protected serial: it does not
+    // change between scenarios in the same session.
     begin: (name) => {
       log.length = 0;
       rawLog.length = 0;
