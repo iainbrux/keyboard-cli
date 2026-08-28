@@ -63,10 +63,10 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
 }
 
 /// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
-/// `wh_proto::keys::TABLE`. Shared by `dump` and `get` so a board with unnamed usages prints
-/// the same, distinguishable label in both, rather than `get` collapsing every unnamed key to
-/// an indistinguishable literal `"?"`.
-fn key_label(usage: u8) -> String {
+/// `wh_proto::keys::TABLE`. Shared by `dump`, `get`, and `picker` so a board with unnamed
+/// usages prints the same, distinguishable label everywhere, rather than each caller growing
+/// its own copy that could drift from the others.
+pub(crate) fn key_label(usage: u8) -> String {
     wh_proto::keys::name_for_usage(usage)
         .map(str::to_string)
         .unwrap_or_else(|| format!("0x{usage:02X}"))
