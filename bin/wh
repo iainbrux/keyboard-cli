@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "$(dirname "$(readlink -f "$0")")/../target/x86_64-pc-windows-gnu/release/wh.exe" "$@"
