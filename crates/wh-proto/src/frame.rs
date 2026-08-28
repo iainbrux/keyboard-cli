@@ -5,6 +5,14 @@ pub const HEAD: u8 = 0x5C;
 pub const REPORT_LEN: usize = 64;
 pub const CMD_FAIL: u8 = 0xFF;
 
+/// The high bit the device sets on the command byte of every reply. Measured
+/// across 90 request/reply pairs in the Task 19 hardware session
+/// (`captures/initial-load.jsonl`): `reply cmd == request cmd` held 0 of 90
+/// times, `reply cmd == request cmd | 0x80` held 90 of 90 times, for example
+/// request `0x23` answered by reply `0xA3`, request `0x29` by `0xA9`. Never
+/// the request's own cmd byte unmodified.
+pub const REPLY_BIT: u8 = 0x80;
+
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum FrameError {
     #[error("payload too long: {0} bytes (max 60)")]

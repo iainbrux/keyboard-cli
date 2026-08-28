@@ -141,7 +141,13 @@ fn classify(report: &[u8]) -> Class {
                     extra_nonzero,
                 };
             }
-            if !MODELLED_CMDS.contains(&reply.cmd) {
+            // The device sets the high bit (`wh_proto::frame::REPLY_BIT`) on
+            // every reply's command byte, so a reply to a modelled request
+            // classifies against the request's own cmd, `reply.cmd & 0x7F`,
+            // not the raw wire byte. The raw byte is still what gets counted
+            // and printed below, so a reader can see exactly what was on the
+            // wire.
+            if !MODELLED_CMDS.contains(&(reply.cmd & !frame::REPLY_BIT)) {
                 return Class::Unmodelled { cmd: reply.cmd };
             }
             Class::Modelled { cmd: reply.cmd }
@@ -614,6 +620,18 @@ mod classifier_tests {
                 cmd: wh_proto::cmds::cmd::DB
             }
         );
+    }
+
+    /// A real device reply carries the high bit on its command byte (e.g.
+    /// `0xA9`, the reply to `cmd::DB` = `0x29`): this must still classify as
+    /// `Modelled`, and the raw wire byte (with the high bit) must be the one
+    /// kept in the class, not the masked request-side byte, so a reader can
+    /// see exactly what was on the wire.
+    #[test]
+    fn a_reply_with_the_high_bit_set_on_a_modelled_command_is_classified_as_modelled() {
+        let reply_cmd = wh_proto::cmds::cmd::DB | frame::REPLY_BIT;
+        let f = frame::frame(reply_cmd, &[0x00, 0x01, 0x02]).unwrap();
+        assert_eq!(classify(&f), Class::Modelled { cmd: reply_cmd });
     }
 
     #[test]

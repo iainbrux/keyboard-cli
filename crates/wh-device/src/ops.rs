@@ -259,8 +259,11 @@ mod tests {
     fn l(dir: &str, b: &[u8; 64]) -> String {
         format!("{{\"dir\":\"{dir}\",\"hex\":\"{}\"}}", hex(b))
     }
+    /// Builds a reply frame the way the real device sends it: with the high
+    /// bit set on the command byte (see `wh_proto::frame::REPLY_BIT`), so
+    /// fixtures built through this helper are faithful to the wire.
     fn rf(cmd: u8, payload: &[u8]) -> [u8; 64] {
-        wh_proto::frame::frame(cmd, payload).unwrap()
+        wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
     }
 
     /// Script a full read_matrix: 3 DEFKEY roundtrips, each row pair carrying
