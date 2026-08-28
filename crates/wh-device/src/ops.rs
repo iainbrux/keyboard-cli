@@ -182,10 +182,17 @@ pub fn set_rt<T: Transport>(
     Ok(records)
 }
 
-/// Disable RT (touch mode -> Global), preserving the advanced nibble.
-pub fn set_rt_off<T: Transport>(s: &mut Session<T>, usages: &[u8]) -> Result<(), DeviceError> {
+/// Disable RT (touch mode -> Global), preserving the advanced nibble. Returns the exact
+/// records that were written (one MODE record per key, in `usages` order), the same reason
+/// `set_rt` returns its records: a caller verifying the write needs to compare against what
+/// was actually sent, advanced nibble and high byte included, not just the touch mode.
+pub fn set_rt_off<T: Transport>(
+    s: &mut Session<T>,
+    usages: &[u8],
+) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = rt_off_records(s, usages)?;
-    write_and_save(s, &records)
+    write_and_save(s, &records)?;
+    Ok(records)
 }
 
 /// Build the [ap] records to set `usages`' actuation point (layout DB0).

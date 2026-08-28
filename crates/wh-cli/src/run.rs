@@ -42,7 +42,8 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
-            let text = std::fs::read_to_string(&path).context("reading WH_REPLAY script")?;
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading WH_REPLAY script from {path}"))?;
             Box::new(wh_device::replay::ReplayTransport::from_jsonl(&text)?)
         } else {
             #[cfg(windows)]
@@ -482,12 +483,28 @@ fn verify_rt_off<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     usages: &[u8],
+    records: &[KeyRecord],
 ) -> Result<()> {
     let mut bad = Vec::new();
     for &u in usages {
         let ks = ops::read_key_settings(s, u)?;
-        if ks.rt_enabled() {
-            bad.push(format!("{}: rt still enabled", key_label(u)));
+        // The exact MODE value `ops::rt_off_records` computed for this key, advanced nibble
+        // and high byte included, not just "the touch nibble says not-Rt": the same read-
+        // modify-write `verify_rt` now checks on the enable path, mirrored here for disable.
+        let want_mode = records
+            .iter()
+            .find(|r| r.key == u && r.layout == layout::MODE)
+            .map(|r| r.value)
+            .expect("ops::rt_off_records emits one MODE record per key in usages");
+        if ks.mode.value() != want_mode {
+            bad.push(format!(
+                "{}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt off, \
+                 advanced nibble and high byte preserved)",
+                key_label(u),
+                ks.mode.value(),
+                if ks.rt_enabled() { "on" } else { "off" },
+                want_mode,
+            ));
         }
     }
     report_verification(out, "rt off", usages, &bad)
@@ -533,8 +550,8 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                         return print_frames(&mut out, &cmds::write_key_records(&records));
                     }
                     auto_backup(s, store)?;
-                    ops::set_rt_off(s, &usages)?;
-                    verify_rt_off(&mut out, s, &usages)
+                    let records = ops::set_rt_off(s, &usages)?;
+                    verify_rt_off(&mut out, s, &usages, &records)
                 } else {
                     let (p, r) = sensitivities.expect("validated above when off is false");
                     if dry_run {
@@ -714,7 +731,8 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Resul
         bail!("pass a snapshot file or --last, not both");
     }
     let text = match (file, last) {
-        (Some(p), _) => std::fs::read_to_string(p)?,
+        (Some(p), _) => std::fs::read_to_string(&p)
+            .with_context(|| format!("reading snapshot from {}", p.display()))?,
         (None, true) => store.load_backup(None)?,
         (None, false) => bail!("give a snapshot file or --last"),
     };

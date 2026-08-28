@@ -467,6 +467,61 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The `verify_rt_off` sibling of the corrupted-advanced-nibble test above: `ops::rt_off_records`
+/// does the same read-modify-write as `ops::rt_records`, just forcing the touch nibble to
+/// Global instead of Rt, so it can lose the advanced nibble the same way. Before the write, 'w'
+/// carries MODE 0x21 (touch Rt, advanced nibble 1); `rt_off_records` reads that and builds a
+/// wanted MODE of 0x01 (touch Global, advanced nibble 1 preserved). The scripted readback
+/// instead reports 0x00 (advanced nibble lost). A verification that only checked
+/// `!rt_enabled()` would call this a pass, since the touch nibble genuinely did flip to
+/// Global; it has to be a mismatch, because 'w's advanced-key configuration was just silently
+/// dropped.
+#[test]
+fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(auto_backup_lines());
+
+    // ops::rt_off_records' own pre-write MODE read: 0x21 (touch Rt, advanced nibble 1).
+    lines.extend(mode_read_lines(0x1A, 0x21));
+
+    // The write batch: MODE 0x01 (touch Global, advanced nibble 1 preserved), then SAVE.
+    let recs = vec![KeyRecord {
+        key: 0x1A,
+        layout: layout::MODE,
+        value: 0x01,
+    }];
+    let batch = cmds::write_key_records(&recs);
+    for f in &batch {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+    lines.push(out_line(&save));
+    lines.push(in_line(&reply(
+        cmds::cmd::CMD,
+        &[0x00, cmds::order::SAVE, 0x01],
+    )));
+
+    // verify_rt_off's readback: MODE comes back 0x00, not the 0x01 that was written; press and
+    // release are unrelated to this check and left at whatever the board otherwise reports.
+    lines.extend(key_settings_lines(0x1A, 1000, 0x00, 400, 400));
+
+    let path = write_script("set-rt-off-nibble-mismatch", &lines);
+    let config_home = scratch_config_dir("set-rt-off-nibble-mismatch");
+
+    let out = run_wh(&["set", "rt", "--keys", "w", "--off"], &path, &config_home);
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("mismatch"), "unexpected stderr: {stderr}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `--dry-run` means no writes and no SAVE, not "no I/O": `resolve_keys` still reads the live
 /// matrix (a preview has to be of an operation that could actually happen against this board,
 /// not against every key the protocol has ever heard of), and `ap_records` itself needs no
