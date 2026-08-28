@@ -22,12 +22,15 @@
 //! character, a report that is not 64 bytes) does not abort the run either:
 //! it is recorded as a failure with its file:line and the run continues, so
 //! one bad line in one of nine capture files does not hide the other eight.
-//! The summary is printed unconditionally, and written to
-//! `captures/golden-summary.txt` so it survives a swallowed-stdout `cargo
-//! test` run, before the test decides whether to fail. See fix round 1 of
-//! Task 18 (this file used to panic mid-scan, which meant a real capture
-//! that tripped a known deferred minor produced one panic and zero
-//! inventory).
+//! The summary is printed unconditionally, and written to a file under
+//! `CARGO_TARGET_TMPDIR` (see fix round 2: it used to live under
+//! `captures/`, which is committed data; the summary is derived, regenerated
+//! every run, and can silently go stale sitting next to what it describes,
+//! so it now lives under `target/` instead, still swallow-proof, no longer
+//! confusable with captured data) before the test decides whether to fail.
+//! See fix round 1 of Task 18 (this file used to panic mid-scan, which meant
+//! a real capture that tripped a known deferred minor produced one panic and
+//! zero inventory).
 //!
 //! On what "round trips" actually means: earlier code here re-encoded every
 //! modelled frame through `frame::frame` and asserted it reproduced the wire
@@ -35,14 +38,31 @@
 //! routed to `TrailingBytes` first) and, when reachable, tautological
 //! (`frame::frame` and `frame::parse` are exact structural inverses of each
 //! other given the same header layout and checksum formula, so a clean,
-//! successfully parsed frame reproduces itself by construction; 2,000,000
-//! synthetic frames confirmed zero mismatches). It has been deleted rather
-//! than kept for show. What genuinely gets checked against real firmware,
-//! for *every* class below except `FramingBug`/`LenLimitation`, is that our
+//! successfully parsed frame reproduces itself by construction; measured at
+//! 2,000,000 synthetic frames with zero mismatches, independently re-derived
+//! in fix round 2). It has been deleted rather than kept for show. What
+//! genuinely gets checked against real firmware, for *every* class below
+//! except `FramingBug`/`LenLimitation`, is that our
 //! `0x35 + HEAD + len + cmd + payload.last()` checksum formula reproduced
 //! the checksum byte the device actually sent: that is what a successful
-//! `frame::parse` proves, and it is real, because that formula was reverse
-//! engineered from vendor JS, not measured against hardware, until now.
+//! `frame::parse` proves.
+//!
+//! Feature reports (`sendFeatureReport`/`receiveFeatureReport`, logged by
+//! the shim as `dir` `"out-feature"`/`"in-feature"`) are not required to be
+//! exactly `REPORT_LEN` bytes; a length other than 64 on one of those lines
+//! is reported, not a hard failure. Everything else (`"in"`/`"out"`) is our
+//! own fixed HID report framing and must be exactly 64 bytes, or it is a
+//! hard failure. See fix round 2, Important 2.
+//!
+//! Redaction: an inbound (`dir` starting with `"in"`) SYNC (cmd 0x01) frame
+//! must be marked `"redacted": true` by whatever produced the JSONL, or this
+//! harness hard-fails on it. `capture/hid-shim.js` is the only thing that
+//! should ever produce these lines and it always stamps this field, so a
+//! missing or false value means either an older copy of the shim was used,
+//! or the shim itself declined to redact because the expected serial window
+//! did not look like a serial (see `capture/README.md`, "Redaction"): both
+//! cases need a human to look before anything is committed. See fix round
+//! 2, Important 1.
 //!
 //! Skips cleanly, with a printed reason, when `captures/` does not exist yet
 //! (pre-hardware CI, i.e. every run before Task 19 supplies real captures).
@@ -66,7 +86,9 @@ const MODELLED_CMDS: &[u8] = &[
     wh_proto::cmds::cmd::DEFKEY,
 ];
 
-/// The classification of a single captured 64-byte report.
+/// The classification of a single captured, exactly-`REPORT_LEN`-byte
+/// report. Feature reports of a different length never reach this: see
+/// `process_line`.
 #[derive(Debug, PartialEq)]
 enum Class {
     /// Bad magic, bad checksum, or a report shorter than 64 bytes. A codec
@@ -99,6 +121,22 @@ enum Class {
     /// `wh-proto` models. See the module doc comment for what this class
     /// does and does not prove.
     Modelled { cmd: u8 },
+}
+
+impl Class {
+    /// The command byte, for every class where `frame::parse` succeeded and
+    /// so a command byte genuinely exists. `None` for `FramingBug` (parse
+    /// never got far enough to know), `LenLimitation` (same), and
+    /// `DeviceFail` (the command byte there is always the fixed 0xFF
+    /// sentinel, not a protocol command).
+    fn cmd(&self) -> Option<u8> {
+        match self {
+            Class::TrailingBytes { cmd, .. }
+            | Class::Unmodelled { cmd }
+            | Class::Modelled { cmd } => Some(*cmd),
+            Class::FramingBug(_) | Class::LenLimitation(_) | Class::DeviceFail(_) => None,
+        }
+    }
 }
 
 /// Sort one already-decoded 64-byte report into a `Class`. Pure: never
@@ -142,20 +180,26 @@ fn hex_digit(b: u8) -> Result<u8, String> {
 /// the identical fix for the identical reason on the identical input class;
 /// `wh-proto` cannot depend on `wh-device` (wrong direction in the
 /// workspace), so it is duplicated here rather than shared.
-fn decode_hex_report(s: &str) -> Result<[u8; REPORT_LEN], String> {
+///
+/// Unlike round 1's `decode_hex_report`, this does not require exactly
+/// `REPORT_LEN` bytes: a feature report is not obligated to be one, and
+/// `process_line` needs to see its actual length to classify it correctly
+/// rather than lumping it in with a genuinely malformed paste. Length
+/// validation for the two `"in"`/`"out"` (non-feature) directions still
+/// happens, just one level up, in `process_line`.
+fn decode_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     let bytes = s.as_bytes();
-    if bytes.len() != REPORT_LEN * 2 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(format!(
-            "hex must be exactly {} characters ({REPORT_LEN} bytes), got {}",
-            REPORT_LEN * 2,
+            "hex string has an odd number of characters ({})",
             bytes.len()
         ));
     }
-    let mut out = [0u8; REPORT_LEN];
-    for i in 0..REPORT_LEN {
-        let hi = hex_digit(bytes[2 * i])?;
-        let lo = hex_digit(bytes[2 * i + 1])?;
-        out[i] = (hi << 4) | lo;
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = hex_digit(bytes[i])?;
+        let lo = hex_digit(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
     }
     Ok(out)
 }
@@ -187,15 +231,41 @@ struct Summary {
     trailing_bytes: BTreeMap<(Origin, u8), usize>,
     /// (origin, cmd) -> count of frames whose command byte is not modelled.
     unmodelled: BTreeMap<(Origin, u8), usize>,
+    /// (origin, actual byte length) -> count, for `"*-feature"` lines whose
+    /// length is not `REPORT_LEN`. Not a failure: feature reports have no
+    /// obligation to match our fixed HID report size.
+    feature_length_mismatch: BTreeMap<(Origin, usize), usize>,
     /// report_id -> count, across every line that carried one. Exists to
     /// confirm or refute the "report_id is always 0" assumption `hid.rs`
     /// makes.
     report_ids: BTreeMap<u8, usize>,
+    /// scenario file name -> (saw at least one inbound line, saw at least
+    /// one outbound line). A scenario with no inbound lines at all is the
+    /// signature of the shim being installed after the page already opened
+    /// the device: `open()` is never called again, so the `inputreport`
+    /// listener never attaches, and every write goes out with no reply ever
+    /// logged. Reported as a warning, not a hard failure: a handful of
+    /// legitimate reasons could produce it too, and the operator needs to
+    /// decide whether to re-capture.
+    scenario_directions: BTreeMap<String, (bool, bool)>,
     /// file:line-prefixed hard-failure messages: bad JSON, a malformed hex
-    /// string, a report that is not 64 bytes, a codec bug, or a length our
-    /// framing rejects. A non-empty list fails the test, but only after the
-    /// summary has already been printed and written.
+    /// string, a non-feature report that is not 64 bytes, a codec bug, a
+    /// length our framing rejects, or an inbound SYNC frame missing
+    /// `"redacted": true`. A non-empty list fails the test, but only after
+    /// the summary has already been printed and written.
     failures: Vec<String>,
+}
+
+fn note_direction(summary: &mut Summary, scenario: &str, dir: &str) {
+    let entry = summary
+        .scenario_directions
+        .entry(scenario.to_string())
+        .or_insert((false, false));
+    if dir.starts_with("in") {
+        entry.0 = true;
+    } else if dir.starts_with("out") {
+        entry.1 = true;
+    }
 }
 
 fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summary) {
@@ -213,24 +283,78 @@ fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summar
             .push(format!("{ctx}: missing \"hex\" field"));
         return;
     };
-    let report = match decode_hex_report(hexs) {
-        Ok(r) => r,
+    let bytes = match decode_hex_bytes(hexs) {
+        Ok(b) => b,
         Err(e) => {
             summary.failures.push(format!("{ctx}: {e}"));
             return;
         }
     };
+    let dir = v["dir"].as_str().unwrap_or("?").to_string();
+    let origin = Origin {
+        scenario: scenario.to_string(),
+        dir: dir.clone(),
+    };
+
+    if bytes.len() != REPORT_LEN {
+        if dir.ends_with("-feature") {
+            // A feature report legitimately need not be REPORT_LEN bytes:
+            // report it, do not fail. Un-redactable and un-classifiable
+            // (our `classify` assumes the fixed 64-byte layout), but its
+            // length and direction are themselves useful data.
+            summary.checked += 1;
+            if let Some(id) = v["report_id"].as_u64() {
+                *summary.report_ids.entry(id as u8).or_insert(0) += 1;
+            }
+            note_direction(summary, scenario, &dir);
+            *summary
+                .feature_length_mismatch
+                .entry((origin, bytes.len()))
+                .or_insert(0) += 1;
+        } else {
+            summary.failures.push(format!(
+                "{ctx}: report is {} bytes, want {REPORT_LEN}",
+                bytes.len()
+            ));
+        }
+        return;
+    }
+    let report: [u8; REPORT_LEN] = bytes
+        .try_into()
+        .expect("length already checked to equal REPORT_LEN above");
 
     summary.checked += 1;
     if let Some(id) = v["report_id"].as_u64() {
         *summary.report_ids.entry(id as u8).or_insert(0) += 1;
     }
-    let origin = Origin {
-        scenario: scenario.to_string(),
-        dir: v["dir"].as_str().unwrap_or("?").to_string(),
-    };
+    note_direction(summary, scenario, &dir);
 
-    match classify(&report) {
+    let class = classify(&report);
+
+    // An inbound SYNC frame that is not stamped "redacted": true is a hard
+    // stop: either an older shim copy produced it, or the current shim
+    // examined it and declined to scrub (its own safety net, see
+    // hid-shim.js), and either way a real serial number may be about to be
+    // committed to a public repository. Checked against `class.cmd()`
+    // rather than the raw byte so this only fires for frames `classify`
+    // actually recognised as parseable; a frame that is already a
+    // FramingBug/LenLimitation gets exactly one failure message, not two.
+    if class.cmd() == Some(wh_proto::cmds::cmd::SYNC) && dir.starts_with("in") {
+        let redacted = v["redacted"].as_bool().unwrap_or(false);
+        if !redacted {
+            summary.failures.push(format!(
+                "{ctx}: inbound SYNC (cmd 0x{:02X}) frame is not marked \"redacted\": true. \
+                 This may be an unredacted device serial number about to be committed. \
+                 capture/hid-shim.js always stamps every inbound SYNC frame either \
+                 \"redacted\":true or \"redacted\":false with a \"redaction_skipped\" reason; \
+                 a missing field means an older copy of the shim produced this line. Do not \
+                 commit until a human has confirmed no real serial is present.",
+                wh_proto::cmds::cmd::SYNC
+            ));
+        }
+    }
+
+    match class {
         Class::FramingBug(msg) => summary.failures.push(format!("{ctx}: codec bug: {msg}")),
         Class::LenLimitation(len) => summary.failures.push(format!(
             "{ctx}: framing limitation: declared length {len} exceeds the 60-byte cap parse() \
@@ -288,6 +412,20 @@ fn scan_dir(dir: &Path) -> Option<Summary> {
     Some(summary)
 }
 
+/// Sums a `(Origin, K) -> usize` map down to a plain `K -> usize` aggregate,
+/// so the summary can show a total per command byte or failure code first,
+/// with the per-scenario/direction attribution underneath it, rather than
+/// replacing one with the other. With nine capture files, one command byte
+/// appearing in several of them would otherwise print with no total
+/// anywhere.
+fn aggregate<K: Ord + Copy>(map: &BTreeMap<(Origin, K), usize>) -> BTreeMap<K, usize> {
+    let mut out = BTreeMap::new();
+    for ((_, k), count) in map {
+        *out.entry(*k).or_insert(0) += count;
+    }
+    out
+}
+
 fn render_summary(summary: &Summary) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "golden: {} reports checked", summary.checked);
@@ -311,43 +449,99 @@ fn render_summary(summary: &Summary) -> String {
             .collect();
         let _ = writeln!(out, "golden: report_id(s) seen: {}", ids.join(", "));
     }
+
+    let device_fail_agg = aggregate(&summary.device_fail);
     let _ = writeln!(
         out,
-        "golden: {} device-reported-failure (scenario, direction, code) combination(s):",
-        summary.device_fail.len()
+        "golden: {} distinct device-reported-failure code(s), {} frame(s) total:",
+        device_fail_agg.len(),
+        device_fail_agg.values().sum::<usize>()
     );
+    for (code, count) in &device_fail_agg {
+        let _ = writeln!(out, "golden:   code 0x{code:02X}: {count} frame(s) total");
+    }
     for ((origin, code), count) in &summary.device_fail {
         let _ = writeln!(
             out,
-            "golden:   code 0x{code:02X}: {count} frame(s) [{}] {}",
+            "golden:     code 0x{code:02X}: {count} frame(s) [{}] {}",
             origin.dir, origin.scenario
         );
     }
+
+    let trailing_agg = aggregate(&summary.trailing_bytes);
     let _ = writeln!(
         out,
-        "golden: {} (scenario, direction, cmd) combination(s) with non-zero trailing bytes past \
-         declared length:",
-        summary.trailing_bytes.len()
+        "golden: {} distinct command byte(s) with non-zero trailing bytes past declared \
+         length, {} frame(s) total:",
+        trailing_agg.len(),
+        trailing_agg.values().sum::<usize>()
     );
+    for (cmd, count) in &trailing_agg {
+        let _ = writeln!(out, "golden:   cmd 0x{cmd:02X}: {count} frame(s) total");
+    }
     for ((origin, cmd), count) in &summary.trailing_bytes {
         let _ = writeln!(
             out,
-            "golden:   cmd 0x{cmd:02X}: {count} frame(s) [{}] {}",
+            "golden:     cmd 0x{cmd:02X}: {count} frame(s) [{}] {}",
             origin.dir, origin.scenario
         );
     }
+
+    let unmodelled_agg = aggregate(&summary.unmodelled);
     let _ = writeln!(
         out,
-        "golden: {} (scenario, direction, cmd) combination(s) of unmodelled command bytes:",
-        summary.unmodelled.len()
+        "golden: {} distinct unmodelled command byte(s), {} frame(s) total:",
+        unmodelled_agg.len(),
+        unmodelled_agg.values().sum::<usize>()
     );
+    for (cmd, count) in &unmodelled_agg {
+        let _ = writeln!(out, "golden:   cmd 0x{cmd:02X}: {count} frame(s) total");
+    }
     for ((origin, cmd), count) in &summary.unmodelled {
         let _ = writeln!(
             out,
-            "golden:   cmd 0x{cmd:02X}: {count} frame(s) [{}] {}",
+            "golden:     cmd 0x{cmd:02X}: {count} frame(s) [{}] {}",
             origin.dir, origin.scenario
         );
     }
+
+    if !summary.feature_length_mismatch.is_empty() {
+        let _ = writeln!(
+            out,
+            "golden: {} feature-report length-mismatch combination(s) (not a failure: a \
+             feature report has no obligation to be {REPORT_LEN} bytes):",
+            summary.feature_length_mismatch.len()
+        );
+        for ((origin, len), count) in &summary.feature_length_mismatch {
+            let _ = writeln!(
+                out,
+                "golden:   {len} byte(s): {count} frame(s) [{}] {}",
+                origin.dir, origin.scenario
+            );
+        }
+    }
+
+    let silent: Vec<&String> = summary
+        .scenario_directions
+        .iter()
+        .filter(|(_, (saw_in, _))| !saw_in)
+        .map(|(name, _)| name)
+        .collect();
+    if !silent.is_empty() {
+        let _ = writeln!(
+            out,
+            "golden: WARNING: {} scenario file(s) contain no inbound frames at all (only \
+             outgoing writes, never a logged reply). This is the signature of the shim being \
+             installed after the page already opened the device: open() is never called again, \
+             so the inputreport listener never attaches. Re-capture these after a hard reload, \
+             shim first:",
+            silent.len()
+        );
+        for name in silent {
+            let _ = writeln!(out, "golden:   {name}");
+        }
+    }
+
     if !summary.failures.is_empty() {
         let _ = writeln!(out, "golden: {} hard failure(s):", summary.failures.len());
         for f in &summary.failures {
@@ -359,11 +553,14 @@ fn render_summary(summary: &Summary) -> String {
 
 /// Print the summary to stderr (visible with `cargo test -- --nocapture`,
 /// still swallowed by a bare `cargo test`, see `capture/README.md`) and, so
-/// it survives either way, write it to `<dir>/golden-summary.txt`.
-fn report_summary(summary: &Summary, dir: &Path) {
+/// it survives either way, write it to `<out_dir>/golden-summary.txt`.
+/// `out_dir` is `CARGO_TARGET_TMPDIR` in the real test, not `captures/`
+/// itself: see the module doc comment for why (derived data, not captured
+/// data).
+fn report_summary(summary: &Summary, out_dir: &Path) {
     let text = render_summary(summary);
     eprint!("{text}");
-    let out_path = dir.join("golden-summary.txt");
+    let out_path = out_dir.join("golden-summary.txt");
     match fs::write(&out_path, &text) {
         Ok(()) => eprintln!("golden: summary written to {}", out_path.display()),
         Err(e) => eprintln!(
@@ -389,12 +586,12 @@ fn assert_no_hard_failures(summary: &Summary) {
 /// the test is allowed to fail.
 #[test]
 fn all_captures_decode_and_classify() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");
-    let Some(summary) = scan_dir(&dir) else {
+    let captures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");
+    let Some(summary) = scan_dir(&captures_dir) else {
         eprintln!("no captures/ yet, skipping");
         return;
     };
-    report_summary(&summary, &dir);
+    report_summary(&summary, Path::new(env!("CARGO_TARGET_TMPDIR")));
     assert_no_hard_failures(&summary);
 }
 
@@ -421,9 +618,15 @@ mod classifier_tests {
         dir
     }
 
-    fn jsonl_line(dir_field: &str, report_id: u8, report: &[u8]) -> String {
+    fn jsonl_line_ext(dir_field: &str, report_id: u8, report: &[u8], extra_json: &str) -> String {
         let hexs: String = report.iter().map(|b| format!("{b:02x}")).collect();
-        format!("{{\"ts\":0,\"dir\":\"{dir_field}\",\"report_id\":{report_id},\"hex\":\"{hexs}\"}}")
+        format!(
+            "{{\"ts\":0,\"dir\":\"{dir_field}\",\"report_id\":{report_id},\"hex\":\"{hexs}\"{extra_json}}}"
+        )
+    }
+
+    fn jsonl_line(dir_field: &str, report_id: u8, report: &[u8]) -> String {
+        jsonl_line_ext(dir_field, report_id, report, "")
     }
 
     #[test]
@@ -625,6 +828,14 @@ mod classifier_tests {
 
         assert_eq!(summary.report_ids.get(&0), Some(&3));
         assert_eq!(summary.report_ids.get(&5), Some(&1));
+
+        // profile-switch.jsonl had inbound lines (round_trip, trailing,
+        // device_fail), so it must not appear in the "no inbound frames"
+        // warning list.
+        assert_eq!(
+            summary.scenario_directions.get("profile-switch.jsonl"),
+            Some(&(true, true))
+        );
     }
 
     #[test]
@@ -652,12 +863,13 @@ mod classifier_tests {
         assert!(summary.failures[1].contains("noisy.jsonl:2"));
     }
 
-    /// Proves the two remaining hard-failure classes actually fail the test
-    /// end to end, through `scan_dir` and `assert_no_hard_failures`, the
-    /// same path `all_captures_decode_and_classify` uses; not just that
-    /// `classify` returns the right enum variant in isolation. A prior round
-    /// of this harness proved that out of band with a temporary test and
-    /// then deleted it; a deleted test is not coverage, so these stay.
+    /// Proves the two remaining "wrong shape" hard-failure classes actually
+    /// fail the test end to end, through `scan_dir` and
+    /// `assert_no_hard_failures`, the same path
+    /// `all_captures_decode_and_classify` uses; not just that `classify`
+    /// returns the right enum variant in isolation. A prior round of this
+    /// harness proved that out of band with a temporary test and then
+    /// deleted it; a deleted test is not coverage, so these stay.
     #[test]
     #[should_panic(expected = "hard failure")]
     fn a_bad_checksum_frame_fails_the_whole_run() {
@@ -682,6 +894,184 @@ mod classifier_tests {
         let summary = scan_dir(&dir).expect("dir exists");
         fs::remove_dir_all(&dir).unwrap();
         assert_no_hard_failures(&summary);
+    }
+
+    /// The redaction contract (Important 1, fix round 2): an inbound SYNC
+    /// frame with no `"redacted"` field at all, e.g. pasted from a capture
+    /// made with an older copy of the shim before this field existed, must
+    /// fail the whole run rather than silently let a real serial number
+    /// through.
+    #[test]
+    #[should_panic(expected = "hard failure")]
+    fn an_unredacted_inbound_sync_frame_fails_the_whole_run() {
+        let dir = unique_temp_dir("unredacted-sync-e2e");
+        let mut payload = vec![0u8; 60];
+        payload[9..25].copy_from_slice(b"REALSERIALNUMBER");
+        let f = frame::frame(wh_proto::cmds::cmd::SYNC, &payload).unwrap();
+        fs::write(dir.join("bad.jsonl"), jsonl_line("in", 0, &f)).unwrap(); // no "redacted" field
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+        assert_no_hard_failures(&summary);
+    }
+
+    /// The positive case for the same contract: a properly redacted inbound
+    /// SYNC frame, correctly stamped, must not trip the new check.
+    #[test]
+    fn a_properly_redacted_inbound_sync_frame_does_not_fail() {
+        let dir = unique_temp_dir("redacted-sync-ok");
+        let mut payload = vec![0u8; 60];
+        payload[26..36].copy_from_slice(b"V1.2.3.456"); // serial window already zero
+        let f = frame::frame(wh_proto::cmds::cmd::SYNC, &payload).unwrap();
+        fs::write(
+            dir.join("good.jsonl"),
+            jsonl_line_ext("in", 0, &f, ",\"redacted\":true"),
+        )
+        .unwrap();
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+        assert_eq!(summary.modelled, 1);
+    }
+
+    /// An outgoing SYNC request (same cmd byte, no serial) must not be
+    /// required to be flagged "redacted", since the shim only ever flags
+    /// inbound lines: this proves the check does not spuriously fire on it.
+    #[test]
+    fn an_outgoing_sync_request_does_not_need_a_redacted_flag() {
+        let dir = unique_temp_dir("outgoing-sync-ok");
+        let f = wh_proto::cmds::sync();
+        fs::write(dir.join("good.jsonl"), jsonl_line("out", 0, &f)).unwrap();
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+    }
+
+    /// Important 2, fix round 2: a feature report is not required to be
+    /// REPORT_LEN bytes, so a length mismatch on one must be reported, not
+    /// treated as a hard failure the way it would be for a plain "in"/"out"
+    /// line.
+    #[test]
+    fn a_feature_report_of_unexpected_length_is_reported_not_failed() {
+        let dir = unique_temp_dir("feature-length");
+        let short = vec![0xAAu8; 32];
+        let long = vec![0xBBu8; 65];
+        let lines = [
+            jsonl_line("in-feature", 0, &short),
+            jsonl_line("out-feature", 0, &long),
+        ]
+        .join("\n");
+        fs::write(dir.join("feature-probe.jsonl"), lines).unwrap();
+
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+        assert_eq!(summary.checked, 2);
+        let mut saw_32 = false;
+        let mut saw_65 = false;
+        for ((origin, len), count) in &summary.feature_length_mismatch {
+            if *len == 32 {
+                assert_eq!(origin.dir, "in-feature");
+                assert_eq!(*count, 1);
+                saw_32 = true;
+            }
+            if *len == 65 {
+                assert_eq!(origin.dir, "out-feature");
+                assert_eq!(*count, 1);
+                saw_65 = true;
+            }
+        }
+        assert!(saw_32 && saw_65);
+    }
+
+    /// A non-feature line ("in"/"out") of the wrong length is still a hard
+    /// failure: only `"*-feature"` directions get the pass.
+    #[test]
+    #[should_panic(expected = "hard failure")]
+    fn a_non_feature_line_of_the_wrong_length_still_fails() {
+        let dir = unique_temp_dir("non-feature-wrong-length");
+        fs::write(dir.join("bad.jsonl"), jsonl_line("in", 0, &[0xAA; 32])).unwrap();
+        let summary = scan_dir(&dir).expect("dir exists");
+        fs::remove_dir_all(&dir).unwrap();
+        assert_no_hard_failures(&summary);
+    }
+
+    /// Important 3, fix round 2: the visibility fix itself (both Criticals'
+    /// remedy) had no coverage; this closes it. `render_summary` on a
+    /// hand-built `Summary` must mention every field that was populated.
+    #[test]
+    fn render_summary_includes_every_populated_field() {
+        let mut summary = Summary {
+            checked: 5,
+            modelled: 2,
+            ..Summary::default()
+        };
+        summary.report_ids.insert(0x00, 4);
+        summary.unmodelled.insert(
+            (
+                Origin {
+                    scenario: "profile-switch.jsonl".to_string(),
+                    dir: "out".to_string(),
+                },
+                0x51,
+            ),
+            3,
+        );
+        summary
+            .failures
+            .push("demo.jsonl:1: codec bug: checksum mismatch".to_string());
+
+        let text = render_summary(&summary);
+
+        assert!(text.contains("5 reports checked"), "{text}");
+        assert!(text.contains("2 modelled-command"), "{text}");
+        assert!(text.contains("0x00 (4x)"), "{text}");
+        assert!(
+            text.contains("cmd 0x51: 3 frame(s) total"),
+            "aggregate line missing: {text}"
+        );
+        assert!(
+            text.contains("cmd 0x51: 3 frame(s) [out] profile-switch.jsonl"),
+            "per-origin attribution line missing: {text}"
+        );
+        assert!(text.contains("1 hard failure(s):"), "{text}");
+        assert!(
+            text.contains("demo.jsonl:1: codec bug: checksum mismatch"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn render_summary_warns_about_a_scenario_with_no_inbound_frames() {
+        let mut summary = Summary::default();
+        summary
+            .scenario_directions
+            .insert("outbound-only.jsonl".to_string(), (false, true));
+        summary
+            .scenario_directions
+            .insert("normal.jsonl".to_string(), (true, true));
+
+        let text = render_summary(&summary);
+
+        assert!(text.contains("no inbound frames"), "{text}");
+        assert!(text.contains("outbound-only.jsonl"), "{text}");
+        assert!(!text.contains("normal.jsonl\n"), "{text}");
+    }
+
+    #[test]
+    fn report_summary_writes_the_rendered_text_to_a_file_in_out_dir() {
+        let dir = unique_temp_dir("report-summary-write");
+        let summary = Summary {
+            checked: 1,
+            modelled: 1,
+            ..Summary::default()
+        };
+
+        report_summary(&summary, &dir);
+
+        let written = fs::read_to_string(dir.join("golden-summary.txt")).unwrap();
+        assert_eq!(written, render_summary(&summary));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
