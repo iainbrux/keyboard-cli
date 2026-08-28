@@ -69,7 +69,7 @@ easy to change many settings quickly is the worst place to discover a write bug.
 
 ### A loading spinner on CLI commands
 
-**The idea.** When a command runs, show a brief spinner cycling `|`, `/`, `-`, `\\` for something in
+**The idea.** When a command runs, show a brief spinner cycling `|`, `/`, `-`, `\` for something in
 the region of 100 to 300ms, so a write feels like it went somewhere rather than returning instantly.
 The board really is that fast; this is presentation.
 
