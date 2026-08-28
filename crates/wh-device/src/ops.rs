@@ -160,17 +160,25 @@ pub fn rt_records<T: Transport>(
     Ok(records)
 }
 
-/// Build the [mode] records to switch `usages` back to per-key actuation point mode
-/// (`TouchMode::Single`, nibble 1), preserving each key's advanced-mode nibble. Reads current
-/// MODE per key but sends nothing else.
+/// Build the [mode] records to turn rapid trigger off on `usages`, preserving each key's
+/// advanced-mode nibble. Reads current MODE per key but sends nothing else.
 ///
-/// Writes `Single`, not `Global` (nibble 0): measured on the real device (`captures/rt-off-w.jsonl`,
-/// task 19b chunk 3), turning RT off wrote MODE nibble 1, not 0. `Global` means "ignore this
-/// key's AP register and follow the global travel setting", so on a key that had a per-key
-/// actuation point configured, writing nibble 0 here would silently discard it: the AP register
-/// itself is untouched, but with the touch mode set to `Global` the board ignores it. Writing
-/// `Single` instead is what actually turns RT off while keeping that key's own actuation point in
-/// effect, which is the sole reason a per-key AP would have been set in the first place.
+/// Only touches keys that actually have RT on (`TouchMode::Rt` or `RtContinuous`): those get
+/// rewritten to `TouchMode::Single` (nibble 1, per-key actuation point), never to `Global`
+/// (nibble 0). A key already in `Global`, `Single`, or an `Unknown` state is left exactly as
+/// read; a key with no RT to turn off has nothing for `set rt --off` to do to its mode.
+///
+/// Measured on the real device (`captures/rt-off-w.jsonl`, task 19b chunk 3): turning RT off
+/// wrote MODE nibble 1, not 0, because nibble 0 means "ignore this key's AP register and follow
+/// the global travel setting", which would silently make a per-key actuation point inert. But
+/// that capture covers exactly one transition, an RT key with an AP going to Single; no capture
+/// anywhere in the ten scenarios shows a nibble-0 (Global) key being turned "off" into nibble 1,
+/// and doing that unconditionally (the first cut of this function did) detaches every non-RT key
+/// on the board from the global travel setting on a plain `wh set rt --keys all --off`, a second
+/// data-loss bug of the same shape chunk 3 fixed. Restricting the rewrite to keys that were
+/// actually `Rt`/`RtContinuous` closes both that case and the `Unknown(n)` case at once, rather
+/// than special-casing `Global` alone: a key without RT, in whatever state, has no RT to turn
+/// off.
 pub fn rt_off_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -179,8 +187,12 @@ pub fn rt_off_records<T: Transport>(
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
+        let touch = match cur_mode.touch {
+            TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
+            other => other,
+        };
         let mode = Mode {
-            touch: TouchMode::Single,
+            touch,
             advanced: cur_mode.advanced,
             high: cur_mode.high,
         };
@@ -681,6 +693,129 @@ mod tests {
             }],
             "touch mode must stay Single (nibble 1), not fall back to Global (nibble 0)"
         );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The regression this fix round exists for: replaying every one of the 68 real per-key
+    /// MODE values read from the device in `captures/initial-load.jsonl` (extracted with
+    /// `layout == 0x08` from the KEY-reply frames in that capture; every one is a key that has
+    /// never had RT on) through `rt_off_records`, exactly what `wh set rt --keys all --off`
+    /// sends. The first cut of this function detached all 58 nibble-0 keys among these from the
+    /// global travel setting by rewriting their MODE to nibble 1 unconditionally; the fix must
+    /// leave every one of these 68 values completely unchanged, since none of them is
+    /// `Rt`/`RtContinuous`. The one key at nibble 1 already (`0x0010`, 10 of the 68) staying at
+    /// nibble 1 is not itself proof of the fix (a no-op happens to look identical either way);
+    /// the 58 nibble-0 keys staying at nibble 0 is.
+    #[test]
+    fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
+        // (key, MODE value), verbatim from captures/initial-load.jsonl.
+        const REAL_MODES: &[(u8, u16)] = &[
+            (0x01, 0x0010),
+            (0x04, 0x0018),
+            (0x05, 0x0000),
+            (0x06, 0x0000),
+            (0x07, 0x0018),
+            (0x08, 0x0000),
+            (0x09, 0x0000),
+            (0x0A, 0x0000),
+            (0x0B, 0x0000),
+            (0x0C, 0x0000),
+            (0x0D, 0x0000),
+            (0x0E, 0x0000),
+            (0x0F, 0x0000),
+            (0x10, 0x0000),
+            (0x11, 0x0000),
+            (0x12, 0x0000),
+            (0x13, 0x0000),
+            (0x14, 0x0000),
+            (0x15, 0x0000),
+            (0x16, 0x0018),
+            (0x17, 0x0000),
+            (0x18, 0x0000),
+            (0x19, 0x0000),
+            (0x1A, 0x0018),
+            (0x1B, 0x0000),
+            (0x1C, 0x0000),
+            (0x1D, 0x0000),
+            (0x1E, 0x0000),
+            (0x1F, 0x0000),
+            (0x20, 0x0000),
+            (0x21, 0x0000),
+            (0x22, 0x0000),
+            (0x23, 0x0000),
+            (0x24, 0x0000),
+            (0x25, 0x0000),
+            (0x26, 0x0000),
+            (0x27, 0x0000),
+            (0x28, 0x0000),
+            (0x29, 0x0010),
+            (0x2A, 0x0000),
+            (0x2B, 0x0000),
+            (0x2C, 0x0000),
+            (0x2D, 0x0000),
+            (0x2E, 0x0000),
+            (0x2F, 0x0000),
+            (0x30, 0x0000),
+            (0x31, 0x0000),
+            (0x33, 0x0000),
+            (0x34, 0x0000),
+            (0x36, 0x0000),
+            (0x37, 0x0000),
+            (0x38, 0x0000),
+            (0x39, 0x0000),
+            (0x4F, 0x0000),
+            (0x50, 0x0000),
+            (0x51, 0x0000),
+            (0x52, 0x0000),
+            (0xD6, 0x0010),
+            (0xE0, 0x0000),
+            (0xE1, 0x0000),
+            (0xE2, 0x0000),
+            (0xE3, 0x0000),
+            (0xE4, 0x0000),
+            (0xE5, 0x0000),
+            (0xE6, 0x0000),
+            (0xFA, 0x0010),
+            (0xFB, 0x0010),
+            (0xFC, 0x0010),
+        ];
+        assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");
+        assert_eq!(
+            REAL_MODES
+                .iter()
+                .filter(|&&(_, v)| matches!(
+                    Mode::from_value(v).touch,
+                    TouchMode::Rt | TouchMode::RtContinuous
+                ))
+                .count(),
+            0,
+            "none of the real captured keys have RT on; that is what makes this a regression test"
+        );
+
+        let mut lines = Vec::new();
+        let usages: Vec<u8> = REAL_MODES.iter().map(|&(k, _)| k).collect();
+        for &(k, v) in REAL_MODES {
+            lines.push(l("out", &cmds::read_key_layout(k, layout::MODE)));
+            lines.push(l(
+                "in",
+                &rf(
+                    cmds::cmd::KEY,
+                    &[0x00, k, layout::MODE, (v & 0xFF) as u8, (v >> 8) as u8],
+                ),
+            ));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let recs = rt_off_records(&mut s, &usages).unwrap();
+
+        assert_eq!(recs.len(), 68);
+        for (rec, &(k, v)) in recs.iter().zip(REAL_MODES.iter()) {
+            assert_eq!(rec.key, k);
+            assert_eq!(
+                rec.value, v,
+                "key {k:#04x}: MODE must be left exactly as read ({v:#06x}), not rewritten \
+                 to Single, since it never had RT on"
+            );
+        }
         assert!(s.into_inner().finished());
     }
 

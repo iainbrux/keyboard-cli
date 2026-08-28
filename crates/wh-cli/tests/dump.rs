@@ -563,6 +563,9 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
 /// against the exhausted script.
 #[test]
 fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
+    // 'w' (0x1A) starts at MODE 0x0220 (touch Unknown(2), advanced nibble 0, high byte 0x02,
+    // i.e. not already RT) and wants 0x0230 after `rt_records` forces the touch nibble to Rt
+    // (nibble 3, continuous off) while preserving the advanced nibble and high byte.
     let mut lines = matrix_lines();
     lines.extend(mode_read_lines(0x1A, 0x0220));
     let path = write_script("set-rt-dry-run", &lines);
@@ -581,6 +584,35 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+
+    // Pins the exact previewed records, not just that something printed, bringing this test up
+    // to the same standard as its `--off` sibling below: a regression in `rt_records`' touch
+    // nibble choice or its high-byte/advanced-nibble preservation would otherwise only be
+    // caught on the `--off` path.
+    let expected = cmds::write_key_records(&[
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x0230,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 400,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 400,
+        },
+    ]);
+    for frame in &expected {
+        assert!(
+            stdout.contains(&hex(frame)),
+            "expected frame {} in stdout: {stdout}",
+            hex(frame)
+        );
+    }
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -698,7 +730,11 @@ fn restore_snapshot_toml(ap_mm: f64) -> String {
             name: "w".into(),
             usage: 0x1A,
             ap_mm,
-            rt: true,
+            // Agrees with mode_raw below: 0x0220 decodes to TouchMode::Unknown(2), not Rt, so
+            // `rt` is false. `restore`'s write/verify path never reads this field (it round-trips
+            // mode_raw verbatim, see RestoreKey/restore_records/verify_restore in run.rs), so this
+            // is purely informational, but it should still describe the snapshot it sits in.
+            rt: false,
             rt_press_mm: 0.5,
             rt_release_mm: 0.6,
             mode_raw: 0x0220,
