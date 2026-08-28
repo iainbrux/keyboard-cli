@@ -13,6 +13,7 @@ pub struct Cli {
 pub enum Cmd {
     /// Read the full board configuration
     Dump {
+        /// Print the configuration as JSON instead of plain text
         #[arg(long)]
         json: bool,
     },
@@ -28,13 +29,15 @@ pub enum Cmd {
     },
     /// Snapshot the board config to a file
     Backup {
+        /// Destination file; defaults to the store's auto-backup location
         #[arg(long)]
         to: Option<std::path::PathBuf>,
     },
     /// Write a snapshot back to the board
     Restore {
-        /// Snapshot file, omit with --last for the newest auto-backup
+        /// Snapshot file; omit with --last for the newest auto-backup
         file: Option<std::path::PathBuf>,
+        /// Use the newest auto-backup instead of naming a file
         #[arg(long)]
         last: bool,
     },
@@ -94,6 +97,7 @@ pub enum SetWhat {
         /// Depth in mm
         #[arg(long)]
         set: f64,
+        /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,
     },
