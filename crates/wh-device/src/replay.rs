@@ -5,13 +5,35 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn hex_digit(b: u8, pos: usize) -> Result<u8, DeviceError> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(DeviceError::Replay(format!(
+            "invalid hex digit 0x{b:02x} at byte offset {pos} (not 0-9/a-f/A-F)"
+        ))),
+    }
+}
+
 fn unhex(s: &str) -> Result<[u8; 64], DeviceError> {
-    let bytes: Result<Vec<u8>, _> = (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
-        .collect();
-    let v = bytes.map_err(|e| DeviceError::Replay(e.to_string()))?;
-    v.try_into().map_err(|_| DeviceError::Replay("hex is not 64 bytes".into()))
+    // Work on raw bytes rather than `&str` slices: a `&str` index that lands
+    // inside a multi-byte UTF-8 character panics, and this parses untrusted
+    // JSONL from golden fixtures and (later) a browser capture.
+    let bytes = s.as_bytes();
+    if bytes.len() != 128 {
+        return Err(DeviceError::Replay(format!(
+            "hex must be exactly 128 characters (64 bytes), got {}",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 64];
+    for i in 0..64 {
+        let hi = hex_digit(bytes[2 * i], 2 * i)?;
+        let lo = hex_digit(bytes[2 * i + 1], 2 * i + 1)?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,7 +83,14 @@ impl Transport for ReplayTransport {
                 "send mismatch at {}: got {}, script has {}",
                 self.pos, hex(report), hex(expected)
             ))),
-            other => Err(DeviceError::Replay(format!("unexpected send at {}: {other:?}", self.pos))),
+            Some(Entry::In(bytes)) => Err(DeviceError::Replay(format!(
+                "unexpected send at {}: script expected a recv here (next reply is {})",
+                self.pos, hex(bytes)
+            ))),
+            None => Err(DeviceError::Replay(format!(
+                "unexpected send at {}: script is exhausted",
+                self.pos
+            ))),
         }
     }
     fn recv(&mut self, _timeout: Duration) -> Result<[u8; 64], DeviceError> {
@@ -71,7 +100,11 @@ impl Transport for ReplayTransport {
                 self.pos += 1;
                 Ok(b)
             }
-            _ => Err(DeviceError::Timeout),
+            Some(Entry::Out(_)) => Err(DeviceError::Replay(format!(
+                "unexpected recv at {}: script expected a send here",
+                self.pos
+            ))),
+            None => Err(DeviceError::Timeout),
         }
     }
 }
@@ -156,5 +189,62 @@ mod tests {
         let log = rec.jsonl();
         assert_eq!(log.lines().count(), 2);
         assert!(log.lines().next().unwrap().contains("\"out\""));
+    }
+
+    #[test]
+    fn unhex_rejects_odd_length_without_panicking() {
+        assert!(unhex("abc").is_err());
+    }
+
+    #[test]
+    fn unhex_rejects_non_hex_character_without_panicking() {
+        let mut s = "a".repeat(128);
+        s.replace_range(0..1, "z");
+        assert!(unhex(&s).is_err());
+    }
+
+    #[test]
+    fn unhex_rejects_non_ascii_character_without_panicking() {
+        // "0é0" is 4 bytes (0x30, 0xC3, 0xA9, 0x30); 32 repeats give exactly
+        // 128 bytes so the case under test is the multi-byte char itself,
+        // not a length mismatch.
+        let s = "0é0".repeat(32);
+        assert_eq!(s.len(), 128);
+        assert!(unhex(&s).is_err());
+    }
+
+    #[test]
+    fn unhex_rejects_too_short_hex() {
+        let s = "a".repeat(126);
+        assert!(unhex(&s).is_err());
+    }
+
+    #[test]
+    fn unhex_rejects_too_long_hex() {
+        let s = "a".repeat(130);
+        assert!(unhex(&s).is_err());
+    }
+
+    #[test]
+    fn parse_jsonl_rejects_bad_dir() {
+        let out = wh_proto::cmds::sync();
+        let bad = format!("{{\"dir\":\"sideways\",\"hex\":\"{}\"}}", hex(&out));
+        assert!(parse_jsonl(&bad).is_err());
+    }
+
+    #[test]
+    fn recv_when_script_expects_send_is_replay_error_not_timeout() {
+        let out = wh_proto::cmds::sync();
+        let script = line("out", &out);
+        let mut t = ReplayTransport::from_jsonl(&script).unwrap();
+        let err = t.recv(Duration::from_millis(10)).unwrap_err();
+        assert!(matches!(err, DeviceError::Replay(_)), "expected Replay error, got {err:?}");
+    }
+
+    #[test]
+    fn recv_past_end_of_script_is_still_timeout() {
+        let mut t = ReplayTransport::from_jsonl("").unwrap();
+        let err = t.recv(Duration::from_millis(10)).unwrap_err();
+        assert!(matches!(err, DeviceError::Timeout), "expected Timeout, got {err:?}");
     }
 }
