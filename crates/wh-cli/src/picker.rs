@@ -148,23 +148,39 @@ fn is_actionable_press(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
+/// Refuses `--pick` when stdout is not an interactive terminal, given the terminal check's
+/// result rather than performing it: `pick` below is the only caller and passes the real
+/// `std::io::stdout().is_terminal()` in a one-line, untested wrapper, so this pure function
+/// is what a test can actually drive. No test may call `is_terminal()` itself and expect a
+/// stable answer, since the test binary's own stdout is a real tty whenever a developer runs
+/// `cargo test` at an interactive shell, not only when it is redirected: a test that called
+/// `pick()` end to end under that condition would pass the guard, enter raw mode and the
+/// alternate screen, and hang in `event::read()` waiting for a keystroke that never comes,
+/// taking over the developer's terminal in the process. `refuse_if_not_terminal` exists so
+/// that scenario is tested with a plain `false`, never with a real terminal.
+///
+/// `wh get ap --pick > keys.txt` is a natural thing to try with a command whose output is
+/// otherwise scriptable. Without this check, the alternate-screen sequences and the rendered
+/// list go straight into the redirected file, the user's terminal stays blank while raw mode
+/// silently consumes their keystrokes, and they have no way to know why. Refusing up front
+/// turns that confusing hang into one sentence.
+fn refuse_if_not_terminal(is_tty: bool) -> Result<()> {
+    if !is_tty {
+        bail!(
+            "--pick needs an interactive terminal, but stdout here is redirected or piped: \
+             pass --keys instead"
+        );
+    }
+    Ok(())
+}
+
 /// Prompts the user to pick keys interactively from `universe` and returns their usages.
 ///
 /// `universe` is the board's real key list, read live by the caller immediately before this
 /// runs (see `resolve_keys` in `run.rs`), not the static key table: a picker offering a key
 /// the attached board does not have would let the user select something no write can reach.
 pub fn pick(universe: &[u8]) -> Result<Vec<u8>> {
-    // `wh get ap --pick > keys.txt` is a natural thing to try with a command whose output is
-    // otherwise scriptable. Without this check, the alternate-screen sequences and the
-    // rendered list go straight into the redirected file, the user's terminal stays blank
-    // while raw mode silently consumes their keystrokes, and they have no way to know why.
-    // Refusing up front turns that confusing hang into one sentence.
-    if !std::io::stdout().is_terminal() {
-        bail!(
-            "--pick needs an interactive terminal, but stdout here is redirected or piped: \
-             pass --keys instead"
-        );
-    }
+    refuse_if_not_terminal(std::io::stdout().is_terminal())?;
     let Some(mut state) = PickerState::new(universe) else {
         bail!("this board reports no keys to pick from");
     };
@@ -404,15 +420,21 @@ mod tests {
     }
 
     #[test]
-    fn pick_refuses_when_stdout_is_not_a_terminal() {
-        // `cargo test` (and CI) run this with stdout piped, not attached to a real
-        // terminal, so this exercises the real `is_terminal()` guard under a real
-        // non-terminal stdout, the same condition `wh get ap --pick > file` hits, rather
-        // than a mock standing in for it.
-        let err = pick(&[0x04, 0x05]).unwrap_err();
+    fn refuse_if_not_terminal_rejects_a_non_terminal_stdout() {
+        // A plain `false`, not a real terminal: `pick()` itself is never called from a
+        // test, since it owns raw mode and the alternate screen, and calling it under a
+        // real tty (which a developer's own `cargo test` run has, whether or not stdout
+        // happens to be redirected) would enter both and then block in `event::read()`
+        // waiting for a keystroke that never comes.
+        let err = refuse_if_not_terminal(false).unwrap_err();
         assert!(
             err.to_string().to_lowercase().contains("terminal"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn refuse_if_not_terminal_accepts_a_terminal_stdout() {
+        assert!(refuse_if_not_terminal(true).is_ok());
     }
 }
