@@ -52,34 +52,52 @@ impl Store {
     /// is the parsed numeric key from `backup_sort_key`, not the raw filename string: see there
     /// for why a fixed width alone is not sufficient.
     ///
-    /// The write is atomic: content lands in a temporary file in the same directory and is then
-    /// renamed into place, so a crash or a full disk mid-write cannot leave a truncated backup
-    /// at the final name. The final name is reserved with `create_new` before the rename, so two
-    /// saves that land in the same nanosecond cannot silently overwrite one another; the second
-    /// one retries at the next nanosecond slot instead.
+    /// The write is atomic and collision-free without ever letting an incomplete file sit at a
+    /// name that looks like a backup:
+    ///
+    /// 1. The full content is written to a temp file first, under a name that starts with `.`
+    ///    and does not end in `.toml`, so `list_backups` can never mistake it (or an orphan left
+    ///    behind by a crash on this step) for a backup.
+    /// 2. Only once that write has succeeded is a final `<secs>.<nanos>.toml` name chosen, by
+    ///    `fs::hard_link`-ing the temp file onto it. `hard_link` fails if the destination
+    ///    already exists, which is what gives two saves landing in the same nanosecond a
+    ///    collision guard: the second one retries at the next nanosecond slot instead of
+    ///    silently overwriting. Because the temp file's content is already complete before the
+    ///    link is created, the final name never exists half-written: there is no window where a
+    ///    reader could see it empty or truncated. This is why `create_new` on the final name
+    ///    (the previous round's approach) cannot be used here: reserving the final name before
+    ///    the content behind it exists is exactly the defect being fixed.
+    ///
+    /// `fs::hard_link`'s "fails if the destination exists" behaviour is a documented, general
+    /// contract of the standard library function, not a Unix-specific note, so it is relied on
+    /// here for the Windows build too (this crate ships in the Windows binary). That could only
+    /// be checked against the documented contract in this environment, not by executing the
+    /// Windows binary, since only cross-compilation is available here.
     pub fn save_backup(&self, toml_text: &str) -> Result<PathBuf, StoreError> {
         let dir = self.backups_dir();
         fs::create_dir_all(&dir)?;
-        let stamp = std::time::SystemTime::now()
+
+        let tmp_nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| StoreError::ClockBeforeEpoch)?;
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp_path = dir.join(format!(".save-{}-{tmp_nonce}.partial", std::process::id()));
+        fs::write(&tmp_path, toml_text)?;
+
+        let stamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(stamp) => stamp,
+            Err(_) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(StoreError::ClockBeforeEpoch);
+            }
+        };
 
         let mut secs = stamp.as_secs();
         let mut nanos = stamp.subsec_nanos();
         let path = loop {
             let candidate = dir.join(format!("{secs:020}.{nanos:09}.toml"));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(placeholder) => {
-                    // Release the handle immediately: we only needed create_new's atomicity to
-                    // reserve the name, and an open handle could block the rename below on
-                    // platforms that lock open files.
-                    drop(placeholder);
-                    break candidate;
-                }
+            match fs::hard_link(&tmp_path, &candidate) {
+                Ok(()) => break candidate,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     if nanos == 999_999_999 {
                         nanos = 0;
@@ -88,19 +106,18 @@ impl Store {
                         nanos += 1;
                     }
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp_path);
+                    return Err(e.into());
+                }
             }
         };
 
-        let tmp_path = dir.join(format!(
-            ".tmp-{}-{}",
-            std::process::id(),
-            path.file_name()
-                .expect("just built with a file name")
-                .to_string_lossy()
-        ));
-        fs::write(&tmp_path, toml_text)?;
-        fs::rename(&tmp_path, &path)?;
+        // The backup's content now also lives at `path` (a hard link, not a copy of the bytes),
+        // so the temp name can go. Best-effort: if removal fails, the backup at `path` is still
+        // complete and correct, the only cost is a harmless leftover `.partial` file, which
+        // list_backups already ignores.
+        let _ = fs::remove_file(&tmp_path);
 
         // rotate: list_backups() sorts oldest first, so remove from the front.
         let mut all = self.list_backups()?;
@@ -111,17 +128,40 @@ impl Store {
     }
 
     /// Sorted oldest to newest, by the parsed `(secs, nanos)` key, not by raw filename string.
+    ///
+    /// A directory entry is only treated as a backup if its name does not start with `.` (every
+    /// genuine backup name is all digits) and it has a `.toml` extension. The leading-dot check
+    /// is not the same thing as relying on `Path::extension` to treat dot-prefixed names as
+    /// extension-less: it does not, for a name with more than one embedded `.` (as this store's
+    /// own former temp-file naming scheme demonstrated, `.tmp-<pid>-<name>.toml` still reports
+    /// a `.toml` extension), so the extension check alone cannot be trusted to exclude a temp or
+    /// orphaned artifact. A zero-length `.toml` file is also excluded: it is never a valid
+    /// backup, whether left behind by an interrupted write or dropped there by something else.
     pub fn list_backups(&self) -> Result<Vec<PathBuf>, StoreError> {
         let dir = self.backups_dir();
         if !dir.exists() {
             return Ok(vec![]);
         }
-        let mut v: Vec<PathBuf> = fs::read_dir(&dir)?
-            .collect::<Result<Vec<_>, std::io::Error>>()?
-            .into_iter()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "toml"))
-            .collect();
+        let mut v = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let looks_hidden_or_temp = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.starts_with('.'))
+                .unwrap_or(true);
+            if looks_hidden_or_temp {
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "toml") {
+                continue;
+            }
+            if entry.metadata()?.len() == 0 {
+                continue;
+            }
+            v.push(path);
+        }
         v.sort_by_key(|p| backup_sort_key(p));
         Ok(v)
     }
@@ -342,6 +382,53 @@ mod tests {
         assert_eq!(newest, "snap 24");
         let oldest_surviving = std::fs::read_to_string(&backups[0]).unwrap();
         assert_eq!(oldest_surviving, "snap 5");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_backups_ignores_orphaned_temp_file() {
+        let dir = test_dir("orphan-temp");
+        let store = Store::at(dir.clone());
+        std::fs::create_dir_all(dir.join("backups")).unwrap();
+        std::fs::write(
+            dir.join("backups").join("1756000000.000000000.toml"),
+            "genuine",
+        )
+        .unwrap();
+        // An orphaned temp artifact left behind by an interrupted save_backup call. It starts
+        // with '.' and, despite the embedded dots, `Path::extension()` still reports "toml"
+        // for it, so list_backups must not rely on the extension check alone to exclude it.
+        std::fs::write(
+            dir.join("backups")
+                .join(".tmp-9999-00000000001756000005.000000000.toml"),
+            "",
+        )
+        .unwrap();
+        let backups = store.list_backups().unwrap();
+        assert_eq!(backups.len(), 1);
+        let newest = store.load_backup(None).unwrap();
+        assert_eq!(newest, "genuine");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_backup_none_ignores_zero_length_newest_file() {
+        let dir = test_dir("zero-length-newest");
+        let store = Store::at(dir.clone());
+        std::fs::create_dir_all(dir.join("backups")).unwrap();
+        std::fs::write(
+            dir.join("backups").join("1756000000.000000000.toml"),
+            "older-real",
+        )
+        .unwrap();
+        // A zero-length file at a later timestamp than the genuine backup: never a valid
+        // backup, whatever left it there (an interrupted write, or something outside this
+        // tool entirely).
+        std::fs::write(dir.join("backups").join("1756000005.000000000.toml"), "").unwrap();
+        let backups = store.list_backups().unwrap();
+        assert_eq!(backups.len(), 1);
+        let newest = store.load_backup(None).unwrap();
+        assert_eq!(newest, "older-real");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
