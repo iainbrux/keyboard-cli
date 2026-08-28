@@ -167,14 +167,19 @@ pub fn rt_off_records<T: Transport>(
 }
 
 /// Enable RT on `usages` with the given sensitivities (preserves advanced-key nibble).
+/// Returns the exact records that were written (one MODE/RT_PRESS/RT_RELEASE triple per key,
+/// in `usages` order), so a caller that needs to verify the write can compare against what was
+/// actually sent, advanced nibble and high byte included, rather than only the touch mode and
+/// the two sensitivities.
 pub fn set_rt<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     press: Um,
     release: Um,
-) -> Result<(), DeviceError> {
+) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = rt_records(s, usages, press, release)?;
-    write_and_save(s, &records)
+    write_and_save(s, &records)?;
+    Ok(records)
 }
 
 /// Disable RT (touch mode -> Global), preserving the advanced nibble.

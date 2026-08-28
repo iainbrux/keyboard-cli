@@ -208,30 +208,6 @@ fn resolve_keys<T: Transport>(
     Ok(usages)
 }
 
-/// Resolves `arg`'s selector against every key `wh_proto::keys::TABLE` knows about, rather
-/// than the live board's matrix, so `--dry-run` can preview the exact frames a write would
-/// send without opening a session at all: no device required, no report sent, not even a
-/// read. This is the same static-table universe `group()` below already resolves new group
-/// definitions against for the same reason (defining a group needs no attached board either).
-/// The cost is that it cannot tell a key genuinely on this board from one only known to the
-/// protocol; that check happens for real at write time, through `resolve_keys`.
-fn resolve_keys_offline(arg: &crate::cli::KeysArg, store: &Store) -> Result<Vec<u8>> {
-    if arg.pick {
-        bail!("--pick needs the live board and cannot be combined with --dry-run");
-    }
-    let keys = arg
-        .keys
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("no key selector given: pass --keys or --pick"))?;
-    let sel = Selector::parse(keys)?;
-    let universe: Vec<u8> = wh_proto::keys::TABLE.iter().map(|&(_, u)| u).collect();
-    let usages = sel.resolve(&universe, &store.groups()?)?;
-    if usages.is_empty() {
-        bail!("selector matches no keys");
-    }
-    Ok(usages)
-}
-
 fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -417,7 +393,7 @@ fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
     let save = cmds::cmd_order(cmds::order::SAVE, &[])?;
     writeln!(
         out,
-        "dry run, nothing sent; save-to-flash frame {} would follow",
+        "dry run, no writes sent; save-to-flash frame {} would follow",
         wh_device::replay::hex(&save)
     )?;
     Ok(())
@@ -434,7 +410,9 @@ fn report_verification(
     bad: &[String],
 ) -> Result<()> {
     if bad.is_empty() {
-        writeln!(out, "{what}: {} keys verified", usages.len())?;
+        let n = usages.len();
+        let key_or_keys = if n == 1 { "key" } else { "keys" };
+        writeln!(out, "{what}: {n} {key_or_keys} verified")?;
         return Ok(());
     }
     for line in bad {
@@ -452,16 +430,28 @@ fn verify_rt<T: Transport>(
     usages: &[u8],
     press: Um,
     release: Um,
+    records: &[KeyRecord],
 ) -> Result<()> {
     let mut bad = Vec::new();
     for &u in usages {
         let ks = ops::read_key_settings(s, u)?;
         let name = key_label(u);
-        if !ks.rt_enabled() {
+        // The exact MODE value `ops::rt_records` computed for this key, advanced nibble and
+        // high byte included, not just "the touch nibble says Rt": a firmware that clears the
+        // advanced nibble when the touch mode changes has to show up here as a mismatch, not
+        // pass silently because only the touch nibble and the two sensitivities were checked.
+        let want_mode = records
+            .iter()
+            .find(|r| r.key == u && r.layout == layout::MODE)
+            .map(|r| r.value)
+            .expect("ops::rt_records emits one MODE record per key in usages");
+        if ks.mode.value() != want_mode {
             bad.push(format!(
-                "{name}: rt not enabled, wanted press {:.2}mm release {:.2}mm",
-                press.to_mm(),
-                release.to_mm()
+                "{name}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt on, \
+                 advanced nibble and high byte preserved)",
+                ks.mode.value(),
+                if ks.rt_enabled() { "on" } else { "off" },
+                want_mode,
             ));
         } else if ks.rt_press != press || ks.rt_release != release {
             // Both actual values are reported, not just the one field that first differs, so
@@ -513,12 +503,32 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             off,
             dry_run,
         } => {
+            // Validated before a session ever opens, the same way `Ap`'s `mm(set)?` below is:
+            // a malformed `--set`/`--press`/`--release` is refused before the three DEFKEY
+            // roundtrips `resolve_keys` sends, not after.
+            let sensitivities = if off {
+                None
+            } else {
+                let base = set.ok_or_else(|| {
+                    anyhow::anyhow!("--set, --press/--release, or --off required")
+                })?;
+                let p = mm(press.unwrap_or(base))?;
+                let r = mm(release.unwrap_or(base))?;
+                Some((p, r))
+            };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
+                // `resolve_keys` always reads the live matrix, dry run or not: a preview
+                // built against keys the board does not actually have would be a preview of
+                // an operation that could never happen for real, and `--pick` needs a live
+                // board regardless of `--dry-run`. Only writes and SAVE are skipped below.
                 let usages = resolve_keys(s, &keys, store)?;
                 if off {
                     if dry_run {
+                        // rt_off_records reads each key's current MODE to preserve the
+                        // advanced nibble in the preview: a read, not a write, so it is fine
+                        // for a dry run to send it.
                         let records = ops::rt_off_records(s, &usages)?;
                         return print_frames(&mut out, &cmds::write_key_records(&records));
                     }
@@ -526,18 +536,14 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     ops::set_rt_off(s, &usages)?;
                     verify_rt_off(&mut out, s, &usages)
                 } else {
-                    let base = set.ok_or_else(|| {
-                        anyhow::anyhow!("--set, --press/--release, or --off required")
-                    })?;
-                    let p = mm(press.unwrap_or(base))?;
-                    let r = mm(release.unwrap_or(base))?;
+                    let (p, r) = sensitivities.expect("validated above when off is false");
                     if dry_run {
                         let records = ops::rt_records(s, &usages, p, r)?;
                         return print_frames(&mut out, &cmds::write_key_records(&records));
                     }
                     auto_backup(s, store)?;
-                    ops::set_rt(s, &usages, p, r)?;
-                    verify_rt(&mut out, s, &usages, p, r)
+                    let records = ops::set_rt(s, &usages, p, r)?;
+                    verify_rt(&mut out, s, &usages, p, r, &records)
                 }
             })
         }
@@ -545,16 +551,12 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             let depth = mm(set)?;
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
-            if dry_run {
-                // No session at all: `ap_records` needs no prior device state (unlike RT,
-                // which preserves the advanced-mode nibble), so the whole preview, selector
-                // resolution included, can run with nothing attached and nothing sent.
-                let usages = resolve_keys_offline(&keys, store)?;
-                let records = ops::ap_records(&usages, depth);
-                return print_frames(&mut out, &cmds::write_key_records(&records));
-            }
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
+                if dry_run {
+                    let records = ops::ap_records(&usages, depth);
+                    return print_frames(&mut out, &cmds::write_key_records(&records));
+                }
                 auto_backup(s, store)?;
                 ops::set_ap(s, &usages, depth)?;
                 let mut bad = Vec::new();
@@ -588,7 +590,8 @@ fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
         let text = snap.to_toml()?;
         match to {
             Some(p) => {
-                std::fs::write(&p, &text)?;
+                std::fs::write(&p, &text)
+                    .with_context(|| format!("writing backup to {}", p.display()))?;
                 writeln!(out, "wrote {}", p.display())?;
             }
             None => {
@@ -731,13 +734,17 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Resul
         // named on the command line turns out to be the wrong one, or a stale one.
         auto_backup(s, store)?;
         ops::restore_all(s, &global, &records)?;
+        // Printed only after verification passes: on a mismatch, `verify_restore` bails and
+        // this line is never reached, so stdout never claims success while stderr reports a
+        // mismatch on the same run.
+        verify_restore(&mut out, s, &keys)?;
         writeln!(
             out,
             "restored {} keys from snapshot ({})",
             snap.keys.len(),
             snap.taken_at
         )?;
-        verify_restore(&mut out, s, &keys)
+        Ok(())
     })
 }
 

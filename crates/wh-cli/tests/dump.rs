@@ -94,6 +94,25 @@ fn key_settings_lines(
     lines
 }
 
+/// One key's MODE-only read roundtrip, the single read `ops::rt_records`/`ops::rt_off_records`
+/// send per key (to preserve the advanced nibble), distinct from `key_settings_lines`' full
+/// four-read `read_key_settings` sequence.
+fn mode_read_lines(usage: u8, mode: u16) -> Vec<String> {
+    vec![
+        out_line(&cmds::read_key_layout(usage, layout::MODE)),
+        in_line(&reply(
+            cmds::cmd::KEY,
+            &[
+                0x00,
+                usage,
+                layout::MODE,
+                (mode & 0xFF) as u8,
+                (mode >> 8) as u8,
+            ],
+        )),
+    ]
+}
+
 /// The SYNC roundtrip `ops::device_info` sends, as `[out, in]` lines: `serial` and `firmware`
 /// are padded into the reply payload at the offsets `cmds::parse_sync` reads them back from.
 /// Factored out of `build_script` so the write-path tests below can compose the same fixture
@@ -376,18 +395,92 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `--dry-run` must send nothing at all, not even a read, so it has to work with no keyboard
-/// attached at all: this runs it against a genuinely empty replay script and asserts success.
-/// If `set ap --dry-run` tried to read the board's matrix (or anything else), `ReplayTransport`
-/// would reject the unexpected send and the process would exit non-zero instead.
+/// `verify_rt` has to compare the exact MODE value `ops::rt_records` computed (touch nibble,
+/// advanced nibble, and high byte), not just "is the touch mode Rt" plus the two sensitivities.
+/// Here the board's write drops the advanced nibble: before the write, 'w' carries MODE 0x01
+/// (touch Global, advanced nibble 1); `rt_records` reads that and builds a wanted MODE of 0x21
+/// (touch Rt, advanced nibble 1 preserved). The scripted readback instead reports 0x20 (touch
+/// Rt, advanced nibble lost), with the press/release values otherwise exactly right. A
+/// verification that only checked `rt_enabled()` plus press/release would call this a pass; it
+/// has to be a mismatch, because the user's advanced-key configuration on 'w' was just
+/// silently dropped.
 #[test]
-fn set_ap_dry_run_sends_nothing_against_an_empty_script() {
-    let empty_replay = write_script("set-ap-dry-run", &[]);
+fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(auto_backup_lines());
+
+    // ops::rt_records' own pre-write MODE read: 0x01 (touch Global, advanced nibble 1).
+    lines.extend(mode_read_lines(0x1A, 0x01));
+
+    // The write batch: MODE 0x21 (touch Rt, advanced nibble 1 preserved), press/release 400um
+    // (0.40mm), then SAVE.
+    let recs = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x21,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 400,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 400,
+        },
+    ];
+    let batch = cmds::write_key_records(&recs);
+    for f in &batch {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+    lines.push(out_line(&save));
+    lines.push(in_line(&reply(
+        cmds::cmd::CMD,
+        &[0x00, cmds::order::SAVE, 0x01],
+    )));
+
+    // verify_rt's readback: MODE comes back 0x20, not the 0x21 that was written, with
+    // press/release otherwise matching exactly.
+    lines.extend(key_settings_lines(0x1A, 1000, 0x20, 400, 400));
+
+    let path = write_script("set-rt-nibble-mismatch", &lines);
+    let config_home = scratch_config_dir("set-rt-nibble-mismatch");
+
+    let out = run_wh(
+        &["set", "rt", "--keys", "w", "--set", "0.4"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("mismatch"), "unexpected stderr: {stderr}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--dry-run` means no writes and no SAVE, not "no I/O": `resolve_keys` still reads the live
+/// matrix (a preview has to be of an operation that could actually happen against this board,
+/// not against every key the protocol has ever heard of), and `ap_records` itself needs no
+/// further device state. The script here is exactly that one read and nothing else; if the
+/// implementation sent a write or a SAVE afterwards, `ReplayTransport` would reject the
+/// unexpected send against the now-exhausted script and this would fail instead of passing.
+#[test]
+fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
+    let path = write_script("set-ap-dry-run", &matrix_lines());
     let config_home = scratch_config_dir("set-ap-dry-run");
 
     let out = run_wh(
         &["set", "ap", "--keys", "w", "--set", "1.2", "--dry-run"],
-        &empty_replay,
+        &path,
         &config_home,
     );
     assert!(
@@ -399,7 +492,73 @@ fn set_ap_dry_run_sends_nothing_against_an_empty_script() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
 
-    std::fs::remove_file(empty_replay).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The `rt` sibling of the test above, and the one variant that genuinely opens a session
+/// during `--dry-run`: `ops::rt_records` reads each selected key's current MODE (one read, to
+/// preserve the advanced nibble in the preview) on top of `resolve_keys`' matrix read, and
+/// nothing else. The script is exactly those reads; a regression that added `ops::set_rt` or a
+/// bare SAVE to this branch would try to send afterwards, and `ReplayTransport` would reject it
+/// against the exhausted script.
+#[test]
+fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
+    let mut lines = matrix_lines();
+    lines.extend(mode_read_lines(0x1A, 0x0220));
+    let path = write_script("set-rt-dry-run", &lines);
+    let config_home = scratch_config_dir("set-rt-dry-run");
+
+    let out = run_wh(
+        &["set", "rt", "--keys", "w", "--set", "0.4", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Pins that `--dry-run` previews an operation that could actually happen: 'z' (usage 0x1D) is
+/// a real key in `wh_proto::keys::TABLE` but is not on this two-key fixture board (only 'w' and
+/// 'a' are). A dry run that resolved selectors against the full static table instead of the
+/// live matrix would happily preview writing to 'z' anyway; resolving against the live board
+/// (like every other command) has to reject it with the same `NotOnDevice` error `get`/`set`
+/// already give for a live write. The script is exactly the matrix read: if `--dry-run` skipped
+/// the live resolution, it would never touch this script at all and still exit non-zero for an
+/// unrelated reason (`--pick` aside, a live resolution is the only source of `NotOnDevice`), so
+/// the finished-matrix-read plus non-zero-exit combination is what actually distinguishes this
+/// from the bug.
+#[test]
+fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
+    let path = write_script("set-ap-dry-run-absent", &matrix_lines());
+    let config_home = scratch_config_dir("set-ap-dry-run-absent");
+
+    let out = run_wh(
+        &["set", "ap", "--keys", "z", "--set", "1.2", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("'z'") && stderr.contains("not a key on this device"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
