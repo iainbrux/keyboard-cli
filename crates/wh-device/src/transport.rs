@@ -14,6 +14,8 @@ pub enum DeviceError {
     Replay(String),
     #[error("I/O error: {0}")]
     Io(String),
+    #[error("batch failed at frame {index} of {total}; {applied} frame(s) already reached the device: {source}")]
+    Batch { index: usize, total: usize, applied: usize, source: Box<DeviceError> },
 }
 
 pub trait Transport {
