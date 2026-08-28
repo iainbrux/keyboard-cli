@@ -1,7 +1,6 @@
-//! Command dispatch. `keys list`, `keys group`, `dump` and `get` work end to end here; the
-//! write commands are stubbed until Task 16 wires them up over the same `Session` plumbing.
+//! Command dispatch. Every command in the `wh` tree, read and write alike, runs through here.
 
-use crate::cli::{Cli, Cmd, KeysWhat};
+use crate::cli::{Cli, Cmd, KeysWhat, SetWhat};
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -9,19 +8,24 @@ use wh_config::store::Store;
 use wh_device::ops;
 use wh_device::session::Session;
 use wh_device::transport::Transport;
+use wh_proto::cmds::{self, layout, KeyRecord};
 use wh_proto::select::Selector;
+use wh_proto::value::Um;
 
 pub fn run(cli: Cli) -> Result<()> {
     // Opened once, here, regardless of which command runs: `Store::open` only resolves a
     // path, it does not touch disk, so it is cheap even for commands that never read it.
-    // Keeping the one call site at the top means `resolve_keys` and friends have to take a
-    // `&Store` rather than reaching for the user's real config directory a second time.
+    // Keeping the one call site at the top means every command function below has to take
+    // a `&Store` rather than reaching for the user's real config directory a second time.
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
         Cmd::Dump { json } => dump(json),
         Cmd::Get { what } => get(what, &store),
-        other => device_cmd(other),
+        Cmd::Set { what } => set(what, &store),
+        Cmd::Backup { to } => backup(to, &store),
+        Cmd::Restore { file, last } => restore(file, last, &store),
+        Cmd::Selftest => selftest(),
     }
 }
 
@@ -204,6 +208,30 @@ fn resolve_keys<T: Transport>(
     Ok(usages)
 }
 
+/// Resolves `arg`'s selector against every key `wh_proto::keys::TABLE` knows about, rather
+/// than the live board's matrix, so `--dry-run` can preview the exact frames a write would
+/// send without opening a session at all: no device required, no report sent, not even a
+/// read. This is the same static-table universe `group()` below already resolves new group
+/// definitions against for the same reason (defining a group needs no attached board either).
+/// The cost is that it cannot tell a key genuinely on this board from one only known to the
+/// protocol; that check happens for real at write time, through `resolve_keys`.
+fn resolve_keys_offline(arg: &crate::cli::KeysArg, store: &Store) -> Result<Vec<u8>> {
+    if arg.pick {
+        bail!("--pick needs the live board and cannot be combined with --dry-run");
+    }
+    let keys = arg
+        .keys
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("no key selector given: pass --keys or --pick"))?;
+    let sel = Selector::parse(keys)?;
+    let universe: Vec<u8> = wh_proto::keys::TABLE.iter().map(|&(_, u)| u).collect();
+    let usages = sel.resolve(&universe, &store.groups()?)?;
+    if usages.is_empty() {
+        bail!("selector matches no keys");
+    }
+    Ok(usages)
+}
+
 fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -350,8 +378,397 @@ fn two_usages_absent_from_table() -> (u8, u8) {
     (a, b)
 }
 
-fn device_cmd(_cmd: Cmd) -> Result<()> {
-    bail!("this command needs the keyboard and is not wired up yet")
+/// Writes one line to stderr, best-effort, matching the pattern `main.rs` already uses for its
+/// own final error line: a closed stderr (`wh ... 2>/dev/null`, or a pipe reader that closed
+/// both descriptors) must not panic over something that is, at most, informational.
+/// `writeln!`'s `Result` is deliberately discarded here, unlike every stdout write in this
+/// module, which propagate their `io::Error` so a closed stdout still exits cleanly through
+/// `main.rs`'s broken-pipe check.
+fn best_effort_eprintln(msg: &str) {
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
+/// Converts a snapshot's millimetre field into a device `Um`, routing every float that will
+/// ever reach the board through `Um::from_mm`'s finite-and-in-range check. `as u16` on a float
+/// saturates rather than panicking or wrapping, so a hand-edited or stale snapshot's `99.0mm`
+/// would otherwise become `65535` um (65mm) and go straight to the keyboard; this is the one
+/// conversion path every millimetre value in this crate is required to go through instead.
+fn mm(v: f64) -> Result<Um> {
+    Ok(Um::from_mm(v, 0.0, 4.0)?)
+}
+
+fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
+    let snap = snapshot_from_device(s)?;
+    let path = store.save_backup(&snap.to_toml()?)?;
+    best_effort_eprintln(&format!("(backed up to {})", path.display()));
+    Ok(())
+}
+
+/// Prints the exact reports `--dry-run` would otherwise send, plus the SAVE frame that never
+/// follows them, to `out`. Propagates a write failure rather than swallowing it (unlike
+/// `best_effort_eprintln`): this is the dry-run path's only output, and it is the one most
+/// likely to be piped into a pager (`wh set ap --keys all --set 1.2 --dry-run | less`), so a
+/// closed reader has to surface as an ordinary `io::Error` that `main.rs` recognises as a
+/// broken pipe, not a panic.
+fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
+    for f in frames {
+        writeln!(out, "{}", wh_device::replay::hex(f))?;
+    }
+    let save = cmds::cmd_order(cmds::order::SAVE, &[])?;
+    writeln!(
+        out,
+        "dry run, nothing sent; save-to-flash frame {} would follow",
+        wh_device::replay::hex(&save)
+    )?;
+    Ok(())
+}
+
+/// Shared tail of every write command's readback verification: `bad` is one already-formatted
+/// line per key (or field) that failed to match, built by the caller so each verifier can name
+/// exactly what differed (press vs release vs the enabled flag, in `verify_rt`'s case) rather
+/// than this shared code guessing which field to report.
+fn report_verification(
+    out: &mut impl Write,
+    what: &str,
+    usages: &[u8],
+    bad: &[String],
+) -> Result<()> {
+    if bad.is_empty() {
+        writeln!(out, "{what}: {} keys verified", usages.len())?;
+        return Ok(());
+    }
+    for line in bad {
+        best_effort_eprintln(&format!("  {line}"));
+    }
+    bail!(
+        "readback mismatch on {} key(s), backup retained, use `wh restore --last` to roll back",
+        bad.len()
+    )
+}
+
+fn verify_rt<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    usages: &[u8],
+    press: Um,
+    release: Um,
+) -> Result<()> {
+    let mut bad = Vec::new();
+    for &u in usages {
+        let ks = ops::read_key_settings(s, u)?;
+        let name = key_label(u);
+        if !ks.rt_enabled() {
+            bad.push(format!(
+                "{name}: rt not enabled, wanted press {:.2}mm release {:.2}mm",
+                press.to_mm(),
+                release.to_mm()
+            ));
+        } else if ks.rt_press != press || ks.rt_release != release {
+            // Both actual values are reported, not just the one field that first differs, so
+            // a press-only or release-only mismatch is visible against its own wanted value
+            // rather than being reported next to the field that was actually correct.
+            bad.push(format!(
+                "{name}: board reports press {:.2}mm release {:.2}mm, wanted press {:.2}mm release {:.2}mm",
+                ks.rt_press.to_mm(),
+                ks.rt_release.to_mm(),
+                press.to_mm(),
+                release.to_mm()
+            ));
+        }
+    }
+    report_verification(
+        out,
+        &format!(
+            "rt press {:.2}mm release {:.2}mm",
+            press.to_mm(),
+            release.to_mm()
+        ),
+        usages,
+        &bad,
+    )
+}
+
+fn verify_rt_off<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    usages: &[u8],
+) -> Result<()> {
+    let mut bad = Vec::new();
+    for &u in usages {
+        let ks = ops::read_key_settings(s, u)?;
+        if ks.rt_enabled() {
+            bad.push(format!("{}: rt still enabled", key_label(u)));
+        }
+    }
+    report_verification(out, "rt off", usages, &bad)
+}
+
+fn set(what: SetWhat, store: &Store) -> Result<()> {
+    match what {
+        SetWhat::Rt {
+            keys,
+            set,
+            press,
+            release,
+            off,
+            dry_run,
+        } => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let usages = resolve_keys(s, &keys, store)?;
+                if off {
+                    if dry_run {
+                        let records = ops::rt_off_records(s, &usages)?;
+                        return print_frames(&mut out, &cmds::write_key_records(&records));
+                    }
+                    auto_backup(s, store)?;
+                    ops::set_rt_off(s, &usages)?;
+                    verify_rt_off(&mut out, s, &usages)
+                } else {
+                    let base = set.ok_or_else(|| {
+                        anyhow::anyhow!("--set, --press/--release, or --off required")
+                    })?;
+                    let p = mm(press.unwrap_or(base))?;
+                    let r = mm(release.unwrap_or(base))?;
+                    if dry_run {
+                        let records = ops::rt_records(s, &usages, p, r)?;
+                        return print_frames(&mut out, &cmds::write_key_records(&records));
+                    }
+                    auto_backup(s, store)?;
+                    ops::set_rt(s, &usages, p, r)?;
+                    verify_rt(&mut out, s, &usages, p, r)
+                }
+            })
+        }
+        SetWhat::Ap { keys, set, dry_run } => {
+            let depth = mm(set)?;
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            if dry_run {
+                // No session at all: `ap_records` needs no prior device state (unlike RT,
+                // which preserves the advanced-mode nibble), so the whole preview, selector
+                // resolution included, can run with nothing attached and nothing sent.
+                let usages = resolve_keys_offline(&keys, store)?;
+                let records = ops::ap_records(&usages, depth);
+                return print_frames(&mut out, &cmds::write_key_records(&records));
+            }
+            with_session(|s| {
+                let usages = resolve_keys(s, &keys, store)?;
+                auto_backup(s, store)?;
+                ops::set_ap(s, &usages, depth)?;
+                let mut bad = Vec::new();
+                for &u in &usages {
+                    let ks = ops::read_key_settings(s, u)?;
+                    if ks.ap != depth {
+                        bad.push(format!(
+                            "{}: board reports {:.2}mm, wanted {:.2}mm",
+                            key_label(u),
+                            ks.ap.to_mm(),
+                            depth.to_mm()
+                        ));
+                    }
+                }
+                report_verification(
+                    &mut out,
+                    &format!("ap {:.2}mm", depth.to_mm()),
+                    &usages,
+                    &bad,
+                )
+            })
+        }
+    }
+}
+
+fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    with_session(|s| {
+        let snap = snapshot_from_device(s)?;
+        let text = snap.to_toml()?;
+        match to {
+            Some(p) => {
+                std::fs::write(&p, &text)?;
+                writeln!(out, "wrote {}", p.display())?;
+            }
+            None => {
+                let path = store.save_backup(&text)?;
+                writeln!(out, "wrote {}", path.display())?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// One snapshot key, with every millimetre field already validated through `mm()`. Built once
+/// by `validate_restore_keys` before `restore` opens a session, so a bad snapshot is refused
+/// before a single frame is sent, and reused for both `restore_records` (what to write) and
+/// `verify_restore` (what the readback must match), so the two can never drift apart on what
+/// "restored" means.
+struct RestoreKey {
+    usage: u8,
+    ap: Um,
+    mode_raw: u16,
+    rt_press: Um,
+    rt_release: Um,
+}
+
+fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<RestoreKey>> {
+    snap.keys
+        .iter()
+        .map(|k| {
+            let ap = mm(k.ap_mm).with_context(|| {
+                format!("key '{}' (usage {:#04x}): actuation point", k.name, k.usage)
+            })?;
+            let rt_press = mm(k.rt_press_mm)
+                .with_context(|| format!("key '{}' (usage {:#04x}): rt press", k.name, k.usage))?;
+            let rt_release = mm(k.rt_release_mm).with_context(|| {
+                format!("key '{}' (usage {:#04x}): rt release", k.name, k.usage)
+            })?;
+            Ok(RestoreKey {
+                usage: k.usage,
+                ap,
+                // mode_raw stays a verbatim u16: round-tripping the raw mode value, advanced
+                // nibble included, is the entire point of this field, so unlike the three
+                // millimetre fields above it does not go through `mm()`.
+                mode_raw: k.mode_raw,
+                rt_press,
+                rt_release,
+            })
+        })
+        .collect()
+}
+
+fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
+    let mut records = Vec::with_capacity(keys.len() * 4);
+    for k in keys {
+        records.push(KeyRecord {
+            key: k.usage,
+            layout: layout::AP,
+            value: k.ap.0,
+        });
+        records.push(KeyRecord {
+            key: k.usage,
+            layout: layout::MODE,
+            value: k.mode_raw,
+        });
+        records.push(KeyRecord {
+            key: k.usage,
+            layout: layout::RT_PRESS,
+            value: k.rt_press.0,
+        });
+        records.push(KeyRecord {
+            key: k.usage,
+            layout: layout::RT_RELEASE,
+            value: k.rt_release.0,
+        });
+    }
+    records
+}
+
+fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTravel> {
+    Ok(cmds::GlobalTravel {
+        travel: mm(snap.global.travel_mm).context("global travel")?,
+        press_dead: mm(snap.global.press_dead_mm).context("global press dead zone")?,
+        release_dead: mm(snap.global.release_dead_mm).context("global release dead zone")?,
+    })
+}
+
+fn verify_restore<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    keys: &[RestoreKey],
+) -> Result<()> {
+    let mut bad = Vec::new();
+    let usages: Vec<u8> = keys.iter().map(|k| k.usage).collect();
+    for k in keys {
+        let ks = ops::read_key_settings(s, k.usage)?;
+        if ks.ap != k.ap
+            || ks.rt_press != k.rt_press
+            || ks.rt_release != k.rt_release
+            || ks.mode.value() != k.mode_raw
+        {
+            bad.push(format!(
+                "{}: board reports ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}, \
+                 wanted ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}",
+                key_label(k.usage),
+                ks.ap.to_mm(),
+                ks.rt_press.to_mm(),
+                ks.rt_release.to_mm(),
+                ks.mode.value(),
+                k.ap.to_mm(),
+                k.rt_press.to_mm(),
+                k.rt_release.to_mm(),
+                k.mode_raw,
+            ));
+        }
+    }
+    report_verification(out, "restore", &usages, &bad)
+}
+
+fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Result<()> {
+    if file.is_some() && last {
+        bail!("pass a snapshot file or --last, not both");
+    }
+    let text = match (file, last) {
+        (Some(p), _) => std::fs::read_to_string(p)?,
+        (None, true) => store.load_backup(None)?,
+        (None, false) => bail!("give a snapshot file or --last"),
+    };
+    let snap = wh_config::snapshot::Snapshot::from_toml(&text)?;
+    // Every value that will reach the board is validated, and the global travel and per-key
+    // write records are built, before a session is ever opened: a bad snapshot is refused
+    // before a single frame is sent, not after.
+    let global = snap_to_global(&snap)?;
+    let keys = validate_restore_keys(&snap)?;
+    let records = restore_records(&keys);
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    with_session(|s| {
+        // Unlike `set`, which is scoped to the keys the caller selected, `restore` overwrites
+        // every key in the snapshot: an auto-backup here is the only way back if the file
+        // named on the command line turns out to be the wrong one, or a stale one.
+        auto_backup(s, store)?;
+        ops::restore_all(s, &global, &records)?;
+        writeln!(
+            out,
+            "restored {} keys from snapshot ({})",
+            snap.keys.len(),
+            snap.taken_at
+        )?;
+        verify_restore(&mut out, s, &keys)
+    })
+}
+
+fn selftest() -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    with_session(|s| {
+        let info = ops::device_info(s)?;
+        writeln!(out, "device: {} fw {}", info.serial, info.firmware)?;
+        let g = ops::global_travel(s)?;
+        writeln!(
+            out,
+            "global travel: {:.2}mm, rewriting identical value",
+            g.travel.to_mm()
+        )?;
+        // Deliberately no SAVE: this has to be a true no-op on flash, proving only that a
+        // write reaches the device and reads back correctly, not that a save cycle works.
+        // If a future change adds one here, it turns every selftest run into an unwanted
+        // flash-wear cycle on the user's only keyboard.
+        s.roundtrip(&cmds::write_global_travel(
+            g.travel,
+            g.press_dead,
+            g.release_dead,
+        ))?;
+        let g2 = ops::global_travel(s)?;
+        if g2 != g {
+            bail!("selftest FAILED: readback {:?} != {:?}", g2, g);
+        }
+        writeln!(out, "selftest OK: write path verified with a no-op write")?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

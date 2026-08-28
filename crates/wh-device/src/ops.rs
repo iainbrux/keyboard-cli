@@ -217,6 +217,24 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
     cmds::parse_global_travel(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
 }
 
+/// Write a whole snapshot back to the board: global travel first, then every per-key record,
+/// then SAVE (via `write_and_save`, which also skips SAVE when `records` is empty). Global
+/// travel goes first so a partial restore that fails partway through the per-key batch still
+/// leaves the board's overall travel consistent with what the caller intended, rather than a
+/// mix of old per-key values against a new global travel.
+pub fn restore_all<T: Transport>(
+    s: &mut Session<T>,
+    global: &cmds::GlobalTravel,
+    records: &[KeyRecord],
+) -> Result<(), DeviceError> {
+    s.roundtrip(&cmds::write_global_travel(
+        global.travel,
+        global.press_dead,
+        global.release_dead,
+    ))?;
+    write_and_save(s, records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,5 +829,106 @@ mod tests {
             matches!(err, DeviceError::Decode(_)),
             "expected Decode, got {err:?}"
         );
+    }
+
+    /// `restore_all` writes the global travel DB record first, then the per-key batch(es),
+    /// then SAVE, mirroring `set_rt`/`set_ap`'s own script shape above (DB write, key
+    /// batches, SAVE) so a restore looks like one coherent write on the wire rather than a
+    /// pile of independent calls.
+    #[test]
+    fn restore_all_writes_global_travel_then_key_batches_then_saves() {
+        let global = cmds::GlobalTravel {
+            travel: Um(2000),
+            press_dead: Um(100),
+            release_dead: Um(150),
+        };
+        // Two keys, each with distinct ap/mode/press/release values, so a swapped field or a
+        // key mix-up would show up as a wrong assertion rather than passing by coincidence.
+        let recs = vec![
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::AP,
+                value: 1200,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x20,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_PRESS,
+                value: 500,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::RT_RELEASE,
+                value: 650,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::AP,
+                value: 1500,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::MODE,
+                value: 0x00,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::RT_PRESS,
+                value: 0,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::RT_RELEASE,
+                value: 0,
+            },
+        ];
+
+        let db_write =
+            cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
+        let batches = cmds::write_key_records(&recs);
+        let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+
+        let mut lines = vec![
+            l("out", &db_write),
+            l("in", &rf(cmds::cmd::DB, &[0x01, 0, 0])),
+        ];
+        for f in &batches {
+            lines.push(l("out", f));
+            lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
+        }
+        lines.push(l("out", &save));
+        lines.push(l(
+            "in",
+            &rf(cmds::cmd::CMD, &[0x00, cmds::order::SAVE, 0x01]),
+        ));
+
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        restore_all(&mut s, &global, &recs).unwrap();
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn restore_all_skips_key_batch_and_save_when_there_are_no_records() {
+        // Only the global travel write should reach the wire; no records means no key batch
+        // and, per write_and_save, no SAVE either.
+        let global = cmds::GlobalTravel {
+            travel: Um(2000),
+            press_dead: Um(100),
+            release_dead: Um(150),
+        };
+        let db_write =
+            cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
+        let lines = [
+            l("out", &db_write),
+            l("in", &rf(cmds::cmd::DB, &[0x01, 0, 0])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        restore_all(&mut s, &global, &[]).unwrap();
+        assert!(s.into_inner().finished());
     }
 }
