@@ -84,8 +84,10 @@ The board really is that fast; this is presentation.
   `refuse_if_not_terminal` and the picker uses `std::io::stdout().is_terminal()`, so the machinery
   exists. A spinner in a redirected file or a pipeline is noise, and every frame would land in
   someone's captured output.
-- Consider whether it should be suppressed for read-only commands. `wh get rt --keys w` returning
-  instantly is a feature; `wh set ap` taking a moment reads as the board thinking about it.
+- **Decided: reads get no spinner.** `wh get`, `wh dump` and `wh keys` return instantly, and that
+  speed is a feature rather than something to hide. The spinner is for the write path only, where a
+  moment's pause reads as the board thinking about it, and where a user has just changed something
+  on hardware and wants to feel that it landed.
 - A `--no-spinner` or a respect for `NO_COLOR`-style conventions is probably worth having for anyone
   scripting against it.
 
