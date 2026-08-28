@@ -4,6 +4,7 @@
 use crate::cli::{Cli, Cmd, KeysWhat};
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
+use std::io::Write;
 use wh_config::store::Store;
 use wh_device::ops;
 use wh_device::session::Session;
@@ -141,29 +142,38 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 fn dump(json: bool) -> Result<()> {
+    // Locked once, here, and moved into the closure below: `writeln!`'s `Result` (unlike
+    // `println!`, which panics on a write failure) lets a reader that stops early, e.g. `wh
+    // dump | head -1`, surface as an ordinary `Err` carrying an `io::Error`, which `main`
+    // recognises and exits on quietly instead of reporting as a real failure.
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     with_session(|s| {
         let snap = snapshot_from_device(s)?;
         if json {
-            println!("{}", serde_json::to_string_pretty(&snap)?);
+            writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
         } else {
-            println!("{} (fw {})", snap.serial, snap.firmware);
-            println!(
+            writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
+            writeln!(
+                out,
                 "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
                 snap.global.travel_mm, snap.global.press_dead_mm, snap.global.release_dead_mm
-            );
-            println!(
+            )?;
+            writeln!(
+                out,
                 "{:<12} {:>6} {:>4} {:>8} {:>8}",
                 "key", "ap", "rt", "press", "release"
-            );
+            )?;
             for k in &snap.keys {
-                println!(
+                writeln!(
+                    out,
                     "{:<12} {:>4.2}mm {:>4} {:>6.2}mm {:>6.2}mm",
                     k.name,
                     k.ap_mm,
                     if k.rt { "on" } else { "off" },
                     k.rt_press_mm,
                     k.rt_release_mm
-                );
+                )?;
             }
         }
         Ok(())
@@ -195,6 +205,8 @@ fn resolve_keys<T: Transport>(
 }
 
 fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     with_session(|s| {
         let (arg, show_rt) = match &what {
             crate::cli::GetWhat::Rt(a) => (a, true),
@@ -204,14 +216,15 @@ fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
             let ks = ops::read_key_settings(s, usage)?;
             let name = key_label(usage);
             if show_rt {
-                println!(
+                writeln!(
+                    out,
                     "{name}: rt {} press {:.2}mm release {:.2}mm",
                     if ks.rt_enabled() { "on" } else { "off" },
                     ks.rt_press.to_mm(),
                     ks.rt_release.to_mm()
-                );
+                )?;
             } else {
-                println!("{name}: ap {:.2}mm", ks.ap.to_mm());
+                writeln!(out, "{name}: ap {:.2}mm", ks.ap.to_mm())?;
             }
         }
         Ok(())
@@ -226,18 +239,24 @@ fn keys(what: KeysWhat, store: &Store) -> Result<()> {
 }
 
 fn list_keys(store: &Store) -> Result<()> {
-    println!("keys:");
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "keys:")?;
     for (name, usage) in wh_proto::keys::TABLE {
-        println!("  {name:<12} 0x{usage:02X}");
+        writeln!(out, "  {name:<12} 0x{usage:02X}")?;
     }
-    println!(
+    writeln!(
+        out,
         "\nbuiltin groups: {}",
         wh_proto::keys::BUILTIN_GROUPS.join(", ")
-    );
-    println!("selector keyword: all (every key on the board, not a stored group)");
+    )?;
+    writeln!(
+        out,
+        "selector keyword: all (every key on the board, not a stored group)"
+    )?;
     let groups = store.groups()?;
     if !groups.is_empty() {
-        println!("user groups:");
+        writeln!(out, "user groups:")?;
         // HashMap iteration order is unspecified and would otherwise vary between runs, so
         // sort by name for stable, diffable output.
         let mut sorted: Vec<_> = groups.iter().collect();
@@ -247,7 +266,7 @@ fn list_keys(store: &Store) -> Result<()> {
                 .iter()
                 .filter_map(|&u| wh_proto::keys::name_for_usage(u))
                 .collect();
-            println!("  {name:<12} {}", names.join(","));
+            writeln!(out, "  {name:<12} {}", names.join(","))?;
         }
     }
     Ok(())
@@ -279,7 +298,11 @@ fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
         bail!("selector resolves to no keys");
     }
     store.set_group(&name, &usages)?;
-    println!("group '{name}' = {} keys", usages.len());
+    writeln!(
+        std::io::stdout().lock(),
+        "group '{name}' = {} keys",
+        usages.len()
+    )?;
     Ok(())
 }
 

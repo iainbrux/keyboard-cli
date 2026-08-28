@@ -116,8 +116,11 @@ fn build_script() -> Vec<String> {
 
     lines.extend(matrix_lines());
 
-    // Per-key reads, in matrix order: 'w' (0x1A) then 'a' (0x04).
-    lines.extend(key_settings_lines(0x1A, 1200, 0x20, 500, 500));
+    // Per-key reads, in matrix order: 'w' (0x1A) then 'a' (0x04). 'w's MODE is 0x0220 (a
+    // non-zero high byte, 0x02, over the RT touch nibble and a zero advanced nibble) so the
+    // fixture actually exercises `Mode`'s full 16-bit round trip rather than only its low
+    // byte, which the wire format always carried and a truncating bug could hide behind.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 500));
     lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
 
     lines
@@ -161,6 +164,10 @@ fn dump_json_via_replay() {
     assert_eq!(v["global"]["travel_mm"], 0.5);
     assert_eq!(v["keys"][0]["name"], "w");
     assert_eq!(v["keys"][0]["rt"], true);
+    // Pins the `Mode` high-byte fix at the CLI's own boundary, not just in wh-proto's unit
+    // test: the fixture's MODE reply is 0x0220, and mode_raw must come back exactly that, not
+    // truncated to 0x20.
+    assert_eq!(v["keys"][0]["mode_raw"], 0x0220);
     assert_eq!(v["keys"][1]["name"], "a");
     assert_eq!(v["keys"][1]["rt"], false);
 
@@ -174,7 +181,10 @@ fn dump_json_via_replay() {
 #[test]
 fn get_rt_via_replay() {
     let mut lines = matrix_lines();
-    lines.extend(key_settings_lines(0x1A, 1200, 0x20, 500, 500)); // 'w': rt on, 0.50/0.50mm
+    // Press and release are deliberately distinct (0.40mm / 0.60mm, not the same value
+    // twice): equal fixture values can't catch the two being swapped anywhere between the
+    // wire reply and the printed line.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x20, 400, 600)); // 'w': rt on
     let path = write_script("get-rt", &lines);
     let config_home = scratch_config_dir("get-rt");
 
@@ -187,7 +197,7 @@ fn get_rt_via_replay() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("w: rt on press 0.50mm release 0.50mm"),
+        stdout.contains("w: rt on press 0.40mm release 0.60mm"),
         "unexpected stdout: {stdout}"
     );
 
