@@ -223,6 +223,43 @@ fn dump_json_via_replay() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Pins that a K-001 board-function key (task 19b chunk 7: `0xFA`, `0xFB`, `0xD6`, `0xFC`,
+/// confirmed by measurement) renders by its name in `dump` output, not as bare hex. A one-key
+/// board with 'ap' (usage `0xFA`) at row 0 col 0; before chunk 7 this printed as `"0xFA"`.
+#[test]
+fn dump_prints_a_board_function_key_by_name_not_hex() {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNBOARDFUNC000001", "V1.0.0.001"));
+    lines.extend(global_travel_lines(500, 200, 200));
+    let row_pairs = [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)];
+    for (i, &(a, b)) in row_pairs.iter().enumerate() {
+        lines.push(out_line(&cmds::read_defkey_rows(a, b)));
+        let payload = if i == 0 {
+            defkey_payload(a, b, Some(0xFA), None) // row a col0 = the 'ap' board-function key
+        } else {
+            defkey_payload(a, b, None, None)
+        };
+        lines.push(in_line(&reply(cmds::cmd::DEFKEY, &payload)));
+    }
+    lines.extend(key_settings_lines(0xFA, 0, 0x10, 0, 0));
+
+    let path = write_script("dump-board-func", &lines);
+    let config_home = scratch_config_dir("dump-board-func");
+
+    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["keys"][0]["name"], "ap");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `wh get rt --keys w`: pins that `resolve_keys` and `get` work end to end over a replay
 /// script, not just `dump`. Without this, nothing in the committed suite ever exercises
 /// `resolve_keys` for a *present* key, and Task 16's write commands build directly on it.
