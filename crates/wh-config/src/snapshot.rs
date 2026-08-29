@@ -36,6 +36,12 @@ pub struct KeyToml {
     pub name: String,
     pub usage: u8,
     pub ap_mm: f64,
+    /// Informational only, derived from `mode_raw` at the moment the snapshot was taken
+    /// (whole-branch review): `wh restore` never reads this field, since it writes `mode_raw`
+    /// back verbatim. Hand-editing `rt` in a snapshot file changes what `dump`-style tooling
+    /// would print about that key, not what `wh restore` writes to the board; to actually change
+    /// whether a key restores with rapid trigger on, edit `mode_raw` (the touch nibble, the high
+    /// nibble of its low byte) instead.
     pub rt: bool,
     pub rt_press_mm: f64,
     pub rt_release_mm: f64,

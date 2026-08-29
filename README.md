@@ -132,6 +132,14 @@ contains: global travel and its press/release dead zones, actuation point and ra
 press/release depth for every physical key, the raw per-key mode value, and, since Phase 1, the
 profile the board was on when the snapshot was taken.
 
+Each key's `rt` field in the snapshot file is informational only, a human-readable summary of the
+raw mode value at the moment the snapshot was taken. `wh restore` never reads it; it writes the raw
+mode value back verbatim. Hand-editing `rt = false` in a snapshot file before restoring it does not
+turn rapid trigger off, and `wh restore` will report success and a verified readback while doing
+exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
+change what a restore writes, change the settings on the board and take a fresh backup, not the
+`rt` field in an old one.
+
 **It does not contain**, and `wh restore` cannot bring back:
 
 - The base layer key mapping (which physical key produces which keystroke).
