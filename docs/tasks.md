@@ -31,13 +31,13 @@ rather than as settings it recognises.
   real board. `0xFF` is host-written, allocation is max plus one and never reuses a freed index, the
   two layouts have separate counters, `0xFE` is an index and not a boolean, and a delete resets the
   value to the global before clearing membership. Full write-up in `docs/keysets.md`.
-- [ ] **2.12 Model touch nibble 2 (global rapid trigger). Blocks 2.4.** Measured 2026-08-29:
-  turning GLOBAL RAPID TRIGGER on writes MODE touch nibble `2` to every key outside a rapid trigger
-  keyset. `TouchMode` maps `2` to `Unknown(2)` and `rt_enabled()` matches only `Rt`/`RtContinuous`,
-  so `wh dump` and `wh get rt` report rapid trigger **off** on a board where it is on for every key.
-  A reporting bug, not a data-loss one: read-modify-write preserved the nibble it could not name.
-  Add the variant, fix `rt_enabled`, `raw_mode_rt_on` and the display paths. 2.4's write template
-  depends on `rt_enabled` being right.
+- [x] ~~**2.12 Model touch nibble 2 (global rapid trigger).**~~ Measured 2026-08-29 and confirmed
+  by capture on 2026-08-30: switching GLOBAL RAPID TRIGGER on reads all 68 keys back at nibble `1`
+  and writes nibble `2` to every one; switching it off writes nibble `1` back. `TouchMode` mapped
+  `2` to `Unknown(2)` and `rt_enabled()` matched only `Rt`/`RtContinuous`, so `wh dump` and
+  `wh get rt` reported rapid trigger **off** on a board where it was on for every key. A reporting
+  bug, not a data-loss one: read-modify-write preserved the nibble it could not name.
+  `TouchMode::RtGlobal` added, with `rt_enabled`, `rt_off_records` and `raw_mode_rt_on` fixed.
 - [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it completely
   from fourteen capture scenarios: one write template shared by every operation, values always
   before membership, membership one record per frame and always last, non-owned layouts rewritten at
