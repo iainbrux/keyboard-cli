@@ -13,10 +13,9 @@ use wh_proto::select::Selector;
 use wh_proto::value::Um;
 
 pub fn run(cli: Cli) -> Result<()> {
-    // Opened once, here, regardless of which command runs: `Store::open` only resolves a
-    // path, it does not touch disk, so it is cheap even for commands that never read it.
-    // Keeping the one call site at the top means every command function below has to take
-    // a `&Store` rather than reaching for the user's real config directory a second time.
+    // Opened once here: `Store::open` only resolves a path, so it is cheap even for commands
+    // that never read it. Every command below takes a `&Store` instead of reaching for the
+    // config directory again.
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
@@ -29,10 +28,9 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Treats `WH_REPLAY=` (present but empty, distinct from unset) the same as unset, rather
-/// than as a request to read a file literally named the empty string. `env::var` returns
-/// `Ok(String::new())` for that case, which would otherwise surface as a confusing I/O error
-/// instead of falling back to the real device.
+/// Treats `WH_REPLAY=` (present but empty) the same as unset, rather than as a request to
+/// read a file named the empty string, which would otherwise surface as a confusing I/O
+/// error instead of falling back to the real device.
 fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<String> {
     raw.ok().filter(|p| !p.is_empty())
 }
@@ -40,15 +38,11 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 /// Open the real device on Windows, or a replay script when WH_REPLAY is set to a non-empty
 /// path.
 ///
-/// Announces which transport it opened, on stderr, one line, after the transport is actually
-/// ready rather than merely attempted: a review subagent that set `WH_REPLAY` and ran `wh
-/// restore --force` believing it was driving a fixture instead performed a real restore, because
-/// `bin/wh` (the shim that execs the cross-compiled Windows binary from WSL) never told WSL to
-/// carry `WH_REPLAY` across that boundary, so this function saw an unset variable and silently
-/// opened the real keyboard. `bin/wh` is fixed to propagate the variable, but this line exists so
-/// a run that is quietly talking to real hardware is never silent about it, independent of
-/// whether the shim, a future caller of this binary directly, or anything else in between gets it
-/// right. Kept off stdout deliberately, so `dump --json`'s parseable output stays clean.
+/// Announces which transport it opened, on stderr, once the transport is actually ready:
+/// `bin/wh` must propagate `WH_REPLAY` across the WSL/Windows boundary, or this function
+/// silently opens the real keyboard instead. This line is the backstop that makes a run
+/// quietly hitting real hardware never silent, regardless of what carries the variable.
+/// Kept off stdout so `dump --json`'s parseable output stays clean.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
@@ -77,9 +71,8 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
 }
 
 /// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
-/// `wh_proto::keys::TABLE`. Shared by `dump`, `get`, and `picker` so a board with unnamed
-/// usages prints the same, distinguishable label everywhere, rather than each caller growing
-/// its own copy that could drift from the others.
+/// `wh_proto::keys::TABLE`. Shared by `dump`, `get`, and `picker` so an unnamed usage prints
+/// the same label everywhere.
 pub(crate) fn key_label(usage: u8) -> String {
     wh_proto::keys::name_for_usage(usage)
         .map(str::to_string)
@@ -88,23 +81,18 @@ pub(crate) fn key_label(usage: u8) -> String {
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
-    // `ops::profile` already returns a validated `ProfileNumber`: an index the board could never
-    // actually report under the four measured profiles surfaces as `DeviceError::ProfileOutOfRange`
-    // (review round 2, important 2: this is a measurement bound from one board on one firmware, so
-    // a future firmware shipping more profiles must not hard-fail every command that goes through
-    // this function), which degrades to `None`, "provenance unknown", the same case an older
-    // pre-profile-recording snapshot already carries, rather than aborting `dump`, `backup`, and
-    // `set`'s auto-backup outright. Any other failure (a garbled reply, a transport error) still
-    // propagates via `?` below, unchanged from before this function existed. `restore` is
-    // different: it reads the board's profile through its own separate call, not this one, and
-    // keeps its hard refusal on every failure, since it cannot compare what it cannot interpret.
+    // `ops::profile` returns a validated `ProfileNumber`; an index outside the four measured
+    // profiles surfaces as `DeviceError::ProfileOutOfRange` and degrades to `None` here (the
+    // same "provenance unknown" case as an old pre-recording snapshot) rather than aborting
+    // `dump`, `backup`, or `set`'s auto-backup. Any other failure still propagates via `?`.
+    // `restore` reads the board's profile through its own separate call and keeps a hard
+    // refusal on every failure instead.
     let profile = match ops::profile(s) {
         Ok(p) => Some(p),
         Err(wh_device::transport::DeviceError::ProfileOutOfRange(idx)) => {
-            // Caller-agnostic (review round 3, minor 3): this function backs `dump`, which
-            // records no snapshot at all, as well as `backup` and every write command's
-            // auto-backup, which do. The message must be true for all three, so it describes
-            // this read's own profile as unrecorded rather than claiming a snapshot exists.
+            // Worded to stay true for `dump` (records no snapshot) as well as `backup` and
+            // every write command's auto-backup: describes this read's profile as unrecorded,
+            // not a snapshot.
             best_effort_eprintln(&format!(
                 "warning: board reported profile index {idx}, but the board only has 4 profiles \
                  (wire index 0..=3); this read's profile is unrecorded (unknown provenance)"
@@ -143,14 +131,11 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
 }
 
 /// Returns the current time as an RFC3339 UTC timestamp, e.g. `"2026-08-28T12:00:00Z"`, the
-/// shape `wh-config`'s `Snapshot::taken_at` documents and its own roundtrip test uses. A
-/// `unix:<secs>` string would technically be "informational" too, but this field exists so a
-/// human can pick the right backup out of twenty others during a recovery, and a raw epoch
-/// count is not that.
+/// shape `Snapshot::taken_at` expects. This field exists so a human can pick the right backup
+/// out of twenty others, not just a raw epoch count.
 ///
-/// Implemented inline with the standard days-from-civil algorithm rather than by adding a
-/// date crate: wh-cli cross-compiles for Windows, and a new dependency has to earn surviving
-/// that build. See `civil_from_days` for the algorithm itself.
+/// Implemented inline rather than with a date crate: wh-cli cross-compiles for Windows, and a
+/// new dependency has to earn surviving that build. See `civil_from_days` for the algorithm.
 fn httpdate_now() -> Result<String> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -167,11 +152,10 @@ fn rfc3339_from_unix_secs(secs: u64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// Howard Hinnant's days-from-civil / civil-from-days algorithm: converts a day count since
-/// the Unix epoch (1970-01-01) into a proleptic-Gregorian (year, month, day). See
-/// http://howardhinnant.github.io/date_algorithms.html for the derivation; this is a direct
-/// port, not a reinvention, chosen because it is exact for every day this side of year 0 and
-/// needs no lookup tables.
+/// Howard Hinnant's days-from-civil algorithm: converts a day count since the Unix epoch
+/// into a proleptic-Gregorian (year, month, day). See
+/// http://howardhinnant.github.io/date_algorithms.html; exact for every day this side of
+/// year 0, with no lookup tables needed.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -187,10 +171,9 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 fn dump(json: bool) -> Result<()> {
-    // Locked once, here, and moved into the closure below: `writeln!`'s `Result` (unlike
-    // `println!`, which panics on a write failure) lets a reader that stops early, e.g. `wh
-    // dump | head -1`, surface as an ordinary `Err` carrying an `io::Error`, which `main`
-    // recognises and exits on quietly instead of reporting as a real failure.
+    // `writeln!`'s `Result` (unlike `println!`, which panics) lets an early-closing reader,
+    // e.g. `wh dump | head -1`, surface as an `io::Error` that `main` recognises and exits on
+    // quietly.
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     with_session(|s| {
@@ -199,11 +182,9 @@ fn dump(json: bool) -> Result<()> {
             writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
-            // `snapshot_from_device` degrades to `None` (with its own warning already printed to
-            // stderr) rather than aborting the whole dump when the board reports a profile index
-            // outside the known range (review round 2, important 2), so `None` is a real,
-            // reachable state here, not just the defensive case round 1 treated it as; print it
-            // plainly instead of erroring the command over it.
+            // `snapshot_from_device` degrades to `None` (warning already printed to stderr)
+            // rather than aborting the dump on an out-of-range profile index, so print it
+            // plainly instead of erroring.
             match snap.profile {
                 Some(profile) => writeln!(out, "profile {profile}")?,
                 None => writeln!(out, "profile unknown (unrecognised index reported)")?,
@@ -243,9 +224,8 @@ fn resolve_keys<T: Transport>(
     if arg.pick {
         return crate::picker::pick(&universe);
     }
-    // Clap's `required_unless_present = "pick"` makes this unreachable today, but that
-    // guarantee lives in cli.rs, a different file from here, so a later change to the clap
-    // attributes should not be able to turn a missing selector into a crash.
+    // Unreachable today thanks to clap's `required_unless_present = "pick"` in cli.rs, but a
+    // later change there should not be able to turn a missing selector into a crash here.
     let keys = arg
         .keys
         .as_deref()
@@ -316,12 +296,10 @@ fn list_keys(store: &Store) -> Result<()> {
         let mut sorted: Vec<_> = groups.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         for (name, usages) in sorted {
-            // Review round 2, finding 3: a usage with no `TABLE` entry must still be listed, as
-            // hex (the same fallback `key_label`/`dump` already use for an unnamed key), not
-            // silently dropped. Reading a stale group's members off this output is the operator's
-            // only recovery route once finding 1's `AmbiguousWithGroup` refuses to resolve it, so
-            // a listing that silently under-reports would send them to recreate an incomplete
-            // group.
+            // A usage with no `TABLE` entry is still listed, as hex, not dropped: reading a
+            // stale group's members off this output is the operator's only recovery route
+            // when a group fails to resolve, and under-reporting here would send them to
+            // recreate an incomplete group.
             let names: Vec<_> = usages.iter().map(|&u| key_label(u)).collect();
             writeln!(out, "  {name:<12} {}", names.join(","))?;
         }
@@ -330,10 +308,9 @@ fn list_keys(store: &Store) -> Result<()> {
 }
 
 fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
-    // The selector grammar always lowercases a bare name before looking it up in the user
-    // group map (see Selector::resolve), so a group stored under its literal, possibly mixed
-    // case, spelling would be unreachable by anything but an exact-case retype. Normalize here
-    // once, at the one place a group is created, so storage and lookup agree.
+    // The selector grammar lowercases a bare name before looking it up (see
+    // Selector::resolve), so storing under a mixed-case spelling would make it unreachable.
+    // Normalize once here, where the group is created.
     let name = name.to_ascii_lowercase();
     if wh_proto::keys::usage_for_name(&name).is_some()
         || wh_proto::keys::builtin_group(&name).is_some()
@@ -364,22 +341,14 @@ fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
 }
 
 /// Reports whether `name` (already lowercased) would resolve back to the group stored under it
-/// if it were later typed as a bare `--keys` token.
+/// if later typed as a bare `--keys` token.
 ///
-/// Rather than hand listing the shapes the grammar treats specially (a blacklist that drifts
-/// the moment `Selector::parse` changes), this asks the grammar itself: parse `name` as a
-/// selector, then resolve it against a throwaway two-element universe `[a, b]` holding one
-/// sentinel usage `a` that is bound, in a throwaway group map, only under the exact key
-/// `store.set_group` would use. If the result is exactly `[a]`, the grammar read `name` as
-/// nothing but a single, non-negated plain name, the only shape that ever reaches the user
-/// group lookup at all. Any other reading either resolves to something else or fails to parse,
-/// and both count as unreachable:
-/// - a range or a plain list of real key names resolves to real key usages, never `[a]`;
-/// - `Item::All` resolves to the *whole* universe, `[a, b]`, not `[a]` alone, which is exactly
-///   why the universe needs two elements: a one-element universe made `all` indistinguishable
-///   from a genuine group hit, since both would resolve to the same single sentinel;
-/// - a negated item can only ever shrink an already-empty accumulator, so it can never produce
-///   `[a]` either.
+/// Asks the grammar itself rather than hand-listing special shapes: parse `name`, then resolve
+/// it against a two-element sentinel universe `[a, b]` where only `a` is bound under `name` in
+/// a throwaway group map. Only a plain, non-negated name resolves to exactly `[a]`; a range or
+/// list resolves to real usages, `all` resolves to the whole `[a, b]` (why the universe needs
+/// two elements: one element would make `all` indistinguishable from a group hit), and a
+/// negation can only shrink an empty accumulator.
 fn group_name_is_reachable(name: &str) -> bool {
     let sel = match Selector::parse(name) {
         Ok(sel) => sel,
@@ -392,10 +361,9 @@ fn group_name_is_reachable(name: &str) -> bool {
     matches!(sel.resolve(&universe, &probe), Ok(v) if v == [a])
 }
 
-/// Picks two usage bytes that do not appear anywhere in `wh_proto::keys::TABLE`, chosen at
-/// runtime rather than hardcoded so the choice can never rot as the table grows. Used as
-/// sentinels in `group_name_is_reachable`'s probe universe: since neither value is a real key,
-/// neither can collide with one and mask a false positive.
+/// Picks two usage bytes absent from `wh_proto::keys::TABLE`, at runtime rather than
+/// hardcoded so the choice can't rot as the table grows. Used as sentinels in
+/// `group_name_is_reachable`'s probe universe.
 fn two_usages_absent_from_table() -> (u8, u8) {
     let mut free = (0u8..=u8::MAX).filter(|&u| wh_proto::keys::name_for_usage(u).is_none());
     let a = free
@@ -407,31 +375,25 @@ fn two_usages_absent_from_table() -> (u8, u8) {
     (a, b)
 }
 
-/// Writes one line to stderr, best-effort, matching the pattern `main.rs` already uses for its
-/// own final error line: a closed stderr (`wh ... 2>/dev/null`, or a pipe reader that closed
-/// both descriptors) must not panic over something that is, at most, informational.
-/// `writeln!`'s `Result` is deliberately discarded here, unlike every stdout write in this
-/// module, which propagate their `io::Error` so a closed stdout still exits cleanly through
-/// `main.rs`'s broken-pipe check.
+/// Writes one line to stderr, best-effort: a closed stderr (`wh ... 2>/dev/null`) must not
+/// panic over something merely informational. Unlike stdout writes in this module, the
+/// `Result` is discarded rather than propagated.
 fn best_effort_eprintln(msg: &str) {
     let _ = writeln!(std::io::stderr(), "{msg}");
 }
 
-/// Converts a snapshot's millimetre field into a device `Um`, routing every float that will
-/// ever reach the board through `Um::from_mm`'s finite-and-in-range check. `as u16` on a float
-/// saturates rather than panicking or wrapping, so a hand-edited or stale snapshot's `99.0mm`
-/// would otherwise become `65535` um (65mm) and go straight to the keyboard; this is the one
-/// conversion path every millimetre value in this crate is required to go through instead.
+/// Converts a snapshot's millimetre field into a device `Um`, through `Um::from_mm`'s
+/// finite-and-in-range check. A bare `as u16` on a float saturates instead of erroring, so a
+/// hand-edited `99.0mm` would silently become `65535` um and go straight to the keyboard;
+/// every millimetre value in this crate must go through this conversion instead.
 fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
-/// Takes and saves an auto-backup. `restore` used to read the board's current profile off this
-/// function's own returned snapshot (review round 1, finding 1): that coupling was invisible, a
-/// future `--no-backup` flag or a best-effort backup (the `best_effort_eprintln` pattern two
-/// lines above) could delete the profile safety check as a side effect with nothing failing to
-/// compile. `restore` now calls `ops::profile` directly and independently instead, so this
-/// function is back to returning only whether the backup itself succeeded.
+/// Takes and saves an auto-backup. `restore` reads the board's profile through its own
+/// separate `ops::profile` call rather than off this function's returned snapshot, so a
+/// future `--no-backup` flag or a best-effort backup here cannot silently drop the profile
+/// safety check.
 fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     let snap = snapshot_from_device(s)?;
     let path = store.save_backup(&snap.to_toml()?)?;
@@ -439,14 +401,10 @@ fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// Prints the exact reports `--dry-run` would otherwise send to `out`, and nothing else: a real
-/// run sends only these frames (see `write_records` in `wh-device`, which no longer sends a
-/// SAVE order either), so the dry run must print exactly them and no more, since an operator
-/// compares this output against the captures by eye. Propagates a write failure rather than
-/// swallowing it (unlike `best_effort_eprintln`): this is the dry-run path's only output, and it
-/// is the one most likely to be piped into a pager (`wh set ap --keys all --set 1.2 --dry-run |
-/// less`), so a closed reader has to surface as an ordinary `io::Error` that `main.rs`
-/// recognises as a broken pipe, not a panic.
+/// Prints exactly the reports a real run would send, and nothing else, since an operator
+/// compares this output against captures by eye. Propagates a write failure (unlike
+/// `best_effort_eprintln`): this output is likely piped into a pager, so a closed reader must
+/// surface as a broken pipe, not a panic.
 fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
     for f in frames {
         writeln!(out, "{}", wh_device::replay::hex(f))?;
@@ -455,10 +413,8 @@ fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
     Ok(())
 }
 
-/// Shared tail of every write command's readback verification: `bad` is one already-formatted
-/// line per key (or field) that failed to match, built by the caller so each verifier can name
-/// exactly what differed (mode vs press vs release, in `verify_rt`'s case) rather than this
-/// shared code guessing which field to report.
+/// Shared tail of every write command's readback verification. `bad` is one already-formatted
+/// line per mismatch, built by the caller so each verifier can name exactly what differed.
 fn report_verification(
     out: &mut impl Write,
     what: &str,
@@ -480,17 +436,12 @@ fn report_verification(
     )
 }
 
-/// Verifies an RT-on write by reading back every key `records` names and comparing the full
-/// MODE value against what `ops::rt_records` computed for it, advanced nibble and high byte
-/// included, not just "the touch nibble says Rt": a firmware that clears the advanced nibble
-/// when the touch mode changes has to show up here as a mismatch, not pass silently because
-/// only the touch nibble and the two sensitivities were checked.
+/// Verifies an RT-on write by comparing the full MODE value against what `ops::rt_records`
+/// computed, advanced nibble and high byte included, not just the touch nibble: a firmware
+/// that clears the advanced nibble on a mode change must show up here as a mismatch.
 ///
-/// Takes only `records`, not a separate `usages` list: `records` already carries one key per
-/// MODE entry (`ops::rt_records` builds exactly one MODE/RT_PRESS/RT_RELEASE triple per key,
-/// for the same `usages` this was called with), so a second, independently passed key list
-/// could disagree with it. Deriving the keys from `records` removes that disagreement
-/// structurally instead of asserting it away with an `expect` on the write path.
+/// Derives the key list from `records` rather than taking a separate `usages` parameter, so
+/// the two can never disagree.
 fn verify_rt<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -515,9 +466,8 @@ fn verify_rt<T: Transport>(
                 want_mode,
             ));
         } else if ks.rt_press != press || ks.rt_release != release {
-            // Both actual values are reported, not just the one field that first differs, so
-            // a press-only or release-only mismatch is visible against its own wanted value
-            // rather than being reported next to the field that was actually correct.
+            // Both actual values are reported, not just the one that first differs, so a
+            // press-only mismatch is visible against its own wanted value.
             bad.push(format!(
                 "{name}: board reports press {:.2}mm release {:.2}mm, wanted press {:.2}mm release {:.2}mm",
                 ks.rt_press.to_mm(),
@@ -539,12 +489,9 @@ fn verify_rt<T: Transport>(
     )
 }
 
-/// The `verify_rt_off` sibling of `verify_rt` above, same reasoning: `records` (built by
-/// `ops::rt_off_records`) is the sole source of both the key list and the wanted MODE value, so
-/// there is nothing for a separate `usages` parameter to disagree with. `records` no longer means
-/// one entry per selected key (whole-branch review): `rt_off_records` skips a key with nothing to
-/// change, so `report_verification`'s reported count here reflects how many keys were actually
-/// changed, not how many `--keys` selected.
+/// Sibling of `verify_rt`: `records` (from `ops::rt_off_records`) is the sole source of the
+/// key list and wanted MODE value. `rt_off_records` skips a key with nothing to change, so the
+/// reported count reflects keys actually changed, not how many `--keys` selected.
 fn verify_rt_off<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -557,9 +504,8 @@ fn verify_rt_off<T: Transport>(
         let want_mode = r.value;
         usages.push(u);
         let ks = ops::read_key_settings(s, u)?;
-        // The exact MODE value `ops::rt_off_records` computed for this key, advanced nibble
-        // and high byte included, not just "the touch nibble says not-Rt": the same read-
-        // modify-write `verify_rt` now checks on the enable path, mirrored here for disable.
+        // The exact MODE value, advanced nibble and high byte included, mirroring the check
+        // `verify_rt` does on the enable path.
         if ks.mode.value() != want_mode {
             bad.push(format!(
                 "{}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt off, \
@@ -574,11 +520,9 @@ fn verify_rt_off<T: Transport>(
     report_verification(out, "rt off", &usages, &bad)
 }
 
-/// What `wh set rt` asked for, resolved once, up front, into a shape where "on" and "off"
-/// cannot disagree with themselves the way a bare `off: bool` plus a separately computed
-/// `Option<(Um, Um)>` could: matching `RtAction` exhaustively means there is no branch where
-/// the sensitivities the caller wanted are simply absent, so nothing downstream needs to
-/// `expect` its way past that possibility on the write path.
+/// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
+/// cannot disagree with themselves, unlike a bare `off: bool` plus a separate
+/// `Option<(Um, Um)>` could.
 enum RtAction {
     Off,
     On { press: Um, release: Um },
@@ -594,9 +538,8 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             off,
             dry_run,
         } => {
-            // Validated before a session ever opens, the same way `Ap`'s `mm(set)?` below is:
-            // a malformed `--set`/`--press`/`--release` is refused before the three DEFKEY
-            // roundtrips `resolve_keys` sends, not after.
+            // Validated before a session opens, like `Ap`'s `mm(set)?` below: a malformed
+            // value is refused before `resolve_keys` sends any DEFKEY roundtrips.
             let action = if off {
                 RtAction::Off
             } else {
@@ -615,16 +558,14 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             let mut out = stdout.lock();
             with_session(|s| {
                 // `resolve_keys` always reads the live matrix, dry run or not: a preview
-                // built against keys the board does not actually have would be a preview of
-                // an operation that could never happen for real, and `--pick` needs a live
-                // board regardless of `--dry-run`. Only writes and SAVE are skipped below.
+                // against keys the board lacks would be meaningless, and `--pick` needs a
+                // live board regardless. Only writes are skipped below.
                 let usages = resolve_keys(s, &keys, store)?;
                 match action {
                     RtAction::Off => {
                         if dry_run {
                             // rt_off_records reads each key's current MODE to preserve the
-                            // advanced nibble in the preview: a read, not a write, so it is
-                            // fine for a dry run to send it.
+                            // advanced nibble; a read, so it's fine for a dry run to send.
                             let records = ops::rt_off_records(s, &usages)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
@@ -700,11 +641,9 @@ fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     })
 }
 
-/// One snapshot key, with every millimetre field already validated through `mm()`. Built once
-/// by `validate_restore_keys` before `restore` opens a session, so a bad snapshot is refused
-/// before a single frame is sent, and reused for both `restore_records` (what to write) and
-/// `verify_restore` (what the readback must match), so the two can never drift apart on what
-/// "restored" means.
+/// One snapshot key, with every millimetre field already validated through `mm()`. Built
+/// once, before `restore` opens a session, and reused by both `restore_records` and
+/// `verify_restore` so the two can never drift on what "restored" means.
 struct RestoreKey {
     usage: u8,
     ap: Um,
@@ -728,9 +667,8 @@ fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<Res
             Ok(RestoreKey {
                 usage: k.usage,
                 ap,
-                // mode_raw stays a verbatim u16: round-tripping the raw mode value, advanced
-                // nibble included, is the entire point of this field, so unlike the three
-                // millimetre fields above it does not go through `mm()`.
+                // mode_raw stays a verbatim u16, unlike the millimetre fields above:
+                // round-tripping the raw value is the entire point of this field.
                 mode_raw: k.mode_raw,
                 rt_press,
                 rt_release,
@@ -806,31 +744,22 @@ fn verify_restore<T: Transport>(
     report_verification(out, "restore", &usages, &bad)
 }
 
-/// The restore-time profile safety check (task 19b group B): `wh backup` records no provenance
-/// beyond global travel and per-key settings, so restoring a snapshot taken on one profile while
-/// the board sits on another silently overwrites the wrong profile, and `restore`'s own readback
-/// verification cannot catch it, since it reads back exactly what it just wrote. `snap_profile`
-/// is what the snapshot being restored recorded; `board_profile` is the board's current profile.
-/// Both are `wh_proto::cmds::ProfileNumber`, not a bare `u8` (review round 1, finding 2): the
-/// wire's own zero-based index and the UI's one-based number are different things. Since task 20
-/// step 4c, `ops::profile` itself returns an already-validated `ProfileNumber`, so the call at
-/// `restore`'s own call site below is simply `ops::profile(s)?`, with no conversion in sight to
-/// get wrong: the natural, wrong call the review round found, `check_restore_profile(snap.profile,
-/// ops::profile(s)?, force)`, is now also the only call that compiles, because there is no second
-/// constructor to reach for at that call site any more.
+/// The restore-time profile safety check: `wh backup` records no provenance beyond global
+/// travel and per-key settings, so restoring a snapshot taken on one profile while the board
+/// sits on another silently overwrites the wrong profile, and `restore`'s own readback
+/// verification cannot catch it, since it reads back exactly what it just wrote.
+/// `snap_profile` is what the snapshot recorded; `board_profile` is the board's current
+/// profile, both `wh_proto::cmds::ProfileNumber` rather than a bare `u8`, since the wire's
+/// zero-based index and the UI's one-based number are different things.
 ///
 /// Three cases, deliberately not collapsed into one flag:
 /// - recorded and matching: proceed.
-/// - recorded and differing: refuse, unconditionally. `force` does not rescue this case: copying
-///   settings between profiles on purpose is a real thing someone might want, but it is not what
-///   this flag is for, and a single flag covering both this and the case below would let this,
-///   the more dangerous mistake, through.
-/// - not recorded: refuse, but `force` rescues it, since the caller is asserting something this
-///   snapshot itself cannot vouch for, not overriding a known mismatch. `None` covers two
-///   causes, an older snapshot from before profile recording, or one whose board reported an
-///   index outside the known range (review round 3, important 1): both are gated the same way,
-///   since neither can be compared against the board's current profile, but they are not the
-///   same claim, and the refusal message below has to say so rather than naming only the first.
+/// - recorded and differing: refuse unconditionally. `force` does not rescue this case; a
+///   single flag covering both this and the case below would let the more dangerous mistake
+///   through.
+/// - not recorded (an older snapshot, or one whose board reported a profile index outside the
+///   known range): refuse, but `force` rescues it, since the caller is asserting something
+///   the snapshot itself cannot vouch for, not overriding a known mismatch.
 fn check_restore_profile(
     snap_profile: Option<wh_proto::cmds::ProfileNumber>,
     board_profile: wh_proto::cmds::ProfileNumber,
@@ -868,9 +797,8 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         (None, false) => bail!("give a snapshot file or --last"),
     };
     let snap = wh_config::snapshot::Snapshot::from_toml(&text)?;
-    // Every value that will reach the board is validated, and the global travel and per-key
-    // write records are built, before a session is ever opened: a bad snapshot is refused
-    // before a single frame is sent, not after.
+    // Every value is validated and the write records built before a session ever opens, so a
+    // bad snapshot is refused before a single frame is sent.
     let global = snap_to_global(&snap)?;
     let keys = validate_restore_keys(&snap)?;
     let records = restore_records(&keys);
@@ -878,24 +806,18 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     with_session(|s| {
-        // Read independently of `auto_backup` below, deliberately (review round 1, finding 1):
-        // this used to come from `auto_backup`'s own returned snapshot, a coupling invisible at
-        // the call site, since `auto_backup`'s job is to save a backup, not to report the
-        // profile. A future `--no-backup` flag, or a change making the backup best-effort like
-        // `best_effort_eprintln` two lines below already does for its own message, could have
-        // deleted this safety check as a side effect with nothing failing to compile. One extra
-        // frame against the roughly thirty `auto_backup` already sends buys an invariant the
-        // call structure enforces instead of one that only holds by accident of ordering.
+        // Read independently of `auto_backup` below, deliberately: coupling this to
+        // `auto_backup`'s own returned snapshot would let a future `--no-backup` flag or a
+        // best-effort backup silently drop this safety check with nothing failing to compile.
         let board_profile = ops::profile(s).context("reading the board's active profile")?;
         check_restore_profile(snap.profile, board_profile, force)?;
-        // Unlike `set`, which is scoped to the keys the caller selected, `restore` overwrites
-        // every key in the snapshot: an auto-backup here is the only way back if the file
-        // named on the command line turns out to be the wrong one, or a stale one.
+        // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
+        // snapshot: this auto-backup is the only way back if the named file turns out to be
+        // the wrong one.
         auto_backup(s, store)?;
         ops::restore_all(s, &global, &records)?;
-        // Printed only after verification passes: on a mismatch, `verify_restore` bails and
-        // this line is never reached, so stdout never claims success while stderr reports a
-        // mismatch on the same run.
+        // Printed only after verification passes, so stdout never claims success on a run
+        // where stderr reports a mismatch.
         verify_restore(&mut out, s, &keys)?;
         let n = snap.keys.len();
         let key_or_keys = if n == 1 { "key" } else { "keys" };
@@ -920,10 +842,9 @@ fn selftest() -> Result<()> {
             "global travel: {:.2}mm, rewriting identical value",
             g.travel.to_mm()
         )?;
-        // Deliberately no SAVE: this has to be a true no-op on flash, proving only that a
-        // write reaches the device and reads back correctly, not that a save cycle works.
-        // If a future change adds one here, it turns every selftest run into an unwanted
-        // flash-wear cycle on the user's only keyboard.
+        // Deliberately no SAVE: this must be a true no-op on flash, proving only that a
+        // write reaches the device and reads back, not that a save cycle works. Adding one
+        // here would turn every selftest run into an unwanted flash-wear cycle.
         s.roundtrip(&cmds::write_global_travel(
             g.travel,
             g.press_dead,
@@ -966,8 +887,8 @@ mod tests {
                 || err.to_string().to_lowercase().contains("range"),
             "unexpected error: {err}"
         );
-        // Pins that rejection actually means nothing was persisted, not merely that some
-        // unrelated error string happened to satisfy the substring check above.
+        // Pins that rejection means nothing was persisted, not just that some unrelated
+        // error string satisfied the substring check above.
         assert!(store.groups().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -995,12 +916,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Regression test for the hole a single-element probe universe left open: `"wasd,all"`
-    /// parses as a builtin-group reference filtered to nothing, followed by `Item::All`, and
-    /// under a one-element probe universe that combination resolved to exactly the sentinel,
-    /// indistinguishable from a genuine group hit. A plain list like `"w,a"` would not have
-    /// caught this, since it was already rejected before this fix (it never reaches the user
-    /// group lookup either).
+    /// `"wasd,all"` parses as a builtin-group reference filtered to nothing, followed by
+    /// `Item::All`; under a one-element probe universe that combination would resolve to
+    /// exactly the sentinel, indistinguishable from a genuine group hit. The two-element
+    /// universe in `group_name_is_reachable` rules this out.
     #[test]
     fn comma_shaped_name_combining_all_is_rejected() {
         let dir = test_dir("comma-all");
@@ -1050,10 +969,8 @@ mod tests {
 
     #[test]
     fn rfc3339_crosses_a_month_boundary_right_after_a_leap_day() {
-        // The day immediately after the leap day above: 2020-03-01T00:00:00Z. An off-by-one
-        // in the leap-year handling would show up here as 2020-02-30 or 2020-03-02, not as an
-        // obviously wrong year, which is exactly the kind of mistake that stays invisible
-        // until someone reads a backup filed under the wrong day.
+        // The day right after the leap day above. An off-by-one in the leap-year handling
+        // would show up as 2020-02-30 or 2020-03-02, not an obviously wrong year.
         assert_eq!(
             rfc3339_from_unix_secs(1_583_020_800),
             "2020-03-01T00:00:00Z"
@@ -1062,8 +979,7 @@ mod tests {
 
     #[test]
     fn rfc3339_carries_the_time_of_day() {
-        // 2026-08-28T12:34:56Z, so the test also pins that hours/minutes/seconds are not
-        // silently dropped or truncated to midnight.
+        // Pins that hours/minutes/seconds are not silently dropped or truncated to midnight.
         assert_eq!(
             rfc3339_from_unix_secs(1_787_920_496),
             "2026-08-28T12:34:56Z"
@@ -1085,11 +1001,9 @@ mod tests {
         );
     }
 
-    /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") for the
-    /// tests below, via `from_one_based` (review round 2, minor 4; the type and this constructor
-    /// moved into `wh-proto` at task 20 step 4c): `from_wire_index(n - 1)` would underflow-panic
-    /// on `pn(0)` instead of returning a clear error, and `from_wire_index(n)` would silently mean
-    /// a different profile than `pn`'s own name promises.
+    /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") via
+    /// `from_one_based`: `from_wire_index(n - 1)` would underflow-panic on `pn(0)`, and
+    /// `from_wire_index(n)` would silently mean a different profile than `pn`'s name promises.
     fn pn(n: u8) -> wh_proto::cmds::ProfileNumber {
         wh_proto::cmds::ProfileNumber::from_one_based(n).unwrap()
     }
@@ -1099,9 +1013,8 @@ mod tests {
         check_restore_profile(Some(pn(2)), pn(2), false).unwrap();
     }
 
-    /// Case 2: recorded and differing. `force` must not rescue it, so both calls below are
-    /// asserted to fail, not just the unforced one; this is the case the brief singles out as
-    /// deliberately non-overridable.
+    /// Recorded and differing: `force` must not rescue it, so both calls below are asserted
+    /// to fail, not just the unforced one.
     #[test]
     fn restore_profile_check_refuses_a_mismatch_and_force_does_not_rescue_it() {
         let err = check_restore_profile(Some(pn(1)), pn(2), false).unwrap_err();
@@ -1119,8 +1032,8 @@ mod tests {
         );
     }
 
-    /// Case 3: not recorded (an older snapshot). Refused without `--force`, rescued with it,
-    /// the opposite of case 2's non-overridable refusal above.
+    /// Not recorded (an older snapshot): refused without `--force`, rescued with it, the
+    /// opposite of the non-overridable refusal above.
     #[test]
     fn restore_profile_check_refuses_an_unrecorded_profile_but_force_rescues_it() {
         assert!(check_restore_profile(None, pn(2), false).is_err());

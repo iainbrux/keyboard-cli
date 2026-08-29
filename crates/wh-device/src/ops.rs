@@ -15,10 +15,8 @@ pub struct KeySettings {
 }
 
 impl KeySettings {
-    /// True for either RT variant, continuous or not: `TouchMode::RtContinuous` is still rapid
-    /// trigger from the CLI's point of view, just with the device's own continuous-mode toggle
-    /// (not something `wh` exposes) left on. See `rt_records`' own comment for why the CLI
-    /// preserves that variant on a read-modify-write instead of collapsing it to plain `Rt`.
+    /// True for either RT variant: `TouchMode::RtContinuous` is still rapid trigger, just with
+    /// the device's own continuous-mode toggle (not something `wh` exposes) left on.
     pub fn rt_enabled(&self) -> bool {
         matches!(self.mode.touch, TouchMode::Rt | TouchMode::RtContinuous)
     }
@@ -58,11 +56,9 @@ pub fn read_key_settings<T: Transport>(
     })
 }
 
-/// Read one key's layout value, rejecting a reply that doesn't echo back the
-/// same key and layout id it was asked for. `Session::roundtrip` only matches
-/// on the command byte (0x23 for every per-key read and write ack alike), so
-/// a late or duplicated report could otherwise satisfy the wrong request and
-/// silently apply key A's value to key B.
+/// Reads one key's layout value, rejecting a reply that doesn't echo back the same key and
+/// layout id asked for. `Session::roundtrip` matches only on the command byte (0x23 for every
+/// per-key read and write ack), so a stale reply could otherwise apply key A's value to key B.
 fn read_layout_value<T: Transport>(
     s: &mut Session<T>,
     usage: u8,
@@ -79,17 +75,11 @@ fn read_layout_value<T: Transport>(
     Ok(rec.value)
 }
 
-/// Write `records` in batches. A no-op selection (empty `records`) returns immediately without
-/// writing anything.
+/// Write `records` in batches, or nothing at all if `records` is empty.
 ///
-/// No SAVE order follows the batch: across 1224 captured frames covering ten scenarios and
-/// five complete write sequences, the vendor web configurator never sends one (`cmds::order::SAVE`'s
-/// own comment in `wh-proto`). Either the board persists automatically, or order `0x02` means
-/// something else on this firmware, or it is unimplemented; that is unmeasured, so this function
-/// does not send it and does not claim the board persists automatically.
-///
-/// Uses `roundtrip_many` rather than a hand-rolled send loop so a mid-batch failure reports how
-/// many frames already reached the device (`DeviceError::Batch`) instead of a bare timeout.
+/// No SAVE order follows: the vendor never sends one across 1224 captured frames. Whether the
+/// board persists by itself is unmeasured. `roundtrip_many` reports how many frames landed
+/// before a mid-batch failure instead of a bare timeout.
 fn write_records<T: Transport>(
     s: &mut Session<T>,
     records: &[KeyRecord],
@@ -102,21 +92,14 @@ fn write_records<T: Transport>(
     Ok(())
 }
 
-/// Build the [mode, rt_press, rt_release] records to enable RT on `usages`,
-/// preserving each key's advanced-mode nibble. Reads current MODE per key but
-/// sends nothing else, so a caller can inspect the records for a dry run
-/// before deciding to write them.
+/// Builds the [mode, rt_press, rt_release] records to enable RT on `usages`, preserving each
+/// key's advanced-mode nibble. Reads current MODE per key but sends nothing else, so a caller
+/// can dry-run before writing.
 ///
-/// The touch nibble written is `Rt` unless the key already carries `RtContinuous`, in which
-/// case that variant is preserved rather than collapsed to plain `Rt`. The CLI has no
-/// `--continuous` flag (that is a later phase's feature decision, not a protocol correction),
-/// so there is no way for a `wh set rt` call to ask for continuous mode; but a key can already
-/// be in that state from the vendor's own web UI, and `wh set rt --keys w --set 0.5` is a
-/// sensitivity change, not a request to also turn continuous off. Writing `Rt` unconditionally
-/// would do exactly that silently, on every sensitivity tweak, which is the same class of data
-/// loss chunk 3 fixes for `rt_off_records`. Reading the current MODE before deciding what to
-/// write, the same read-modify-write that already preserves `advanced` and `high`, costs
-/// nothing extra here since that read already happens.
+/// Written touch nibble is `Rt`, unless the key already carries `RtContinuous` (the vendor UI's
+/// own toggle, which `wh` has no flag for): reading MODE first lets a sensitivity-only change
+/// (`wh set rt --keys w --set 0.5`) preserve that variant instead of silently collapsing it to
+/// plain `Rt`.
 pub fn rt_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -155,38 +138,17 @@ pub fn rt_records<T: Transport>(
     Ok(records)
 }
 
-/// Build the [mode] records to turn rapid trigger off on `usages`, preserving each key's
+/// Builds the [mode] records to turn rapid trigger off on `usages`, preserving each key's
 /// advanced-mode nibble. Reads current MODE per key but sends nothing else.
 ///
-/// Only touches keys that actually have RT on (`TouchMode::Rt` or `RtContinuous`): those get
-/// rewritten to `TouchMode::Single` (nibble 1, per-key actuation point), never to `Global`
-/// (nibble 0). A key already in `Global`, `Single`, or an `Unknown` state is left exactly as
-/// read; a key with no RT to turn off has nothing for `set rt --off` to do to its mode, and gets
-/// no record at all (whole-branch review): the recomputed value equals what was just read, and a
-/// key with nothing to change gets nothing written, rather than a MODE record whose value is
-/// identical to the one already on the board. This matters at scale: `wh set rt --keys all --off`
-/// against a board with only a handful of RT keys used to write one record per selected key
-/// regardless, most of them a no-op; the returned `Vec` (and so `set_rt_off`'s write, and
-/// `verify_rt_off`'s readback and its reported count) now reflects only the keys that actually
-/// change.
+/// Only rewrites keys currently `Rt` or `RtContinuous`, to `Single` (nibble 1), never to
+/// `Global` (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key
+/// with nothing to change gets no record (see the skip below), so `wh set rt --keys all --off`
+/// on a board with few RT keys doesn't detach every other key from the global travel setting.
 ///
-/// Measured on the real device (`captures/rt-off-w.jsonl`, task 19b chunk 3): turning RT off
-/// wrote MODE nibble 1, not 0. Nibble 0 means "follow the global travel setting" instead of this
-/// key's own layout `0x04` value; the original reasoning here was that writing it would silently
-/// make a per-key actuation point inert, but that was never measured, and a later hardware check
-/// (`docs/tasks.md`, the touch-nibble-0 actuation test) found a key at nibble 0 honouring its own
-/// per-key actuation point, the opposite of what that reasoning predicted. What nibble 0 actually
-/// does to a key's `0x04` value is unmeasured either way. This function writes nibble 1 anyway,
-/// because that is what the vendor was observed writing in this exact situation, and matching it
-/// costs nothing regardless of which belief about nibble 0 turns out to be right. But that
-/// capture covers exactly one transition, an RT key with an AP going to Single; no capture
-/// anywhere in the ten scenarios shows a nibble-0 (Global) key being turned "off" into nibble 1,
-/// and doing that unconditionally (the first cut of this function did) detaches every non-RT key
-/// on the board from the global travel setting on a plain `wh set rt --keys all --off`, a second
-/// data-loss bug of the same shape chunk 3 fixed. Restricting the rewrite to keys that were
-/// actually `Rt`/`RtContinuous` closes both that case and the `Unknown(n)` case at once, rather
-/// than special-casing `Global` alone: a key without RT, in whatever state, has no RT to turn
-/// off.
+/// Measured on the real device (`captures/rt-off-w.jsonl`): turning RT off wrote nibble 1, not
+/// 0. What nibble 0 does to the key's own actuation-point value is unmeasured; this function
+/// writes nibble 1 because that's what the vendor was observed writing here.
 pub fn rt_off_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -205,14 +167,9 @@ pub fn rt_off_records<T: Transport>(
             high: cur_mode.high,
         };
         let new_value = mode.value();
-        // Skip the record entirely when nothing would change (review, whole-branch pass): a key
-        // that was not `Rt`/`RtContinuous` recomputes to the exact value it was just read as, and
-        // sending it anyway means writing a MODE value nobody has ever observed the vendor send
-        // in this situation, nibble 0 (`Global`) included, which `docs/protocol.md` documents as
-        // something `wh` does not write. The vendor was never once observed writing nibble 0
-        // across 1224 captured frames; sending it unconditionally here, on every non-RT key of
-        // every `wh set rt --keys all --off`, contradicted that. Same reasoning as not sending
-        // SAVE: do not write a byte the vendor was never observed writing.
+        // Skip when nothing would change: a key that wasn't `Rt`/`RtContinuous` recomputes to
+        // the value just read, and sending it anyway would write a MODE value (nibble 0
+        // included) the vendor was never once observed sending, across 1224 captured frames.
         if new_value != cur_value {
             records.push(KeyRecord {
                 key: u,
@@ -224,11 +181,9 @@ pub fn rt_off_records<T: Transport>(
     Ok(records)
 }
 
-/// Enable RT on `usages` with the given sensitivities (preserves advanced-key nibble).
-/// Returns the exact records that were written (one MODE/RT_PRESS/RT_RELEASE triple per key,
-/// in `usages` order), so a caller that needs to verify the write can compare against what was
-/// actually sent, advanced nibble and high byte included, rather than only the touch mode and
-/// the two sensitivities.
+/// Enables RT on `usages` with the given sensitivities, preserving each key's advanced nibble.
+/// Returns the exact records written (one MODE/RT_PRESS/RT_RELEASE triple per key, in `usages`
+/// order) so a caller can verify the write against what was actually sent.
 pub fn set_rt<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -240,13 +195,9 @@ pub fn set_rt<T: Transport>(
     Ok(records)
 }
 
-/// Disable RT (touch mode -> Single, per-key actuation point), preserving the advanced
-/// nibble. Returns the exact records that were written, in `usages` order, the same reason
-/// `set_rt` returns its records: a caller verifying the write needs to compare against what
-/// was actually sent, advanced nibble and high byte included, not just the touch mode. Not
-/// necessarily one record per key in `usages`: a key with nothing to change (see
-/// `rt_off_records`) contributes no record at all, so the caller's own reporting reflects how
-/// many keys actually changed, not how many were selected.
+/// Disables RT (touch mode to `Single`, per-key actuation point), preserving the advanced
+/// nibble. Returns the records actually written, in `usages` order; not necessarily one per
+/// key, since a key with nothing to change (see `rt_off_records`) contributes none.
 pub fn set_rt_off<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -256,10 +207,12 @@ pub fn set_rt_off<T: Transport>(
     Ok(records)
 }
 
-/// Build the [ap] records to set `usages`' actuation point (layout DB0).
-/// Reads nothing (unlike `rt_records`/`rt_off_records`, AP has no other
-/// nibble to preserve), so it needs no session; the CLI's dry-run path can
-/// call this directly instead of re-deriving the record shape itself.
+/// Builds the [ap] records to set `usages`' actuation point (layout DB0). Reads nothing, since
+/// AP has no other nibble to preserve, so it needs no session and the CLI's dry-run path can
+/// call it directly.
+/// Actuation point records: layout `0x04` alone, no MODE write. The vendor sends a MODE write
+/// before every actuation point change; hardware proved it is not needed for the value to take
+/// effect (F set to 0.30mm actuates at 0.30mm).
 pub fn ap_records(usages: &[u8], depth: Um) -> Vec<KeyRecord> {
     usages
         .iter()
@@ -290,15 +243,14 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
     cmds::parse_global_travel(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
 }
 
-/// The board's currently active profile, already validated (see `wh_proto::cmds::ProfileNumber`
-/// and `parse_profile`, the seam where the wire's own zero-based index becomes this type). Read
-/// only, task 19b group B: profile *select* is documented in the brief but deliberately not
-/// implemented, since nothing in Phase 1 needs to change the active profile.
+/// The board's currently active profile, already validated (`wh_proto::cmds::ProfileNumber`,
+/// `parse_profile`). Read only: profile *select* isn't implemented, since nothing in Phase 1
+/// needs to change the active profile.
 ///
-/// A reply naming an index the board's four measured profiles could never produce surfaces as
-/// `DeviceError::ProfileOutOfRange`, kept distinct from `DeviceError::Decode` (a reply that does
-/// not look like a profile reply at all), so a caller that wants to degrade gracefully on the
-/// former while still hard-failing on the latter can match on the specific variant.
+/// A reply naming an index the board's four profiles can't produce surfaces as
+/// `DeviceError::ProfileOutOfRange`, kept distinct from `Decode` (a reply that isn't shaped
+/// like a profile reply at all), so callers can degrade gracefully on the former while still
+/// hard-failing on the latter.
 pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, DeviceError> {
     let payload = s.roundtrip(&cmds::read_profile())?;
     cmds::parse_profile(&payload).map_err(|e| match e {
@@ -307,11 +259,9 @@ pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, 
     })
 }
 
-/// Write a whole snapshot back to the board: global travel first, then every per-key record
-/// (via `write_records`, which skips the batch entirely when `records` is empty). Global travel
-/// goes first so a partial restore that fails partway through the per-key batch still leaves the
-/// board's overall travel consistent with what the caller intended, rather than a mix of old
-/// per-key values against a new global travel.
+/// Writes a whole snapshot back to the board: global travel first, then every per-key record.
+/// Global travel goes first so a restore that fails partway through the per-key batch still
+/// leaves the board's overall travel consistent with what was intended.
 pub fn restore_all<T: Transport>(
     s: &mut Session<T>,
     global: &cmds::GlobalTravel,
@@ -337,16 +287,14 @@ mod tests {
     fn l(dir: &str, b: &[u8; 64]) -> String {
         format!("{{\"dir\":\"{dir}\",\"hex\":\"{}\"}}", hex(b))
     }
-    /// Builds a reply frame the way the real device sends it: with the high
-    /// bit set on the command byte (see `wh_proto::frame::REPLY_BIT`), so
-    /// fixtures built through this helper are faithful to the wire.
+    /// Builds a reply frame with the high bit set on the command byte, matching how the real
+    /// device sends it (`wh_proto::frame::REPLY_BIT`).
     fn rf(cmd: u8, payload: &[u8]) -> [u8; 64] {
         wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
     }
 
-    /// Script a full read_matrix: 3 DEFKEY roundtrips, each row pair carrying
-    /// its own distinct usages, so a pass requires reading and collecting
-    /// from every row rather than only the first.
+    /// Scripts a full read_matrix: 3 DEFKEY roundtrips, each row pair with distinct usages, so
+    /// passing requires collecting from every row, not just the first.
     fn matrix_script() -> Vec<String> {
         let mut lines = Vec::new();
         for (a, b, ka, kb) in [
@@ -390,9 +338,8 @@ mod tests {
 
     #[test]
     fn set_rt_writes_mode_and_both_sensitivities_and_sends_no_save() {
-        // expected frames: write [mode, rtp, rtr] per key (one batch), then nothing else. If
-        // set_rt sent a SAVE order afterwards, ReplayTransport would reject it against this
-        // exhausted script.
+        // Expected: write [mode, rtp, rtr] per key, then nothing else. A SAVE order afterwards
+        // would be rejected as an unexpected send against this exhausted script.
         let recs = vec![
             KeyRecord {
                 key: 0x1A,
@@ -431,12 +378,9 @@ mod tests {
 
     #[test]
     fn set_rt_over_five_keys_preserves_each_advanced_nibble_and_sends_no_save() {
-        // Five keys, each with a different current MODE byte (so each has a
-        // different advanced nibble to preserve, including 0x1 and 0xF), to
-        // pin that a multi-key call keeps every key's own nibble rather than
-        // reusing the first key's. The script ends right after the write batch(es); if set_rt
-        // sent a SAVE order afterwards, ReplayTransport would reject it against this exhausted
-        // script.
+        // Five keys with distinct MODE bytes (distinct advanced nibbles, including 0x1 and
+        // 0xF), so a multi-key call must keep each key's own nibble, not reuse the first key's.
+        // Script ends right after the write batch(es); a SAVE order after would be rejected.
         let keys = [0x04u8, 0x05, 0x06, 0x07, 0x08];
         let cur_modes = [0x01u8, 0x1F, 0x22, 0x53, 0x0F];
         let press = Um(400);
@@ -527,14 +471,10 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// The design decision behind `rt_records`' touch-mode choice: a key that already carries
-    /// `RtContinuous` (nibble 4, the vendor UI's continuous-mode toggle, which the CLI has no
-    /// flag for) must keep that variant when `wh set rt` only changes the sensitivity. Forcing
-    /// plain `Rt` unconditionally here would silently turn continuous off on every sensitivity
-    /// tweak, the same class of data loss chunk 3 fixes for `rt_off_records`; there is no way for
-    /// this call to ask for continuous mode back once lost, since `wh` has no `--continuous`
-    /// flag (a later phase's feature decision). Current mode byte 0x48: touch RtContinuous(4),
-    /// advanced nibble 8.
+    /// A key already carrying `RtContinuous` (nibble 4, the vendor UI's own toggle) must keep
+    /// that variant when `wh set rt` only changes sensitivity: `wh` has no `--continuous` flag,
+    /// so there's no way to ask for it back once lost. Current mode byte 0x48: touch
+    /// RtContinuous(4), advanced nibble 8.
     #[test]
     fn rt_records_preserves_the_continuous_variant_when_the_key_already_has_it() {
         let lines = [
@@ -570,11 +510,9 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// The other half of the same design decision: a key that is not already RT-enabled at all
-    /// (touch mode `Global` here) gets plain `Rt` (nibble 3, continuous off), not
-    /// `RtContinuous`, since `wh` has no way to ask for continuous mode on a key that never had
-    /// it. Only an already-continuous key keeps that variant; enabling RT fresh always starts
-    /// from continuous off, matching the measured default (chunk 2).
+    /// A key not already RT-enabled (touch mode `Global` here) gets plain `Rt` (nibble 3,
+    /// continuous off), not `RtContinuous`: only an already-continuous key keeps that variant,
+    /// so enabling RT fresh always starts from continuous off.
     #[test]
     fn rt_records_defaults_a_freshly_enabled_key_to_non_continuous_rt() {
         let lines = [
@@ -592,19 +530,15 @@ mod tests {
     }
 
     /// The reply's high byte (`payload[4]`, the wire byte `parse_key_reply` puts in
-    /// `KeyRecord.value`'s upper 8 bits, distinct from the low byte carrying the touch and
-    /// advanced nibbles) must survive a read-modify-write intact. Reply lo `0x21` (touch
-    /// nibble `0x2` -> `Unknown(2)`, never observed on the wire, advanced nibble `0x1`), hi
-    /// `0x02`: `rt_records` forces the touch nibble to `Rt` (`0x3`) while preserving the
-    /// advanced nibble (`0x1`) and the high byte (`0x02`), giving `0x0231`.
+    /// `KeyRecord.value`'s upper bits) must survive a read-modify-write intact. Reply lo `0x21`
+    /// (touch `Unknown(2)`, advanced `0x1`), hi `0x02`: `rt_records` forces touch to `Rt`
+    /// (`0x3`) while preserving the advanced nibble and high byte, giving `0x0231`.
     ///
-    /// That expected value is hand-written as a literal below rather than built by calling
-    /// `Mode { .. }.value()` again the way `rt_records` itself does: a test that reconstructs
-    /// its expectation through the same method under test would inherit any bug in that method
-    /// identically on both sides and assert nothing. This is the same shape of gap that let
-    /// the pre-fix `Mode` truncate its high byte silently: see `wh-proto`'s
-    /// `mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte`, which pins
-    /// `Mode` itself the same way, and this test's sibling below for `rt_off_records`.
+    /// The expected value is a hand-written literal, not built via `Mode { .. }.value()` again:
+    /// reconstructing the expectation through the method under test would share any bug in it
+    /// and assert nothing (see `wh-proto`'s
+    /// `mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte` test, which pins
+    /// `Mode` the same way).
     #[test]
     fn rt_records_preserves_the_high_byte_of_mode_across_a_read_modify_write() {
         let lines = [
@@ -642,11 +576,8 @@ mod tests {
 
     #[test]
     fn rt_off_records_sets_touch_mode_single_preserving_advanced_nibble() {
-        // current mode byte 0x37: touch Rt(3), advanced nibble 7. rt_off_records must write
-        // touch Single(1), not Global(0): see rt_off_records' own doc comment for why. In short,
-        // `captures/rt-off-w.jsonl` shows the vendor writing nibble 1, not 0, in this exact
-        // transition, and matching that observed behaviour is the reason, not a measured effect
-        // of writing nibble 0, which remains untested.
+        // Mode byte 0x37: touch Rt(3), advanced nibble 7. Must write Single(1), not Global(0):
+        // `captures/rt-off-w.jsonl` shows the vendor writing nibble 1 in this exact transition.
         let lines = [
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
@@ -668,13 +599,9 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// The `rt_off_records` sibling of
-    /// `rt_records_preserves_the_high_byte_of_mode_across_a_read_modify_write` above: reply lo
-    /// `0x37` (touch `Rt`, advanced nibble `0x7`), hi `0x02`. `rt_off_records` forces the touch
-    /// nibble to `Single` (`0x1`) while preserving the advanced nibble (`0x7`) and the high
-    /// byte (`0x02`), giving `0x0217`, hand-written for the same reason: an expectation built
-    /// by calling `Mode { .. }.value()` again would share any bug in that method with the code
-    /// under test instead of catching it.
+    /// Sibling of the `rt_records` high-byte test above. Reply lo `0x37` (touch `Rt`, advanced
+    /// `0x7`), hi `0x02`: `rt_off_records` forces touch to `Single` while preserving the
+    /// advanced nibble and high byte, giving `0x0217`. Hand-written literal for the same reason.
     #[test]
     fn rt_off_records_preserves_the_high_byte_of_mode_across_a_read_modify_write() {
         let lines = [
@@ -698,15 +625,10 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// Chunk 3's own regression test: on a key with a per-key actuation point (touch mode
-    /// already `Single`, i.e. not even RT-enabled from this call's perspective), turning "RT
-    /// off" again must leave it at `Single`, not coerce it to `Global`. Since whole-branch
-    /// review, "leave it at `Single`" means no record at all, not a record that echoes the value
-    /// already on the board (see `rt_off_records`' own doc comment): this key's recomputed MODE
-    /// value equals what was just read, so nothing is written. A regression that coerced the key
-    /// to `Global` instead would still produce a record, with the wrong value, so this still
-    /// catches that: it distinguishes "correctly left as `Single`, nothing to write" from
-    /// "wrongly rewritten to `Global`, something (wrong) to write".
+    /// A key already `Single` (not RT-enabled) must stay `Single` when turned "off" again, not
+    /// get coerced to `Global`. Since `rt_off_records` skips unchanged keys, the correct output
+    /// here is no record at all, not one echoing the value already on the board: a regression
+    /// that coerced the key to `Global` would still produce a (wrong-value) record.
     #[test]
     fn rt_off_records_leaves_an_already_single_key_at_single_not_global() {
         let lines = [
@@ -728,23 +650,11 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// Two regressions this test guards, from two different fix rounds, both against the same
-    /// real fixture: every one of the 68 real per-key MODE values read from the device in
-    /// `captures/initial-load.jsonl` (extracted with `layout == 0x08` from the KEY-reply frames
-    /// in that capture; every one is a key that has never had RT on, confirmed by the assertion
-    /// above), replayed through `rt_off_records`, exactly what `wh set rt --keys all --off`
-    /// sends.
-    ///
-    /// The first cut of this function detached all 58 nibble-0 keys among these from the global
-    /// travel setting by rewriting their MODE to nibble 1 unconditionally; task 19b chunk 3 fixed
-    /// that by restricting the rewrite to keys that were actually `Rt`/`RtContinuous`. A later
-    /// whole-branch review found the second half of the same shape still present: this function
-    /// went on to push a record for every one of these 68 keys anyway, carrying their own
-    /// unchanged value right back at them, 58 of them nibble 0, the exact value
-    /// `docs/protocol.md` documents as one `wh` never writes. Since no key here has anything to
-    /// change, the correct output is not "68 records, each equal to what was read" but no
-    /// records at all: nothing for `set_rt_off` to write, and nothing for `verify_rt_off` to
-    /// read back and report as changed.
+    /// Replays all 68 real per-key MODE values from `captures/initial-load.jsonl` (none of them
+    /// RT-enabled, confirmed below) through `rt_off_records`, exactly what
+    /// `wh set rt --keys all --off` sends. Guards against rewriting any of the 58 nibble-0 keys
+    /// unconditionally, and against emitting a record that just echoes each key's unchanged
+    /// value: the correct output is no records at all.
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
         // (key, MODE value), verbatim from captures/initial-load.jsonl.
@@ -875,8 +785,7 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        // Script ends right after the write batch: if set_rt_off sent a SAVE order afterwards,
-        // ReplayTransport would reject it against this exhausted script.
+        // Script ends right after the write batch: a SAVE order afterwards would be rejected.
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_rt_off(&mut s, &[0x1A]).unwrap();
         assert!(s.into_inner().finished());
@@ -895,8 +804,7 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        // Script ends right after the write batch: if set_ap sent a SAVE order afterwards,
-        // ReplayTransport would reject it against this exhausted script.
+        // Script ends right after the write batch: a SAVE order afterwards would be rejected.
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         set_ap(&mut s, &[0x1A], Um(1500)).unwrap();
         assert!(s.into_inner().finished());
@@ -924,11 +832,9 @@ mod tests {
 
     #[test]
     fn write_records_uses_roundtrip_many_so_mid_batch_failure_reports_progress() {
-        // 16 usages -> 16 AP records -> encoder splits into a 14-record and a
-        // 2-record frame. Reply only to the first frame, so the second write
-        // frame goes unanswered: this must surface as a Batch error with
-        // partial-progress detail, not a bare Timeout, proving write_records
-        // goes through roundtrip_many rather than a hand-rolled loop.
+        // 16 AP records split into a 14-record and a 2-record frame; only the first gets a
+        // reply, so this must surface as a Batch error with partial-progress detail, not a
+        // bare Timeout.
         let usages: Vec<u8> = (0x04u8..0x14).collect();
         let records = ap_records(&usages, Um(1500));
         let frames = cmds::write_key_records(&records);
@@ -958,13 +864,9 @@ mod tests {
 
     #[test]
     fn write_records_sends_nothing_when_there_are_no_records() {
-        // An empty script: if anything at all reached the wire for an empty selection,
-        // ReplayTransport would reject the unexpected send. Note (review round 1, minor 7): this
-        // pins the resulting behaviour, not specifically the `is_empty` early return in
-        // `write_records` - `write_key_records(&[])` already yields no frames on its own, so
-        // this test would still pass with that guard deleted. It is kept because the guard
-        // documents the no-op case explicitly rather than relying on that encoder behaviour by
-        // coincidence.
+        // Empty script: any send at all would be rejected. Pins the resulting wire behaviour,
+        // not the `is_empty` early return itself: `write_key_records(&[])` already yields no
+        // frames on its own, but the guard documents the no-op explicitly.
         let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
         set_ap(&mut s, &[], Um(1500)).unwrap();
         assert!(s.into_inner().finished());
@@ -1008,9 +910,8 @@ mod tests {
 
     #[test]
     fn read_key_settings_reads_four_layouts() {
-        // Press and release are deliberately distinct (500 vs 650, not the same value twice)
-        // and both are asserted below: equal values, or asserting only one of the two fields,
-        // can't catch the pair being swapped anywhere between the wire reply and `KeySettings`.
+        // Press and release deliberately distinct (500 vs 650): equal values, or asserting
+        // only one field, couldn't catch the pair being swapped.
         let mut lines = Vec::new();
         for (lid, val) in [
             (layout::AP, 1200u16),
@@ -1132,10 +1033,9 @@ mod tests {
         );
     }
 
-    /// A reply that parses fine as a profile reply, but names an index the board's four measured
-    /// profiles could never produce, must surface as `ProfileOutOfRange`, not `Decode`: this is
-    /// what lets a caller distinguish "the reply was garbled" from "the reply named an impossible
-    /// profile" and degrade only for the latter (review, task 20 step 4c).
+    /// A reply that parses fine but names an index the board's four profiles could never
+    /// produce must surface as `ProfileOutOfRange`, not `Decode`, so a caller can degrade only
+    /// for the impossible-profile case, not a genuinely garbled reply.
     #[test]
     fn profile_maps_an_out_of_range_index_to_profile_out_of_range_not_decode() {
         let lines = [
@@ -1151,10 +1051,8 @@ mod tests {
         );
     }
 
-    /// `restore_all` writes the global travel DB record first, then the per-key batch(es), and
-    /// sends no SAVE order afterwards, mirroring `set_rt`/`set_ap`'s own script shape above (DB
-    /// write, key batches, no SAVE) so a restore looks like one coherent write on the wire rather
-    /// than a pile of independent calls.
+    /// Writes the global travel DB record first, then the per-key batch(es), no SAVE
+    /// afterwards, mirroring `set_rt`/`set_ap`'s own script shape above.
     #[test]
     fn restore_all_writes_global_travel_then_key_batches_and_sends_no_save() {
         let global = cmds::GlobalTravel {
@@ -1219,8 +1117,7 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        // Script ends right after the key batches: if restore_all sent a SAVE order afterwards,
-        // ReplayTransport would reject it against this exhausted script.
+        // Script ends right after the key batches: a SAVE order afterwards would be rejected.
 
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         restore_all(&mut s, &global, &recs).unwrap();
@@ -1230,10 +1127,8 @@ mod tests {
     #[test]
     fn restore_all_skips_key_batch_when_there_are_no_records() {
         // Only the global travel write should reach the wire; an empty `records` produces no
-        // key batch frames at all (there is no SAVE to skip any more, chunk 4). As with
-        // `write_records_sends_nothing_when_there_are_no_records` above (review round 1, minor
-        // 7), this pins the resulting wire behaviour rather than the presence of a specific
-        // early-return branch in `write_records`.
+        // key batch frames. Pins the resulting wire behaviour, not a specific early-return
+        // branch in `write_records`.
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),

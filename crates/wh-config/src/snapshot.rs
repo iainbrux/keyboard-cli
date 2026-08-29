@@ -8,16 +8,13 @@ pub struct Snapshot {
     pub firmware: String,
     pub serial: String,
     pub taken_at: String, // RFC3339, informational
-    /// The board's active profile at the moment this snapshot was taken. `ProfileNumber` (not a
-    /// bare `u8`) so the UI's one-based numbering can never be mixed up with the wire's own
-    /// zero-based index at a call site (task 19b group B, review round 1 finding 2; the type
-    /// itself moved into `wh-proto` at task 20 step 4c, see its own doc comment there). `None`
-    /// means this snapshot predates profile recording, so its provenance is unknown, not that the
-    /// board has no active profile (every board always has one). Absent entirely from a
-    /// snapshot's TOML deserializes to `None` (serde's own behaviour for a missing `Option`
-    /// field), so backups taken before this field existed still parse. `wh-proto` carries no
-    /// serde dependency, so this field goes through `crate::profile`'s bridge functions
-    /// (`#[serde(with = "...")]`) rather than a direct impl on `ProfileNumber`.
+    /// The board's active profile when this snapshot was taken. `ProfileNumber`, not a bare
+    /// `u8`, so the UI's one-based numbering can never be confused with the wire's zero-based
+    /// index. `None` means the snapshot's profile provenance is unknown (it predates profile
+    /// recording), never that the board had no active profile: every board always has one.
+    /// Missing entirely from a snapshot's TOML deserializes to `None`, so old backups still
+    /// parse. Goes through `crate::profile`'s bridge functions since `wh-proto` carries no
+    /// serde dependency.
     #[serde(default, with = "crate::profile")]
     pub profile: Option<ProfileNumber>,
     pub global: GlobalToml,
@@ -36,12 +33,10 @@ pub struct KeyToml {
     pub name: String,
     pub usage: u8,
     pub ap_mm: f64,
-    /// Informational only, derived from `mode_raw` at the moment the snapshot was taken
-    /// (whole-branch review): `wh restore` never reads this field, since it writes `mode_raw`
-    /// back verbatim. Hand-editing `rt` in a snapshot file changes what `dump`-style tooling
-    /// would print about that key, not what `wh restore` writes to the board; to actually change
-    /// whether a key restores with rapid trigger on, edit `mode_raw` (the touch nibble, the high
-    /// nibble of its low byte) instead.
+    /// Informational only, derived from `mode_raw` when the snapshot was taken. `wh restore`
+    /// writes `mode_raw` back verbatim and never reads this field, so hand-editing `rt` changes
+    /// only what tooling prints about the key, not what gets restored. To change whether a key
+    /// restores with rapid trigger on, edit `mode_raw` (its low byte's high nibble) instead.
     pub rt: bool,
     pub rt_press_mm: f64,
     pub rt_release_mm: f64,
@@ -89,12 +84,9 @@ mod tests {
         assert_eq!(back, snap);
     }
 
-    /// A snapshot taken before profile recording existed serializes with `profile: None`, which
-    /// omits the `profile` key from the TOML entirely (task 19b group B: `None` is the "provenance
-    /// unknown" case, not "no active profile"). Round-tripped both ways here, not just parsed:
-    /// `to_toml` must not emit a `profile` line for `None` (it would otherwise emit something
-    /// TOML has no syntax for, since TOML has no null), and `from_toml` on the resulting text
-    /// must come back with `profile` still absent, not defaulted to `Some(0)` or any other value.
+    /// A `None` profile (provenance unknown) serializes with the `profile` key omitted, since
+    /// TOML has no null. Round-tripped both ways: `to_toml` must not emit a `profile` line, and
+    /// `from_toml` on the result must come back with `profile` still absent.
     #[test]
     fn snapshot_with_no_profile_round_trips_with_the_field_absent() {
         let snap = Snapshot {
@@ -127,9 +119,9 @@ mod tests {
         assert_eq!(back, snap);
     }
 
-    /// The literal shape an operator's real, pre-existing snapshot file takes: no `profile` key
-    /// anywhere, written by hand here (not round-tripped through `to_toml`) so this test does not
-    /// depend on the serializer's own behaviour for `None` to prove the parser accepts it.
+    /// The shape of a real pre-existing snapshot file: no `profile` key anywhere. Written by
+    /// hand, not round-tripped through `to_toml`, so the test proves the parser accepts it
+    /// independent of the serializer.
     #[test]
     fn snapshot_toml_with_no_profile_key_at_all_still_parses() {
         let text = r#"

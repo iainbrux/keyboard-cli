@@ -27,10 +27,9 @@ pub struct Store {
 
 pub const KEEP_BACKUPS: usize = 20;
 
-/// Monotonic counter used to make each `save_backup` temp filename unique within this process,
-/// regardless of clock resolution. See `save_backup` for why a repeated temp name would be
-/// dangerous, not merely wasteful: `hard_link` shares an inode rather than copying bytes, so a
-/// later write into a reused temp path would silently corrupt every backup still linked to it.
+/// Makes each `save_backup` temp filename unique within this process, regardless of clock
+/// resolution. A reused temp name would silently corrupt every backup still linked to it,
+/// since `hard_link` shares an inode rather than copying bytes.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl Store {
@@ -51,43 +50,16 @@ impl Store {
 
     /// Writes a new backup and rotates old ones away, keeping the newest `KEEP_BACKUPS`.
     ///
-    /// The backup filename is `<secs>.<nanos>.toml`, where `secs` is zero-padded to 20 digits
-    /// (the widest a `u64` seconds-since-epoch value can ever be, so the field never changes
-    /// width for any clock value this side of the heat death of the universe) and `nanos` is
-    /// zero-padded to 9 digits. The padding keeps a plain lexicographic listing (`ls`, a file
-    /// manager) in chronological order too, but the authoritative ordering used by this store
-    /// is the parsed numeric key from `backup_sort_key`, not the raw filename string: see there
-    /// for why a fixed width alone is not sufficient.
+    /// Filename is `<secs>.<nanos>.toml`, zero-padded to 20 and 9 digits. `list_backups` sorts
+    /// by the parsed `(secs, nanos)` key, not the raw string, so the padding is cosmetic.
     ///
-    /// The write is atomic and collision-free without ever letting an incomplete file sit at a
-    /// name that looks like a backup:
-    ///
-    /// 1. The full content is written to a temp file first, under a name that starts with `.`
-    ///    and does not end in `.toml`, so `list_backups` can never mistake it (or an orphan left
-    ///    behind by a crash on this step) for a backup. The temp name pairs the process id with
-    ///    a process-wide monotonic counter, so it can never repeat within this process
-    ///    regardless of clock resolution, and the file is opened with `create_new`, so a same-
-    ///    name collision with another process's in-flight temp file fails loudly and retries
-    ///    with the next counter value rather than truncating whatever that other writer had
-    ///    already put there. This matters more than an ordinary collision would: the next step
-    ///    publishes the final name via `hard_link`, which shares an inode rather than copying
-    ///    bytes, so a reused temp path is not just overwritten, it corrupts every backup still
-    ///    linked to it, in place, with that backup's own name and timestamp untouched.
-    /// 2. Only once that write has succeeded is a final `<secs>.<nanos>.toml` name chosen, by
-    ///    `fs::hard_link`-ing the temp file onto it. `hard_link` fails if the destination
-    ///    already exists, which is what gives two saves landing in the same nanosecond a
-    ///    collision guard: the second one retries at the next nanosecond slot instead of
-    ///    silently overwriting. Because the temp file's content is already complete before the
-    ///    link is created, the final name never exists half-written: there is no window where a
-    ///    reader could see it empty or truncated. This is why `create_new` on the final name
-    ///    (an earlier round's approach) cannot be used there: reserving the final name before
-    ///    the content behind it exists is exactly the defect that approach caused.
-    ///
-    /// `fs::hard_link`'s "fails if the destination exists" behaviour is a documented, general
-    /// contract of the standard library function, not a Unix-specific note, so it is relied on
-    /// here for the Windows build too (this crate ships in the Windows binary). That could only
-    /// be checked against the documented contract in this environment, not by executing the
-    /// Windows binary, since only cross-compilation is available here.
+    /// Content is written to a `.partial` temp file first (name paired with a process-wide
+    /// counter so it never repeats, opened with `create_new` so a collision fails loudly and
+    /// retries instead of truncating another writer's file), then published by
+    /// `fs::hard_link`-ing it onto the final name, retrying the next nanosecond slot if that
+    /// name is taken. `hard_link` shares an inode rather than copying bytes, so publishing only
+    /// after the temp content is complete, and never reusing a temp name, is what keeps a
+    /// collision from silently corrupting an existing backup in place instead of just failing.
     pub fn save_backup(&self, toml_text: &str) -> Result<PathBuf, StoreError> {
         let dir = self.backups_dir();
         fs::create_dir_all(&dir)?;
@@ -142,10 +114,8 @@ impl Store {
             }
         };
 
-        // The backup's content now also lives at `path` (a hard link, not a copy of the bytes),
-        // so the temp name can go. Best-effort: if removal fails, the backup at `path` is still
-        // complete and correct, the only cost is a harmless leftover `.partial` file, which
-        // list_backups already ignores.
+        // `path` is a hard link to the same content, so the temp name can go. Best-effort:
+        // failure just leaves a harmless `.partial` file, which list_backups ignores.
         let _ = fs::remove_file(&tmp_path);
 
         // rotate: list_backups() sorts oldest first, so remove from the front.
@@ -158,14 +128,11 @@ impl Store {
 
     /// Sorted oldest to newest, by the parsed `(secs, nanos)` key, not by raw filename string.
     ///
-    /// A directory entry is only treated as a backup if its name does not start with `.` (every
-    /// genuine backup name is all digits) and it has a `.toml` extension. The leading-dot check
-    /// is not the same thing as relying on `Path::extension` to treat dot-prefixed names as
-    /// extension-less: it does not, for a name with more than one embedded `.` (as this store's
-    /// own former temp-file naming scheme demonstrated, `.tmp-<pid>-<name>.toml` still reports
-    /// a `.toml` extension), so the extension check alone cannot be trusted to exclude a temp or
-    /// orphaned artifact. A zero-length `.toml` file is also excluded: it is never a valid
-    /// backup, whether left behind by an interrupted write or dropped there by something else.
+    /// An entry counts as a backup only if its name does not start with `.` and it has a
+    /// `.toml` extension. Both checks are needed: `Path::extension` still reports `.toml` for a
+    /// dot-prefixed temp name like `.tmp-<pid>-<name>.toml`, so the leading-dot check catches
+    /// what the extension check alone would miss. A zero-length `.toml` file is also excluded,
+    /// since it is never a valid backup.
     pub fn list_backups(&self) -> Result<Vec<PathBuf>, StoreError> {
         let dir = self.backups_dir();
         if !dir.exists() {
@@ -231,9 +198,8 @@ impl Store {
         }
         fs::create_dir_all(&self.root)?;
         let text = toml::to_string_pretty(&Cfg { groups: &groups })?;
-        // Atomic write: land the content in a temp file in the same directory, then rename into
-        // place, so a crash or a full disk mid-write cannot leave config.toml truncated and
-        // silently drop every group the user defined.
+        // Atomic write: land the content in a temp file, then rename into place, so a crash
+        // mid-write cannot leave config.toml truncated and drop every group the user defined.
         let tmp_path = self
             .root
             .join(format!(".tmp-config-{}.toml", std::process::id()));
@@ -245,16 +211,13 @@ impl Store {
 
 /// Parses a backup filename's `<secs>.<nanos>` stem into a sortable `(secs, nanos)` key.
 ///
-/// A raw filename sort is not safe here: the seconds field's digit width changes over time (a
-/// clock that reads near the epoch, such as an unsynced VM clock or a dead CMOS battery,
-/// produces a short number that a lexicographic sort places after every correctly stamped,
-/// longer, current-day name). Parsing the number and comparing numerically is immune to that.
+/// A raw string sort is not safe: a clock near the epoch (unsynced VM, dead CMOS battery)
+/// produces a shorter number that sorts after every current-day name lexicographically.
+/// Parsing and comparing numerically avoids that.
 ///
-/// A filename that does not match the `<secs>.<nanos>.toml` shape (for example a stray file a
-/// user dropped into the backups directory) sorts as `(0, 0)`, the oldest possible key. That
-/// direction is deliberate: an unparseable name must never be able to masquerade as the newest
-/// backup, only ever as the oldest, so it is the first thing rotation trims and never what
-/// `load_backup(None)` returns while any genuine backup exists.
+/// An unparseable name (a stray file dropped into the backups directory) sorts as `(0, 0)`,
+/// the oldest possible key, so it is the first thing rotation trims and never what
+/// `load_backup(None)` returns.
 fn backup_sort_key(path: &Path) -> (u64, u32) {
     path.file_stem()
         .and_then(|stem| stem.to_str())
@@ -366,9 +329,8 @@ mod tests {
             "newest",
         )
         .unwrap();
-        // A backup written when the clock read close to the epoch (a short, unpadded seconds
-        // field). It must never be able to masquerade as the newest despite the leading '9'
-        // sorting it after the leading '1' as a raw string.
+        // A short, unpadded seconds field from a clock near the epoch. Must not masquerade as
+        // newest despite its leading '9' sorting after '1' as a raw string.
         std::fs::write(
             dir.join("backups").join("946684800.000000000.toml"),
             "year-2000",
@@ -424,9 +386,8 @@ mod tests {
             "genuine",
         )
         .unwrap();
-        // An orphaned temp artifact left behind by an interrupted save_backup call. It starts
-        // with '.' and, despite the embedded dots, `Path::extension()` still reports "toml"
-        // for it, so list_backups must not rely on the extension check alone to exclude it.
+        // An orphaned temp artifact: starts with '.', but `Path::extension()` still reports
+        // "toml" for it despite the embedded dots.
         std::fs::write(
             dir.join("backups")
                 .join(".tmp-9999-00000000001756000005.000000000.toml"),
@@ -451,8 +412,7 @@ mod tests {
         )
         .unwrap();
         // A zero-length file at a later timestamp than the genuine backup: never a valid
-        // backup, whatever left it there (an interrupted write, or something outside this
-        // tool entirely).
+        // backup, whatever left it there.
         std::fs::write(dir.join("backups").join("1756000005.000000000.toml"), "").unwrap();
         let backups = store.list_backups().unwrap();
         assert_eq!(backups.len(), 1);
@@ -461,13 +421,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Pins the property that a reused temp filename would silently break: two `save_backup`
-    /// calls made back to back, in the same process, must produce two distinct backups whose
-    /// contents are both intact. This does not reproduce the inode-aliasing mechanism itself,
-    /// which needs an injected `fs::remove_file` failure between the `hard_link` and the temp
-    /// cleanup to trigger; it guards the process-wide counter against being dropped or narrowed
-    /// in a later refactor, which is the failure mode this test can catch without failure-
-    /// injection machinery.
+    /// Two back-to-back `save_backup` calls in the same process must produce two distinct
+    /// backups with intact contents. Guards the process-wide counter against being dropped or
+    /// narrowed in a later refactor; does not reproduce the inode-aliasing hazard itself, which
+    /// needs an injected `fs::remove_file` failure to trigger.
     #[test]
     fn same_process_saves_never_share_a_temp_name() {
         let dir = test_dir("no-temp-name-reuse");

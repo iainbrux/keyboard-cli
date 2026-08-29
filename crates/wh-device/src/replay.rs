@@ -17,9 +17,8 @@ fn hex_digit(b: u8, pos: usize) -> Result<u8, DeviceError> {
 }
 
 fn unhex(s: &str) -> Result<[u8; 64], DeviceError> {
-    // Work on raw bytes rather than `&str` slices: a `&str` index that lands
-    // inside a multi-byte UTF-8 character panics, and this parses untrusted
-    // JSONL from golden fixtures and (later) a browser capture.
+    // Raw bytes, not `&str` slices: a `&str` index landing inside a multi-byte UTF-8
+    // character panics, and this parses untrusted JSONL from fixtures and captures.
     let bytes = s.as_bytes();
     if bytes.len() != 128 {
         return Err(DeviceError::Replay(format!(
@@ -214,9 +213,8 @@ mod tests {
 
     #[test]
     fn unhex_rejects_non_ascii_character_without_panicking() {
-        // "0é0" is 4 bytes (0x30, 0xC3, 0xA9, 0x30); 32 repeats give exactly
-        // 128 bytes so the case under test is the multi-byte char itself,
-        // not a length mismatch.
+        // "0é0" is 4 bytes; 32 repeats give exactly 128 bytes, so the case under test is
+        // the multi-byte char itself, not a length mismatch.
         let s = "0é0".repeat(32);
         assert_eq!(s.len(), 128);
         assert!(unhex(&s).is_err());

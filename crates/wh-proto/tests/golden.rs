@@ -1,74 +1,42 @@
 //! Golden-fixture verification harness.
 //!
-//! Decodes every capture in `captures/` at the workspace root and classifies
-//! each frame rather than asserting uniformly over it. The device speaks far
-//! more than `wh-proto` currently models: four profiles, SOCD, dynamic
-//! keystroke, mod tap, a full gamepad mode with a joystick curve, RGB, switch
-//! type selection, calibration. A real capture of the vendor web UI will be
-//! full of command bytes this crate has never heard of, and `parse` accepts
-//! any command byte, it only validates magic, length and checksum. A blanket
-//! "every frame must re-encode byte-identically" assertion would therefore
-//! fail on the first real capture for reasons that have nothing to do with a
-//! codec bug, and the natural response to that failing test, weakening the
-//! assert, would throw away the only thing it exists to check.
+//! Decodes every capture in `captures/` at the workspace root and classifies each frame rather
+//! than asserting on it uniformly. The device speaks commands `wh-proto` does not model (RGB,
+//! gamepad, calibration, and more), so a blanket "every frame must re-encode byte-identically"
+//! assertion would fail on the first real capture for reasons that have nothing to do with a
+//! codec bug. This harness only fails the test for classes that mean our own code is wrong;
+//! everything else is counted and attributed to the capture file and direction it came from,
+//! forming the inventory for any Phase 2 scoping conversation.
 //!
-//! So this harness sorts every frame into one of a small number of classes
-//! and only fails the test for the classes that mean *our own code is
-//! wrong*. Everything else is counted and attributed to the capture file and
-//! direction it came from: that inventory is the input to any Phase 2
-//! scoping conversation.
+//! A malformed line (bad JSON, a missing "hex" field, a bad hex character, a report that is not
+//! 64 bytes) does not abort the run: it is recorded as a failure with its `file:line`, so one bad
+//! line in one capture file does not hide the rest. The summary is printed and written to
+//! `<CARGO_TARGET_TMPDIR>/golden-summary.txt` (not under `captures/`: the summary is derived and
+//! regenerated every run, and would go stale sitting next to the data it describes) before the
+//! test decides whether to fail.
 //!
-//! A single malformed line (bad JSON, a missing "hex" field, a bad hex
-//! character, a report that is not 64 bytes) does not abort the run either:
-//! it is recorded as a failure with its file:line and the run continues, so
-//! one bad line in one of ten capture files does not hide the other nine.
-//! The summary is printed unconditionally, and written to a file under
-//! `CARGO_TARGET_TMPDIR` (see fix round 2: it used to live under
-//! `captures/`, which is committed data; the summary is derived, regenerated
-//! every run, and can silently go stale sitting next to what it describes,
-//! so it now lives under `target/` instead, still swallow-proof, no longer
-//! confusable with captured data) before the test decides whether to fail.
-//! See fix round 1 of Task 18 (this file used to panic mid-scan, which meant
-//! a real capture that tripped a known deferred minor produced one panic and
-//! zero inventory).
+//! `classify` does not re-encode frames and compare bytes: `frame::frame` and `frame::parse` are
+//! exact structural inverses given the same checksum formula, so that check would be tautological
+//! (confirmed over 2,000,000 synthetic frames with zero mismatches). What every class below
+//! except `FramingBug`/`LenLimitation` actually proves is that our
+//! `0x35 + HEAD + len + cmd + payload.last()` checksum formula reproduces the checksum byte the
+//! device really sent: that is what a successful `frame::parse` confirms.
 //!
-//! On what "round trips" actually means: earlier code here re-encoded every
-//! modelled frame through `frame::frame` and asserted it reproduced the wire
-//! bytes. That check is unreachable (any frame with trailing garbage is
-//! routed to `TrailingBytes` first) and, when reachable, tautological
-//! (`frame::frame` and `frame::parse` are exact structural inverses of each
-//! other given the same header layout and checksum formula, so a clean,
-//! successfully parsed frame reproduces itself by construction; measured at
-//! 2,000,000 synthetic frames with zero mismatches, independently re-derived
-//! in fix round 2). It has been deleted rather than kept for show. What
-//! genuinely gets checked against real firmware, for *every* class below
-//! except `FramingBug`/`LenLimitation`, is that our
-//! `0x35 + HEAD + len + cmd + payload.last()` checksum formula reproduced
-//! the checksum byte the device actually sent: that is what a successful
-//! `frame::parse` proves.
-//!
-//! Feature reports (`sendFeatureReport`/`receiveFeatureReport`, logged by
-//! the shim as `dir` `"out-feature"`/`"in-feature"`) are not required to be
-//! exactly `REPORT_LEN` bytes, in either direction: a length mismatch is
-//! reported, never a hard failure. An INBOUND one gets an extra `WARNING:`
-//! callout, since the WebHID specification allows `receiveFeatureReport()`
-//! to prefix the report ID as byte 0 "if the device uses report IDs" (unlike
-//! `inputreport`'s data, which never does), so this may be exactly that and
-//! is worth a human's attention. Everything else (`"in"`/`"out"`) is our own
-//! fixed HID report framing and must be exactly 64 bytes, or it is a hard
+//! Feature reports (`sendFeatureReport`/`receiveFeatureReport`, logged as `"out-feature"`/
+//! `"in-feature"`) are not required to be exactly `REPORT_LEN` bytes in either direction: a length
+//! mismatch is reported, never a hard failure. An inbound one also gets a `WARNING:` callout,
+//! since the WebHID spec allows `receiveFeatureReport()` to prefix the report ID as byte 0 "if
+//! the device uses report IDs" (unlike `inputreport`'s data, which never does). Everything else
+//! (`"in"`/`"out"`) is our fixed HID report framing and must be exactly 64 bytes or it is a hard
 //! failure.
 //!
 //! # Captures are not committed
 //!
-//! `captures/` holds the operator's own device traffic and stays on their
-//! machine; see `capture/README.md`. This test still exercises the full
-//! classifier on every CI run through the synthetic fixtures in
-//! `classifier_tests` below, in particular
-//! `a_synthetic_capture_file_sorts_into_the_expected_buckets_with_attribution`,
-//! which drives the same file/JSON/hex path a real `captures/*.jsonl` file
-//! does. A missing `captures/` directory is therefore the normal state, not
-//! a coverage gap, and this test skips cleanly, with a printed reason, when
-//! it is absent.
+//! `captures/` holds the operator's own device traffic and stays on their machine; see
+//! `capture/README.md`. CI still exercises the full classifier through the synthetic fixtures in
+//! `classifier_tests` below, which drive the same file/JSON/hex path a real `captures/*.jsonl`
+//! file does. A missing `captures/` directory is the normal state, not a coverage gap: this test
+//! skips cleanly, with a printed reason, when it is absent.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -77,10 +45,8 @@ use std::path::{Path, PathBuf};
 
 use wh_proto::frame::{self, FrameError, REPORT_LEN};
 
-/// Command bytes `wh-proto` has typed encoders/decoders for. Anything else is
-/// an unmodelled command: real firmware traffic will contain plenty of these,
-/// and the harness's job on first contact with it is to say so as data
-/// rather than fail outright.
+/// Command bytes `wh-proto` has typed encoders/decoders for. Anything else is an unmodelled
+/// command, reported as data rather than failed outright.
 const MODELLED_CMDS: &[u8] = &[
     wh_proto::cmds::cmd::CMD,
     wh_proto::cmds::cmd::SYNC,
@@ -89,46 +55,34 @@ const MODELLED_CMDS: &[u8] = &[
     wh_proto::cmds::cmd::DEFKEY,
 ];
 
-/// The classification of a single captured, exactly-`REPORT_LEN`-byte
-/// report. Feature reports of a different length never reach this: see
-/// `process_line`.
+/// The classification of a single captured, exactly-`REPORT_LEN`-byte report. Feature reports of
+/// a different length never reach this: see `process_line`.
 #[derive(Debug, PartialEq)]
 enum Class {
-    /// Bad magic, bad checksum, or a report shorter than 64 bytes. A codec
-    /// bug or a framing assumption we get wrong: exactly what this harness
+    /// Bad magic, bad checksum, or a report shorter than 64 bytes: a codec bug this harness
     /// exists to catch.
     FramingBug(String),
-    /// The declared length exceeds the 60-byte cap `parse` rejects. Kept
-    /// distinct from `FramingBug` because it is the known Task 2/3 deferred
-    /// minor (multi-report replies for profile/matrix reads "must bypass or
-    /// extend later"), not necessarily a random parse bug, and the two need
-    /// different responses from whoever reads the failure. `parse` checks
-    /// length before checksum, so this frame's checksum was never verified;
-    /// the message below says so rather than asserting a diagnosis it has
-    /// not confirmed.
+    /// The declared length exceeds the 60-byte cap `parse` rejects. Kept distinct from
+    /// `FramingBug` because it is a known limitation (multi-report replies for profile/matrix
+    /// reads), not necessarily a random parse bug. `parse` checks length before checksum, so this
+    /// frame's checksum was never verified.
     LenLimitation(u8),
-    /// Command byte 0xFF: the device itself reported a failure. Valid magic,
-    /// length and checksum, so not a codec bug: legitimate protocol
-    /// behaviour, counted rather than failed.
+    /// Command byte 0xFF: the device itself reported a failure. Valid magic, length and checksum,
+    /// so not a codec bug: legitimate protocol behaviour, counted rather than failed.
     DeviceFail(u8),
-    /// Parsed cleanly, but bytes past the declared payload length are
-    /// non-zero. Tests our zero-padding assumption against real firmware,
-    /// which nothing had checked before this harness existed. Reported, not
-    /// failed.
+    /// Parsed cleanly, but bytes past the declared payload length are non-zero. Tests our
+    /// zero-padding assumption against real firmware. Reported, not failed.
     TrailingBytes { cmd: u8, extra_nonzero: usize },
-    /// Parsed cleanly, clean trailing padding, but the command byte is not
-    /// one `wh-proto` models. Reported, not failed: this is the inventory of
-    /// what to scope for Phase 2.
+    /// Parsed cleanly, clean trailing padding, but the command byte is not one `wh-proto` models.
+    /// Reported, not failed: this is the inventory of what to scope for Phase 2.
     Unmodelled { cmd: u8 },
-    /// Parsed cleanly, clean trailing padding, command is one of the five
-    /// `wh-proto` models. See the module doc comment for what this class
-    /// does and does not prove.
+    /// Parsed cleanly, clean trailing padding, command is one of the five `wh-proto` models. See
+    /// the module doc comment for what this class does and does not prove.
     Modelled { cmd: u8 },
 }
 
-/// Sort one already-decoded 64-byte report into a `Class`. Pure: never
-/// panics, so callers can decide how each class is handled, and tests can
-/// assert on it directly.
+/// Sort one already-decoded 64-byte report into a `Class`. Pure: never panics, so callers decide
+/// how each class is handled and tests can assert on it directly.
 fn classify(report: &[u8]) -> Class {
     match frame::parse(report) {
         Ok(reply) => {
@@ -141,12 +95,9 @@ fn classify(report: &[u8]) -> Class {
                     extra_nonzero,
                 };
             }
-            // The device sets the high bit (`wh_proto::frame::REPLY_BIT`) on
-            // every reply's command byte, so a reply to a modelled request
-            // classifies against the request's own cmd, `reply.cmd & 0x7F`,
-            // not the raw wire byte. The raw byte is still what gets counted
-            // and printed below, so a reader can see exactly what was on the
-            // wire.
+            // The device sets the high bit (`REPLY_BIT`) on every reply's command byte, so
+            // classification masks it off. The raw wire byte is still what gets counted and
+            // printed below.
             if !MODELLED_CMDS.contains(&(reply.cmd & !frame::REPLY_BIT)) {
                 return Class::Unmodelled { cmd: reply.cmd };
             }
@@ -167,19 +118,14 @@ fn hex_digit(b: u8) -> Result<u8, String> {
     }
 }
 
-/// Byte-indexed, not `&str`-indexed: a `&str` slice index that lands inside
-/// a multi-byte UTF-8 character panics, and this decodes untrusted JSONL
-/// pasted from a browser DevTools console. `wh-device::replay::unhex` has
-/// the identical fix for the identical reason on the identical input class;
-/// `wh-proto` cannot depend on `wh-device` (wrong direction in the
-/// workspace), so it is duplicated here rather than shared.
+/// Byte-indexed, not `&str`-indexed: a `&str` slice index that lands inside a multi-byte UTF-8
+/// character panics, and this decodes untrusted JSONL pasted from a browser DevTools console.
+/// `wh-device::replay::unhex` has the identical fix for the identical reason; `wh-proto` cannot
+/// depend on `wh-device`, so it is duplicated here rather than shared.
 ///
-/// Unlike round 1's `decode_hex_report`, this does not require exactly
-/// `REPORT_LEN` bytes: a feature report is not obligated to be one, and
-/// `process_line` needs to see its actual length to classify it correctly
-/// rather than lumping it in with a genuinely malformed paste. Length
-/// validation for the two `"in"`/`"out"` (non-feature) directions still
-/// happens, just one level up, in `process_line`.
+/// Does not require exactly `REPORT_LEN` bytes: a feature report has no such obligation, and
+/// `process_line` needs the actual length to classify it correctly. Length validation for the
+/// `"in"`/`"out"` directions happens one level up, in `process_line`.
 fn decode_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     let bytes = s.as_bytes();
     if !bytes.len().is_multiple_of(2) {
@@ -197,11 +143,9 @@ fn decode_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Which capture file and which logged direction a frame came from. The
-/// whole capture method is one single-variable change per file (see
-/// `capture/README.md`), so a command byte or a trailing-garbage frame is
-/// only informative when it can be traced back to the scenario and
-/// direction that produced it.
+/// Which capture file and logged direction a frame came from. The capture method is one
+/// single-variable change per file (see `capture/README.md`), so a frame is only informative when
+/// traced back to the scenario and direction that produced it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Origin {
     /// The capture file's name, e.g. `"profile-switch.jsonl"`.
@@ -228,23 +172,16 @@ struct Summary {
     /// length is not `REPORT_LEN`. Not a failure: feature reports have no
     /// obligation to match our fixed HID report size.
     feature_length_mismatch: BTreeMap<(Origin, usize), usize>,
-    /// report_id -> count, across every line that carried one. Exists to
-    /// confirm or refute the "report_id is always 0" assumption `hid.rs`
-    /// makes.
+    /// report_id -> count, across every line that carried one. Confirms or refutes the
+    /// "report_id is always 0" assumption `hid.rs` makes.
     report_ids: BTreeMap<u8, usize>,
-    /// scenario file name -> (saw at least one inbound line, saw at least
-    /// one outbound line). A scenario with no inbound lines at all is the
-    /// signature of the shim being installed after the page already opened
-    /// the device: `open()` is never called again, so the `inputreport`
-    /// listener never attaches, and every write goes out with no reply ever
-    /// logged. Reported as a warning, not a hard failure: a handful of
-    /// legitimate reasons could produce it too, and the operator needs to
-    /// decide whether to re-capture.
+    /// scenario file name -> (saw an inbound line, saw an outbound line). No inbound lines at all
+    /// is the signature of the shim being installed after the page already opened the device: the
+    /// `inputreport` listener never attaches, so every write goes out with no reply ever logged.
+    /// Reported as a warning, not a hard failure.
     scenario_directions: BTreeMap<String, (bool, bool)>,
-    /// file:line-prefixed hard-failure messages: bad JSON, a malformed hex
-    /// string, a non-feature report that is not 64 bytes, a codec bug, or a
-    /// length our framing rejects. A non-empty list fails the test, but only
-    /// after the summary has already been printed and written.
+    /// file:line-prefixed hard-failure messages. A non-empty list fails the test, but only after
+    /// the summary has already been printed and written.
     failures: Vec<String>,
 }
 
@@ -290,13 +227,9 @@ fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summar
 
     if bytes.len() != REPORT_LEN {
         if dir.ends_with("-feature") {
-            // A feature report (either direction) is not required to be
-            // REPORT_LEN bytes: report it, do not fail. Still worth a
-            // human's attention on the INBOUND side specifically, since the
-            // WebHID spec allows receiveFeatureReport() to prefix the
-            // report ID as byte 0 "if the device uses report IDs", so this
-            // may be exactly that: flagged in the WARNING: block by
-            // render_summary, not failed.
+            // A feature report (either direction) need not be REPORT_LEN bytes: report it, don't
+            // fail. Inbound specifically gets a WARNING in render_summary, since WebHID allows
+            // receiveFeatureReport() to prefix a report ID as byte 0, so this may be exactly that.
             summary.checked += 1;
             if let Some(id) = v["report_id"].as_u64() {
                 *summary.report_ids.entry(id as u8).or_insert(0) += 1;
@@ -329,9 +262,8 @@ fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summar
         Class::LenLimitation(len) => summary.failures.push(format!(
             "{ctx}: framing limitation: declared length {len} exceeds the 60-byte cap parse() \
              rejects. parse() checks length before checksum, so this frame's checksum was not \
-             verified. This may be the known Task 2/3 deferred minor (a multi-report profile or \
-             matrix read), or it may be an unrelated corrupt capture; either way it needs a \
-             human look, not a guess."
+             verified. This may be a multi-report profile or matrix read, or an \
+             unrelated corrupt capture; either way it needs a human look, not a guess."
         )),
         Class::DeviceFail(code) => {
             *summary.device_fail.entry((origin, code)).or_insert(0) += 1;
@@ -346,12 +278,10 @@ fn process_line(scenario: &str, line_no: usize, line: &str, summary: &mut Summar
     }
 }
 
-/// Scan `dir` for `*.jsonl` capture files and classify every report on every
-/// line. Never panics: every problem, from a malformed line to a codec bug,
-/// is collected into `Summary::failures` with its `file:line` so the caller
-/// can print and persist the whole picture before deciding whether to fail.
-/// Returns `None` only when `dir` itself does not exist, the pre-hardware CI
-/// case.
+/// Scan `dir` for `*.jsonl` capture files and classify every report on every line. Never panics:
+/// every problem is collected into `Summary::failures` with its `file:line` so the caller can
+/// print and persist the whole picture before deciding whether to fail. Returns `None` only when
+/// `dir` itself does not exist (pre-hardware CI).
 fn scan_dir(dir: &Path) -> Option<Summary> {
     let entries = fs::read_dir(dir).ok()?;
     let mut summary = Summary::default();
@@ -382,12 +312,8 @@ fn scan_dir(dir: &Path) -> Option<Summary> {
     Some(summary)
 }
 
-/// Sums a `(Origin, K) -> usize` map down to a plain `K -> usize` aggregate,
-/// so the summary can show a total per command byte or failure code first,
-/// with the per-scenario/direction attribution underneath it, rather than
-/// replacing one with the other. With ten capture files, one command byte
-/// appearing in several of them would otherwise print with no total
-/// anywhere.
+/// Sums a `(Origin, K) -> usize` map into a plain `K -> usize` total, so the summary can show a
+/// total per command byte or failure code, with the per-scenario/direction attribution underneath.
 fn aggregate<K: Ord + Copy>(map: &BTreeMap<(Origin, K), usize>) -> BTreeMap<K, usize> {
     let mut out = BTreeMap::new();
     for ((_, k), count) in map {
@@ -537,12 +463,10 @@ fn render_summary(summary: &Summary) -> String {
     out
 }
 
-/// Print the summary to stderr (visible with `cargo test -- --nocapture`,
-/// still swallowed by a bare `cargo test`, see `capture/README.md`) and, so
-/// it survives either way, write it to `<out_dir>/golden-summary.txt`.
-/// `out_dir` is `CARGO_TARGET_TMPDIR` in the real test, not `captures/`
-/// itself: see the module doc comment for why (derived data, not captured
-/// data).
+/// Print the summary to stderr (visible with `cargo test -- --nocapture`, swallowed by a bare
+/// `cargo test`) and write it to `<out_dir>/golden-summary.txt` so it survives either way.
+/// `out_dir` is `CARGO_TARGET_TMPDIR` in the real test, not `captures/` itself: see the module
+/// doc comment for why.
 fn report_summary(summary: &Summary, out_dir: &Path) {
     let text = render_summary(summary);
     eprint!("{text}");
@@ -565,11 +489,9 @@ fn assert_no_hard_failures(summary: &Summary) {
     );
 }
 
-/// Every captured report must parse (magic/len/crc). Everything else,
-/// unmodelled commands, trailing padding garbage, device failure replies, is
-/// counted and attributed rather than failed. See the module doc comment
-/// for the full design and for why the summary is printed and persisted
-/// before the test is allowed to fail.
+/// Every captured report must parse (magic/len/crc). Everything else, unmodelled commands,
+/// trailing padding garbage, device failure replies, is counted and attributed rather than
+/// failed. See the module doc comment for the full design.
 #[test]
 fn all_captures_decode_and_classify() {
     let captures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");
@@ -611,8 +533,8 @@ mod classifier_tests {
 
     #[test]
     fn modelled_command_is_classified_as_modelled() {
-        // cmd::DB is one of the five commands wh-proto has typed support
-        // for; a clean frame for it must classify as Modelled.
+        // cmd::DB is one of the five commands wh-proto has typed support for; a clean frame
+        // for it must classify as Modelled.
         let f = frame::frame(wh_proto::cmds::cmd::DB, &[0x00, 0x01, 0x02]).unwrap();
         assert_eq!(
             classify(&f),
@@ -622,11 +544,9 @@ mod classifier_tests {
         );
     }
 
-    /// A real device reply carries the high bit on its command byte (e.g.
-    /// `0xA9`, the reply to `cmd::DB` = `0x29`): this must still classify as
-    /// `Modelled`, and the raw wire byte (with the high bit) must be the one
-    /// kept in the class, not the masked request-side byte, so a reader can
-    /// see exactly what was on the wire.
+    /// A real device reply carries the high bit on its command byte (e.g. `0xA9` for `cmd::DB` =
+    /// `0x29`): must still classify as `Modelled`, keeping the raw wire byte (with the high bit),
+    /// not the masked request-side byte.
     #[test]
     fn a_reply_with_the_high_bit_set_on_a_modelled_command_is_classified_as_modelled() {
         let reply_cmd = wh_proto::cmds::cmd::DB | frame::REPLY_BIT;
@@ -636,8 +556,7 @@ mod classifier_tests {
 
     #[test]
     fn unmodelled_command_is_reported_not_failed() {
-        // 0x40 is not in MODELLED_CMDS: stands in for e.g. an RGB or gamepad
-        // command the vendor UI can send that wh-proto has never heard of.
+        // 0x40 is not in MODELLED_CMDS: stands in for an unmodelled command like RGB or gamepad.
         let cmd = 0x40u8;
         assert!(!MODELLED_CMDS.contains(&cmd));
         let f = frame::frame(cmd, &[0xAA, 0xBB]).unwrap();
@@ -646,9 +565,9 @@ mod classifier_tests {
 
     #[test]
     fn trailing_nonzero_bytes_are_reported_not_failed() {
-        // A clean 3-byte DB payload, but with a stray non-zero byte in the
-        // padding region past the declared length. checksum() only ever
-        // covers the declared payload, so this does not disturb it.
+        // A clean 3-byte DB payload with a stray non-zero byte in the padding region past the
+        // declared length. checksum() only covers the declared payload, so this does not
+        // disturb it.
         let cmd = wh_proto::cmds::cmd::DB;
         let f = nonzero_pad_frame(cmd, &[0x00, 0x01, 0x02], 40, 0x7F);
         assert_eq!(
@@ -691,9 +610,8 @@ mod classifier_tests {
 
     #[test]
     fn declared_length_over_60_is_a_len_limitation_not_a_generic_bug() {
-        // Hand-built rather than via frame::frame, which itself refuses to
-        // build an oversize payload: we need to model what a real device
-        // reply with a too-large declared length would look like on the wire.
+        // Hand-built rather than via frame::frame, which refuses to build an oversize payload:
+        // models what a real device reply with too-large declared length looks like on the wire.
         let mut f = [0u8; REPORT_LEN];
         f[0] = frame::HEAD;
         f[1] = 61; // REPORT_LEN - 4 is 60, so 61 trips the cap.
@@ -707,10 +625,9 @@ mod classifier_tests {
         assert_eq!(classify(&f), Class::DeviceFail(0x03));
     }
 
-    /// Drives the classifier through the same file-reading, JSON-parsing and
-    /// hex-decoding path a real `captures/*.jsonl` file goes through, and
-    /// checks that every count is attributed back to the scenario file and
-    /// the logged direction, not just aggregated globally.
+    /// Drives the classifier through the same file-reading, JSON-parsing, and hex-decoding path a
+    /// real `captures/*.jsonl` file goes through, and checks that every count is attributed to
+    /// the scenario file and direction, not just aggregated globally.
     #[test]
     fn a_synthetic_capture_file_sorts_into_the_expected_buckets_with_attribution() {
         let dir = unique_temp_dir("attribution");
@@ -783,9 +700,8 @@ mod classifier_tests {
         assert_eq!(summary.report_ids.get(&0), Some(&3));
         assert_eq!(summary.report_ids.get(&5), Some(&1));
 
-        // profile-switch.jsonl had inbound lines (round_trip, trailing,
-        // device_fail), so it must not appear in the "no inbound frames"
-        // warning list.
+        // profile-switch.jsonl had inbound lines, so it must not appear in the "no inbound
+        // frames" warning list.
         assert_eq!(
             summary.scenario_directions.get("profile-switch.jsonl"),
             Some(&(true, true))
@@ -817,13 +733,10 @@ mod classifier_tests {
         assert!(summary.failures[1].contains("noisy.jsonl:2"));
     }
 
-    /// Proves the two remaining "wrong shape" hard-failure classes actually
-    /// fail the test end to end, through `scan_dir` and
-    /// `assert_no_hard_failures`, the same path
-    /// `all_captures_decode_and_classify` uses; not just that `classify`
-    /// returns the right enum variant in isolation. A prior round of this
-    /// harness proved that out of band with a temporary test and then
-    /// deleted it; a deleted test is not coverage, so these stay.
+    /// Proves the two remaining "wrong shape" hard-failure classes actually fail the test end to
+    /// end, through `scan_dir` and `assert_no_hard_failures`, the same path
+    /// `all_captures_decode_and_classify` uses, not just that `classify` returns the right enum
+    /// variant in isolation.
     #[test]
     #[should_panic(expected = "hard failure")]
     fn a_bad_checksum_frame_fails_the_whole_run() {
@@ -850,11 +763,9 @@ mod classifier_tests {
         assert_no_hard_failures(&summary);
     }
 
-    /// Important 2, fix round 2: an OUTBOUND feature report is not required
-    /// to be REPORT_LEN bytes, and carries no device-originated data (the
-    /// operator/page controls what is sent), so a length mismatch on one
-    /// must be reported, not treated as a hard failure the way it would be
-    /// for a plain "in"/"out" line.
+    /// An outbound feature report is not required to be REPORT_LEN bytes and carries no
+    /// device-originated data, so a length mismatch on one must be reported, not treated as a
+    /// hard failure.
     #[test]
     fn an_outbound_feature_report_of_unexpected_length_is_reported_not_failed() {
         let dir = unique_temp_dir("feature-length-out");
@@ -881,11 +792,9 @@ mod classifier_tests {
         assert!(saw_65);
     }
 
-    /// An inbound feature report of unexpected length is not a hard
-    /// failure, but it is not routine either: it may be exactly the WebHID
-    /// report-ID-prefix behaviour the spec allows, so it must be called out
-    /// in the `WARNING:` block, not described as benign, even though it
-    /// does not fail the test.
+    /// An inbound feature report of unexpected length is not a hard failure, but it may be
+    /// exactly the WebHID report-ID-prefix behaviour the spec allows, so it must be called out
+    /// in the `WARNING:` block, not described as benign.
     #[test]
     fn an_inbound_feature_report_of_the_wrong_length_is_reported_with_a_warning_not_failed() {
         let dir = unique_temp_dir("feature-length-in");
@@ -927,9 +836,7 @@ mod classifier_tests {
         assert_no_hard_failures(&summary);
     }
 
-    /// Important 3, fix round 2: the visibility fix itself (both Criticals'
-    /// remedy) had no coverage; this closes it. `render_summary` on a
-    /// hand-built `Summary` must mention every field that was populated.
+    /// `render_summary` on a hand-built `Summary` must mention every field that was populated.
     #[test]
     fn render_summary_includes_every_populated_field() {
         let mut summary = Summary {

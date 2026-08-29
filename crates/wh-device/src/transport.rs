@@ -16,22 +16,17 @@ pub enum DeviceError {
     Io(String),
     #[error("could not decode reply: {0}")]
     Decode(String),
-    /// The board's own profile-read reply parsed fine as a profile reply, but named a profile
-    /// index the board's four measured profiles could never produce (`wh_proto::cmds::
-    /// DecodeError::ProfileOutOfRange`, from `ops::profile`). Kept distinct from `Decode` above,
-    /// which covers a reply that does not look like a profile reply at all: callers that want to
-    /// treat "a genuinely garbled reply" and "a validly-shaped reply naming an impossible
-    /// profile" differently, degrading only for the latter, need this distinction to survive past
-    /// `ops::profile`'s own return type.
+    /// A profile-read reply parsed fine but named an index the board's four profiles can
+    /// never produce (`wh_proto::cmds::DecodeError::ProfileOutOfRange`, from `ops::profile`).
+    /// Kept distinct from `Decode`, which covers a reply that isn't shaped like a profile
+    /// reply at all.
     #[error(
         "board reported profile index {0}, but the board only has 4 profiles (wire index 0..=3)"
     )]
     ProfileOutOfRange(u8),
-    // `source` is deliberately not interpolated into the message below: thiserror already
-    // wires a field named exactly `source` into `std::error::Error::source()`, and `main.rs`
-    // prints the full chain via anyhow's `{e:#}`, which walks that same `source()` chain. This
-    // message is only the leaf's own text; the cause text is appended once, by that walk, not
-    // twice by also spelling it out here.
+    // `source` isn't interpolated into the message: thiserror wires it into
+    // `Error::source()`, and `main.rs`'s anyhow `{e:#}` already walks that chain, so the
+    // cause text would otherwise print twice.
     #[error(
         "batch failed at frame {index} of {total}; {applied} frame(s) already reached the device"
     )]
@@ -48,9 +43,8 @@ pub trait Transport {
     fn recv(&mut self, timeout: Duration) -> Result<[u8; 64], DeviceError>;
 }
 
-/// Lets a `Box<dyn Transport>` stand in for `T: Transport`, so callers that need to pick
-/// between concrete transports at runtime (the real device vs a replay script) can hand
-/// `Session<Box<dyn Transport>>` a single trait object instead of monomorphizing over both.
+/// Lets `Session<Box<dyn Transport>>` pick between the real device and a replay script at
+/// runtime instead of monomorphizing over both.
 impl Transport for Box<dyn Transport> {
     fn send(&mut self, report: &[u8; 64]) -> Result<(), DeviceError> {
         (**self).send(report)

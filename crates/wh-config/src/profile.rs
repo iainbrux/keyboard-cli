@@ -1,23 +1,14 @@
 //! Serde bridge for `wh_proto::cmds::ProfileNumber`.
 //!
-//! The type itself lives in `wh-proto` (task 20 step 4c), since a profile index is a protocol
-//! value and `parse_profile` is the seam where the wire byte becomes one; `wh-device` depends on
-//! `wh-proto` but not on `wh-config`, so the type has to live somewhere both `wh-device` and
-//! `wh-config` can reach, and `wh-proto` is the only crate that qualifies.
+//! `ProfileNumber` lives in `wh-proto` since both `wh-device` and `wh-config` need to reach it,
+//! but `wh-proto` carries no serde dependency, and the orphan rule blocks a direct
+//! `Serialize`/`Deserialize` impl here on a foreign type. `#[serde(with = "...")]` sidesteps
+//! both: these two functions are the whole serde contract for `Option<ProfileNumber>`, going
+//! through `ProfileNumber`'s own public constructors and accessors only.
 //!
-//! `wh-proto` deliberately carries no serde dependency: it is the pure protocol crate, and gaining
-//! one just to serialize a single field would be a real cost for every consumer, not a free
-//! convenience. The orphan rule also blocks a direct `impl Serialize`/`Deserialize` here, since
-//! neither the trait nor the type is local to this crate. `#[serde(with = "...")]` sidesteps both
-//! problems: these two free functions are the serde contract for `Option<ProfileNumber>`, calling
-//! only `ProfileNumber`'s own public constructors and accessors, never a trait impl on a foreign
-//! type.
-//!
-//! `Snapshot::profile` stores this one-based (`1..=4`), the number a human reads and types, not
-//! the wire's own zero-based index; see `ProfileNumber`'s own doc comment for why the two
-//! conventions are kept distinct at all. A hand-edited or corrupted snapshot claiming `profile = 0`
-//! or `profile = 200` is rejected at load time, the same invariant `from_wire_index` enforces on a
-//! live device reply.
+//! `Snapshot::profile` stores this one-based (`1..=4`), not the wire's zero-based index. A
+//! hand-edited snapshot claiming `profile = 0` or `profile = 200` is rejected at load time, the
+//! same invariant `from_wire_index` enforces on a live device reply.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wh_proto::cmds::ProfileNumber;

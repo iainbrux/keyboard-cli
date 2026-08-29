@@ -21,25 +21,19 @@ pub enum DecodeError {
     Short(usize),
     #[error("unexpected reply shape")]
     Shape,
-    /// A SYNC-specific decode failure (`parse_sync` only, review round 2 finding 5), naming both
-    /// the command and the specific field that failed rather than collapsing every cause into
-    /// the same opaque `Shape` message. Deliberately scoped to `parse_sync`'s identity fields:
-    /// every other `DecodeError::Shape` call site in this module is unchanged.
+    /// A SYNC-specific decode failure, naming the field that failed instead of the opaque
+    /// `Shape` message. Only `parse_sync` uses this; every other decoder still uses `Shape`.
     #[error("SYNC reply: {0}")]
     Identity(&'static str),
-    /// The wire's own zero-based profile index (`ProfileNumber::from_wire_index`) is past the
-    /// board's four measured profiles. Kept distinct from `Shape`, which means the reply itself
-    /// does not look like a profile reply at all: this means the reply parsed fine as a profile
-    /// reply, but the index inside it is one the board could never actually report, e.g. a
-    /// misbehaving device echoing its own request byte `0xFF` back. Callers that want to treat
-    /// "the reply was garbled" and "the reply named an impossible profile" differently (see
-    /// `wh_device::ops::profile`) rely on this variant staying separate from `Short` and `Shape`.
+    /// A wire profile index (`ProfileNumber::from_wire_index`) past the board's four measured
+    /// profiles, e.g. a misbehaving device echoing its own request byte `0xFF` back. Kept
+    /// distinct from `Shape`: the reply parsed fine as a profile reply, only the index inside
+    /// it is one the board could never actually report.
     #[error("profile index {0} is out of range: the board has 4 profiles (wire index 0..=3)")]
     ProfileOutOfRange(u8),
-    /// A one-based profile number (`ProfileNumber::from_one_based`) outside `1..=4`. Distinct
-    /// from `ProfileOutOfRange` above because the two constructors are validating different
-    /// conventions (a live wire index versus a stored one-based number), and the error should
-    /// name which one, not report a wire index that was never on the wire.
+    /// A one-based profile number (`ProfileNumber::from_one_based`) outside `1..=4`. Kept
+    /// separate from `ProfileOutOfRange`: the two constructors validate different conventions
+    /// (a live wire index versus a stored one-based number), and the error should name which.
     #[error("profile {0} is out of range: the board has 4 profiles, numbered 1..=4")]
     ProfileNumberOutOfRange(u8),
 }
@@ -130,14 +124,10 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
     })
 }
 
-/// Layout_Mode value: touch mode in the high nibble of the low byte,
-/// advanced-key mode in the low nibble (recdata.getLayoutModelRecdata).
-///
-/// The nibble values were measured against the real device across 1224 captured frames
-/// (task 19b): 0 = follow global, 1 = per-key actuation point, 3 = per-key rapid trigger with
-/// continuous off, 4 = the same with continuous on. Nibble 2 never appeared on the wire in any
-/// capture; it is left folded into `Unknown` rather than given its own variant, since nothing
-/// observed writes it and there is nothing to name it after.
+/// Layout_Mode: touch mode in the high nibble of the low byte, advanced-key mode in the low
+/// nibble (recdata.getLayoutModelRecdata). Nibble values measured across 1224 captured frames:
+/// 0 = follow global, 1 = per-key actuation, 3 = rapid trigger, 4 = rapid trigger continuous.
+/// Nibble 2 never appeared on the wire, so it stays folded into `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchMode {
     Global,       // 0x0
@@ -151,13 +141,10 @@ pub enum TouchMode {
 pub struct Mode {
     pub touch: TouchMode,
     pub advanced: u8,
-    /// The high byte (bits 8..16) of the raw 16-bit Layout_Mode value, preserved verbatim.
-    /// Nothing in this protocol interprets these bits, `touch`/`advanced` only ever read the
-    /// low byte, but `from_value`/`value` are relied on elsewhere (the CLI's `dump`/`restore`
-    /// round trip) to be a lossless identity on a value nobody has modified, and silently
-    /// clearing this byte on every pass through `Mode` would make that untrue. Set to 0 when
-    /// building a `Mode` from scratch, i.e. one with no prior device value to preserve; carry
-    /// it forward from `Mode::from_value(cur).high` on any read-modify-write.
+    /// The high byte (bits 8..16) of the raw Layout_Mode value, preserved verbatim: `touch` and
+    /// `advanced` only ever read the low byte, but `wh-cli`'s `dump`/`restore` round trip relies
+    /// on `from_value`/`value` being a lossless identity. Set to 0 for a fresh `Mode`; carry it
+    /// forward from `Mode::from_value(cur).high` on any read-modify-write.
     pub high: u8,
 }
 
@@ -193,10 +180,10 @@ impl Mode {
 
 pub mod order {
     pub const PROTOCOL_VERSION: u8 = 0x01;
-    // ORDER_TYPE_SAVING_PARAMETER. Kept as protocol vocabulary, but never sent by `wh-device`:
-    // across 1224 captured frames covering ten scenarios and five complete write sequences
-    // (task 19b), the vendor web configurator never sends this order. Do not wire it back into
-    // a write path without first measuring what it actually does on this firmware.
+    // ORDER_TYPE_SAVING_PARAMETER. Kept as protocol vocabulary but never sent: the vendor
+    // configurator never sends this order across 1224 captured frames covering ten scenarios
+    // and five complete write sequences. Do not wire it into a write path without measuring
+    // what it actually does on this firmware.
     pub const SAVE: u8 = 0x02;
     pub const FACTORY_RESET: u8 = 0x11; // not exposed in CLI; documented only
     pub const PRECISION: u8 = 0x25;
@@ -236,46 +223,22 @@ pub fn parse_precision(payload: &[u8]) -> Result<Precision, DecodeError> {
     })
 }
 
-/// The board's own bound: the K-001 has four profiles, wire index `0..=3` (task 19b group B,
-/// measured).
+/// The board's own bound: the K-001 has four profiles, wire index `0..=3`, measured.
 const MAX_WIRE_INDEX: u8 = 3;
 
-/// A validated profile index. Wire-index-native: internally this holds the same zero-based index
-/// the board itself uses (`0..=3` for the four measured profiles), because `parse_profile` below
-/// is the seam where a wire byte becomes a program value, and it already rejects a reply to the
-/// wrong sub-order three lines away; rejecting a wire index the board could never actually report
-/// is the same class of check.
+/// A validated profile index, stored wire-native as the board's own zero-based index.
 ///
-/// Two constructors exist, for two different conventions, and they are not interchangeable
-/// despite both taking a bare `u8`:
-///
-/// - [`from_wire_index`](Self::from_wire_index) takes the wire's own zero-based index, exactly
-///   what a live `parse_profile` reply carries. This is the only constructor `parse_profile`
-///   itself calls, so a value read straight off the wire is validated in the one place it becomes
-///   a `ProfileNumber`, before a caller ever sees a bare index.
-/// - [`from_one_based`](Self::from_one_based) takes a plain one-based number (`1..=4`), for a
-///   caller that already has one in hand: a snapshot's TOML field (stored one-based, since that
-///   is the number a human reads and types), or a test building "profile 2" directly. It exists
-///   so those callers never have to fake a wire index by subtracting 1 by hand, which underflows
-///   on the boundary value 0.
-///
-/// **What this type does not protect against.** Both constructors take a bare `u8`, so nothing
-/// stops a caller who already holds a `ProfileNumber` from pulling the wire index back out via
-/// [`wire_index`](Self::wire_index) and feeding it to `from_one_based`, or vice versa, and getting
-/// a different profile out the other side silently. What this type does close is the specific,
-/// measured case where that mistake used to matter most: a live wire read (`ops::profile`, in
-/// `wh-device`) now returns an already-validated `ProfileNumber` directly, so a call site that
-/// consumes a live read never has a bare wire-index `u8` in hand to pass to the wrong constructor
-/// in the first place. A caller that goes out of its way to unwrap one convention and rebuild the
-/// other is still possible; a caller that just reads the board's profile and uses it is not
-/// exposed to the mistake at all.
+/// Two constructors for two conventions that are not interchangeable. `from_wire_index` takes
+/// the zero-based wire index and is the only one `parse_profile` calls. `from_one_based` takes
+/// a plain `1..=4` number, so a caller holding one (a TOML snapshot field, a test) never has to
+/// subtract 1 by hand, which underflows on 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProfileNumber(u8);
 
 impl ProfileNumber {
-    /// Converts the wire's own zero-based index. Rejects anything past the board's four measured
-    /// profiles instead of accepting it: a device reporting an index like `0xFE` or `0xFF` is not
-    /// one whose profile provenance should be trusted at all.
+    /// Converts the wire's own zero-based index, rejecting anything past the board's four
+    /// measured profiles: a device reporting `0xFE` or `0xFF` is not one to trust the profile
+    /// of.
     pub fn from_wire_index(idx: u8) -> Result<Self, DecodeError> {
         if idx > MAX_WIRE_INDEX {
             return Err(DecodeError::ProfileOutOfRange(idx));
@@ -283,9 +246,8 @@ impl ProfileNumber {
         Ok(Self(idx))
     }
 
-    /// Converts a plain one-based number (`1..=4`) directly, rejecting `0` and anything past the
-    /// board's four measured profiles. See the type's own doc comment for why this exists
-    /// alongside `from_wire_index` rather than making every caller do `from_wire_index(n - 1)`.
+    /// Converts a plain one-based number (`1..=4`), rejecting `0` and anything past the board's
+    /// four measured profiles. See the type doc for why this exists alongside `from_wire_index`.
     pub fn from_one_based(n: u8) -> Result<Self, DecodeError> {
         if n == 0 || n > MAX_WIRE_INDEX + 1 {
             return Err(DecodeError::ProfileNumberOutOfRange(n));
@@ -313,20 +275,17 @@ impl std::fmt::Display for ProfileNumber {
 }
 
 /// Read the board's active profile: cmd 0x00, sub-order `order::PROFILE` (0x70), arg 0xFF.
-/// `cmd_order` already lays out `[order_id, ...h_args, 0xFF, 0xFF]`, so passing `0xFF` as the
-/// single `h_args` byte produces exactly the measured `[0x70, 0xFF, 0xFF, 0xFF]` payload (task
-/// 19b group B).
+/// `cmd_order` lays out `[order_id, ...h_args, 0xFF, 0xFF]`, so passing `0xFF` produces the
+/// measured `[0x70, 0xFF, 0xFF, 0xFF]` payload.
 pub fn read_profile() -> [u8; REPORT_LEN] {
     cmd_order(order::PROFILE, &[0xFF]).expect("4 bytes")
 }
 
-/// Reply payload `[status, sub-order, index, 0xff]` for the profile read above. Returns the
-/// wire's own zero-based profile index at `payload[2]`, already validated: this is the sole
-/// place a wire byte becomes a `ProfileNumber` (see that type's own doc comment), so a caller
-/// holding a `ProfileNumber` never has to trust an unchecked index again. Rejects a payload too
-/// short to contain the index, rejects a reply whose `payload[1]` is not `order::PROFILE` (a
-/// reply to a different sub-order landing here must not be misread as a plausible but wrong
-/// profile index), and rejects an index the board's four measured profiles could never produce.
+/// Reply payload `[status, sub-order, index, 0xff]`. Returns the wire's own zero-based profile
+/// index at `payload[2]`, validated here, the sole place a wire byte becomes a `ProfileNumber`.
+/// Rejects a short payload, a reply whose `payload[1]` is not `order::PROFILE` (a reply to a
+/// different sub-order must not be misread as a profile index), and an index past the four
+/// measured profiles.
 pub fn parse_profile(payload: &[u8]) -> Result<ProfileNumber, DecodeError> {
     if payload.len() < 3 {
         return Err(DecodeError::Short(payload.len()));
@@ -347,52 +306,29 @@ pub struct DeviceInfo {
     pub firmware: String,
 }
 
-/// recdata.getCmdSyncRecdata: both the serial and the firmware string are length-prefixed on
-/// the wire, not fixed-width. `p[8]` is the serial's declared length, with the string itself
-/// starting at `p[9]`; the firmware's declared length follows immediately after the serial (at
-/// `p[9 + serial_len]`), with that string starting one byte later. Measured against the real
-/// device's 60-byte SYNC reply (task 19b chunk 6, `initial-load.jsonl` frames 1 and 3): the old
-/// code read the firmware from a hardcoded `payload[26..36]`, which took 10 bytes where the wire
-/// actually declares 16, truncating it.
+/// recdata.getCmdSyncRecdata: serial and firmware are length-prefixed on the wire, not fixed
+/// width. `payload[8]` is the serial's declared length, serial starts at `payload[9]`; the
+/// firmware's declared length follows immediately after (at `payload[9 + serial_len]`), with the
+/// firmware string starting one byte later. Measured against the real device's 60-byte SYNC
+/// reply (`captures/initial-load.jsonl`, frames 1 and 3).
 ///
-/// A declared length that runs past the end of `payload` is a `DecodeError::Identity` (the
-/// payload itself may be exactly the right size; it is the declared length that is bogus, so
-/// `Short` - which reports the payload's own length - would misdiagnose it), never a panic or a
-/// silent truncation: this parses whatever the device sends back, including a device in a bad
-/// state.
-///
-/// A cleaned serial or firmware string that comes back empty, or that contains a byte outside
-/// printable ASCII, is also a `DecodeError::Identity`, not a successful empty/garbled identity:
-/// a truncated or corrupted reply must not make `wh backup` succeed with a snapshot that has
-/// silently lost the identity of the board it came from (review round 1, chunk 6), and a
-/// misbehaving device must not be able to smuggle control bytes (e.g. an ANSI escape) into
-/// `wh dump`'s terminal output through `serial`/`firmware` (review round 1, chunk 7's sibling
-/// finding on this same function). Each of these six failure paths (review round 2, finding 5)
-/// carries its own static message naming SYNC and the specific field, rather than collapsing
-/// into the same opaque `DecodeError::Shape` every other decoder in this module still uses for
-/// an unexpected shape; `parse_sync` is singled out because `device_info` is the first roundtrip
-/// of both `snapshot_from_device` and every auto-backup, so an opaque message here makes a
-/// misbehaving device unusable for every command, not just `wh dump`.
+/// A declared length past the end of `payload` is `DecodeError::Identity`, not `Short`: the
+/// payload itself may be the right size, only the declared length is bogus. An empty or
+/// non-printable-ASCII serial/firmware is also `Identity`, never a silent empty or garbled
+/// success: `wh backup` must not lose the board's identity, and `wh dump` must not let a
+/// misbehaving device smuggle control bytes into the terminal through these fields.
 pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     if payload.len() < 9 {
         return Err(DecodeError::Short(payload.len()));
     }
-    // Each caller passes its own two static messages (non-ASCII, empty) in directly, rather
-    // than a field-name string this closure would have to re-dispatch on: review round 3's
-    // minor finding on the previous version of this function, which matched a `field: &'static
-    // str` against the literal `"serial"` with a `_ => firmware...` default arm, silently
-    // mis-attributing any third field (a future one, e.g. the already-identified but
-    // unimplemented build date) to firmware instead of failing to compile over the missing arm.
+    // Each caller supplies its own two static messages directly, so adding a third field can't
+    // silently mis-attribute to the wrong one via a stale match arm.
     //
-    // Trim at the first NUL, then trim trailing 0xFF padding, then reject any byte that is not
-    // printable ASCII (space through `~`), then trim (only ever a leading/trailing literal
-    // space, since that check has already ruled out every other whitespace or control byte, tab
-    // included) - in that order. The wire pads a string's declared length with a NUL terminator
-    // plus any remaining slack, and the payload's own tail is 0xFF-padded; a tab or other control
-    // byte inside the declared length, unlike that padding, is treated as corruption rather than
-    // whitespace to tidy up, so `"\tABC\t"` is rejected rather than trimmed to `"ABC"` (deliberate,
-    // review round 2 finding 6: a tab is not something a serial or firmware string should quietly
-    // accept).
+    // Order matters: trim to the first NUL, then trailing 0xFF padding, then reject any
+    // non-printable-ASCII byte, then trim outer whitespace. The wire pads a declared length with
+    // a NUL plus slack, and the payload's tail is 0xFF-padded; a tab or other control byte inside
+    // the declared length is corruption, not padding, so `"\tABC\t"` is rejected rather than
+    // trimmed to `"ABC"`.
     let clean = |b: &[u8],
                  non_ascii_msg: &'static str,
                  empty_msg: &'static str|
@@ -585,9 +521,9 @@ mod tests {
         assert_eq!(m.value(), 0x48);
     }
 
-    /// Nibble 2 never appeared in any of 1224 captured frames (task 19b); it must stay folded
-    /// into `Unknown` rather than aliasing `Rt`, or a read-modify-write on a key in this state
-    /// would silently coerce it to `Rt`'s wire value instead of leaving it alone.
+    /// Nibble 2 never appeared in any of 1224 captured frames; it must stay folded into
+    /// `Unknown` rather than aliasing `Rt`, or a read-modify-write on a key in this state would
+    /// silently coerce it to `Rt`'s wire value.
     #[test]
     fn mode_nibble_2_is_never_observed_and_stays_unknown() {
         let m = Mode::from_value(0x23);
@@ -604,11 +540,8 @@ mod tests {
         assert_eq!(m.value(), 0x53);
     }
 
-    /// `from_value` used to truncate to `v & 0xFF` before `value()` rebuilt a `u16`, so any
-    /// high byte the device actually sent (a real 16-bit Layout_Mode value, not merely a byte
-    /// with 8 spare bits) was silently cleared on every pass through `Mode`. `wh-cli`'s
-    /// `dump`/`restore` round trip depends on this being a true identity for a value nobody
-    /// has modified.
+    /// The high byte of a 16-bit Layout_Mode value must survive a round trip through `Mode`
+    /// unmodified: `wh-cli`'s `dump`/`restore` depends on this being a true identity.
     #[test]
     fn mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte() {
         let v = 0x0221u16; // high byte 0x02, touch nibble 0x2 (Unknown, never observed), advanced nibble 0x1
@@ -652,7 +585,7 @@ mod tests {
         );
     }
 
-    /// The measured frame, checksum included: `5c 04 00 <crc> 70 ff ff ff`, task 19b group B.
+    /// The measured frame, checksum included: `5c 04 00 <crc> 70 ff ff ff`.
     #[test]
     fn read_profile_matches_the_measured_frame() {
         let f = read_profile();
@@ -780,9 +713,8 @@ mod tests {
     }
 
     /// The real device's own 60-byte SYNC reply payload, captured twice identically in
-    /// `initial-load.jsonl` (frames 1 and 3, task 19b chunk 6). This is the test that matters:
-    /// the old hardcoded `payload[26..36]` firmware slice produced `App_V1.1.0`, ten bytes where
-    /// the wire actually declares sixteen (`App_V1.1.046000`).
+    /// `captures/initial-load.jsonl` (frames 1 and 3). The wire declares a 16-byte firmware
+    /// field (`App_V1.1.046000`), not the ten bytes a fixed-offset slice would read.
     #[test]
     fn parse_sync_reads_the_real_device_reply() {
         let hex =
@@ -797,13 +729,10 @@ mod tests {
         assert_eq!(info.firmware, "App_V1.1.046000");
     }
 
-    /// Review round 1, minor 5: an overrunning length prefix is a bogus *declaration*, not a
-    /// too-short *payload* - this one is a full, real-size 60-byte SYNC reply, exactly what the
-    /// device actually sends (review round 1, important 3, on moving these off artificially
-    /// tiny payloads), with only its serial length byte corrupted. `DecodeError::Identity`, not
-    /// `Short`, is the honest diagnosis: `Short(60)` would claim the payload itself was too
-    /// small, which is false. Review round 2, finding 5: the message also now names SYNC and
-    /// the specific field, not just "unexpected reply shape".
+    /// A full 60-byte SYNC reply (what the device actually sends) with only the serial length
+    /// byte corrupted: an overrunning length prefix is a bogus declaration, not a too-short
+    /// payload, so this is `DecodeError::Identity`, not `Short`. The message names SYNC and the
+    /// field, not just "unexpected reply shape".
     #[test]
     fn parse_sync_rejects_a_serial_length_prefix_that_overruns_the_payload() {
         let mut payload = vec![0u8; 60];
@@ -832,19 +761,16 @@ mod tests {
         assert!(err.to_string().contains("firmware"));
     }
 
-    /// The guard between the two length-prefixed strings (`if serial_end >= payload.len()`) has
-    /// no test of its own without this one (review round 1, minor 4): a serial that declares
-    /// exactly to the end of the payload leaves no byte for the firmware's own length prefix.
-    /// This *is* a too-short payload (there is no bogus declaration here, just not enough bytes
-    /// to hold a second string at all), so `Short`, not `Identity`, is the right diagnosis,
-    /// unlike the two overrun cases above.
+    /// A serial that declares exactly to the end of the payload leaves no byte for the
+    /// firmware's own length prefix. This is a genuinely too-short payload, not a bogus
+    /// declaration, so `Short`, not `Identity`, is the right diagnosis here, unlike the overrun
+    /// cases above.
     #[test]
     fn parse_sync_rejects_a_serial_that_leaves_no_room_for_the_firmware_length_prefix() {
         let mut payload = vec![0u8; 20];
         payload[8] = 11; // 9 + 11 == 20 == payload.len(): no byte left for the firmware prefix
-                         // A real, non-empty serial filling every one of those 11 bytes, so this
-                         // test exercises the guard between the two strings, not the separate
-                         // empty-serial rejection above.
+                         // non-empty serial filling all 11 bytes: exercises the inter-string
+                         // guard, not the separate empty-serial rejection above
         payload[9..20].copy_from_slice(b"ABCDEFGHIJK");
         assert_eq!(
             parse_sync(&payload).unwrap_err(),
@@ -852,11 +778,10 @@ mod tests {
         );
     }
 
-    /// Proves the parse follows the declared length prefix rather than a hardcoded constant: a
-    /// shorter serial (6 bytes, not 16) shifts where the firmware length prefix and firmware
-    /// string are read from, and both still come back correctly. A full 60-byte payload (review
-    /// round 1, important 3): the real device's replies are always this size, so the test no
-    /// longer needs an artificially tiny one just to exercise a short serial.
+    /// Proves the parse follows the declared length prefix, not a hardcoded constant: a shorter
+    /// serial (6 bytes, not 16) shifts where the firmware prefix and string are read from, and
+    /// both still decode correctly. Uses a full 60-byte payload, the real device's actual reply
+    /// size.
     #[test]
     fn parse_sync_follows_a_shorter_declared_serial_length_not_a_constant() {
         let mut payload = vec![0u8; 60];
@@ -869,10 +794,8 @@ mod tests {
         assert_eq!(info.firmware, "V9.9.");
     }
 
-    /// Review round 1, important 3: lowering the length floor from 36 to 9 (chunk 6) must not
-    /// let a truncated or bad-state reply decode as a well-formed, empty identity. A zero-length
-    /// serial is a `DecodeError`, not `Ok(DeviceInfo { serial: "", .. })`: `wh backup` must never
-    /// silently write a snapshot that has lost the identity of the board it came from.
+    /// A zero-length serial is a `DecodeError`, not `Ok(DeviceInfo { serial: "", .. })`: `wh
+    /// backup` must never silently write a snapshot that has lost the board's identity.
     #[test]
     fn parse_sync_rejects_an_empty_serial() {
         let mut payload = vec![0u8; 60];
@@ -881,9 +804,6 @@ mod tests {
         payload[10..20].copy_from_slice(b"V1.2.3.456");
         let err = parse_sync(&payload).unwrap_err();
         assert_eq!(err, DecodeError::Identity("serial is empty"));
-        // Review round 2, finding 5: this is the exact scenario measured against the real
-        // binary ("a device replying with a zero-length serial field"), and the old opaque
-        // `DecodeError::Shape` ("unexpected reply shape") named neither SYNC nor the field.
         assert!(err.to_string().contains("SYNC"));
         assert!(err.to_string().contains("serial"));
     }
@@ -901,12 +821,9 @@ mod tests {
         assert!(err.to_string().contains("firmware"));
     }
 
-    /// Review round 1, minor 6: the brief's premise that the current code already rejected
-    /// non-ASCII/non-printable bytes was false; this implements that rejection. A serial
-    /// carrying a BEL and an ANSI escape sequence (`\x07\x1b[31m...`) must be a `DecodeError`,
-    /// not a successfully parsed string: `wh dump`'s non-JSON path writes `serial` straight to
-    /// the terminal, so a misbehaving device must not be able to smuggle control bytes into an
-    /// operator's terminal through it.
+    /// A serial carrying a BEL and an ANSI escape sequence (`\x07\x1b[31m...`) must be a
+    /// `DecodeError`: `wh dump`'s non-JSON path writes `serial` straight to the terminal, so a
+    /// misbehaving device must not smuggle control bytes into it.
     #[test]
     fn parse_sync_rejects_control_bytes_in_the_serial() {
         let mut payload = vec![0u8; 60];
@@ -945,11 +862,9 @@ mod tests {
         assert!(err.to_string().contains("firmware"));
     }
 
-    /// Review round 2, finding 6: the printable-ASCII check runs before `.trim()`, so a tab
-    /// (unlike a literal space) is corruption, not whitespace to tidy up, and the whole string
-    /// is rejected rather than trimmed down to its non-tab content. Deliberate, per the doc
-    /// comment on `clean` above: a tab in a serial number is not something to quietly accept.
-    /// Space padding, by contrast, is still trimmed exactly as before.
+    /// The printable-ASCII check runs before `.trim()`, so a tab is corruption, not whitespace
+    /// to tidy, and rejects the whole string rather than trimming to its non-tab content. Space
+    /// padding, by contrast, is still trimmed.
     #[test]
     fn parse_sync_rejects_a_tab_padded_serial_but_still_trims_space_padding() {
         let mut payload = vec![0u8; 60];
