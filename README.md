@@ -99,10 +99,13 @@ especially the first time you type a new key selector. `wh restore` and `wh self
 `--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
 only ever rewrites a setting to the value it already read.
 
-Every `wh` command names which transport it opened, on stderr, one line, before doing anything else:
-`transport: hardware (real keyboard)` or `transport: replay (<path>)`. Check that line before
-trusting that a run did what you expected, especially when driving `wh` from a script or another
-tool where the rest of the output might scroll past.
+Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`)
+names which transport it opened, on stderr, one line, before doing anything else: `transport:
+hardware (real keyboard)` or `transport: replay (<path>)`. Check that line before trusting that a run
+did what you expected, especially when driving `wh` from a script or another tool where the rest of
+the output might scroll past. `wh keys list` and `wh keys group` never open a transport at all (they
+only ever touch the local key store), so they print no such line; that absence is expected for those
+two, not a sign the announcement failed.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 
