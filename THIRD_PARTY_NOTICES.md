@@ -1,8 +1,19 @@
 # Third-party notices
 
 This repository vendors third-party source under `research/` for reference while porting the
-keyboard protocol to Rust. **None of it is covered by the repository's LICENCE**, none of it is
-owned by Iain Brookes, and each item stays under its own licence.
+keyboard protocol to Rust. **None of the vendored copies under `research/` are covered by the
+repository's LICENCE**, none of it is owned by Iain Brookes, and each item stays under its own
+licence.
+
+**This does not mean nothing in `crates/` is ported.** `crates/wh-proto/src/frame.rs` and
+`crates/wh-proto/src/cmds.rs` are themselves a Rust port of MIT-licensed source from
+`@sparklinkplayjoy/protocol-keyboard` (vendored at `research/proto/`) and, for `cmds.rs`, the same
+package's SDK conventions also mirrored in `@sparklinkplayjoy/hid` (vendored at `research/hidpkg/`);
+each file's own module documentation names exactly which upstream file it ports. Porting code
+carries the licence that covers it: the Sparklink MIT notice reproduced below, under "research/proto
+and research/hidpkg", attaches to those two ported files in `crates/wh-proto` as well as to the
+vendored copies under `research/`. `LICENSE` section 1 says the same thing; this is the fuller
+statement the licence points at.
 
 These notices are reproduced because the licences require it. Do not remove them.
 
@@ -101,6 +112,20 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ## A note on accuracy
 
-An earlier version of `research/README.md` recorded `research/aure/` as ISC. It is MIT, per the
-`LICENSE` file in that directory, copyright Ricardo Correia. It also recorded `@sparklinkplayjoy/hid`
-as 1.0.15; the vendored copy is 1.0.16. Both are corrected here and in that file.
+An earlier version of `research/README.md` recorded `research/aure/` as ISC. That was not baseless:
+`research/aure/package.json` declares `"license": "ISC"` and still does. But `research/aure/LICENSE`
+is a full MIT licence text, and `research/aure/README.md` also states MIT in its own "License"
+section. The upstream project is self-inconsistent about its own licence, not merely misreported
+here. We follow `research/aure/LICENSE`, the file, over `package.json`'s field, and record `research/
+aure/` as MIT above on that basis. It also recorded `@sparklinkplayjoy/hid` as 1.0.15; the vendored
+copy is 1.0.16. Both are corrected here and in that file.
+
+## A note on this project's own dependencies
+
+The crates.io dependencies `wh` itself builds against (`thiserror`, `serde`, `serde_json`, `toml`,
+`clap`, `directories`, `hidapi`) are not covered by any entry above; none of their licences require a
+notice here. This is stated explicitly rather than left as an unexplained omission: while
+redistribution of the Covered Work is forbidden under `LICENSE` section 2, no permissive-licence
+attribution obligation triggered by redistributing a binary is currently live for anyone. If that
+restriction is ever lifted, this file would need those dependencies' own notices added before
+distributing a binary that links them.

@@ -14,10 +14,22 @@ supporting material:
   docs/          the documentation and the measured protocol notes
   capture/       the traffic capture harness
   bin/           the WSL shim
-  Cargo.toml, Cargo.lock, .gitignore, and the other build and configuration
-                 files at the repository root
+  README.md, LICENSE, THIRD_PARTY_NOTICES.md
+  Cargo.toml, Cargo.lock, .gitignore, .cargo/config.toml, and the other build
+                 and configuration files at the repository root
 
-Iain Brookes is the sole author and copyright holder of the Covered Work.
+Iain Brookes authored the Covered Work, with one exception. Parts of
+`crates/wh-proto` (currently `frame.rs` and `cmds.rs`; check those files'
+own module documentation, which names any file that is a port) are a Rust
+port of MIT-licensed source from Sparklink Playjoy's
+`@sparklinkplayjoy/protocol-keyboard` and `@sparklinkplayjoy/hid` packages,
+vendored for reference at `research/proto/` and `research/hidpkg/`. Porting
+code carries the licence that covers it, so the MIT notice on that upstream
+source attaches to those ported portions of `crates/wh-proto` too; that
+notice, and exactly what it covers, is in THIRD_PARTY_NOTICES.md. Everything
+else in the Covered Work, including the rest of `crates/wh-proto` that is
+original rather than ported, is Iain Brookes' own authorship, and Iain
+Brookes holds the copyright in it.
 
 This licence does NOT cover the contents of `research/`, which is third-party
 material owned by other people and licensed separately. See section 4 and
@@ -82,6 +94,13 @@ Nothing in section 2 restricts any right you hold under one of those licences.
 Where a third-party licence grants you permission that section 2 would
 otherwise withhold, that permission stands, and it applies to that third-party
 material only.
+
+This is separate from, and does not weaken, section 1's note above about the
+ported portions of `crates/wh-proto`: those files are part of the Covered
+Work and section 2's restrictions apply to them in full. What follows the MIT
+source into the port is the attribution obligation, not a permission to
+redistribute the tool; see THIRD_PARTY_NOTICES.md for what that obligation
+requires and how it is satisfied here.
 
 The full list of vendored material, its origin, its licence, and the required
 notices are in THIRD_PARTY_NOTICES.md. Those notices are reproduced and
