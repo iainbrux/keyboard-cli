@@ -579,6 +579,15 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+    // Negative assertion (review round 1, chunk 4): the old message,
+    // "dry run, no writes sent; save-to-flash frame {hex} would follow", also satisfied
+    // `contains("dry run")`, so that check alone could not catch a regression that reinstated
+    // the removed SAVE frame in the dry-run output. Pin its absence directly.
+    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+    assert!(
+        !stdout.contains(&hex(&save)),
+        "dry-run output must not contain the SAVE frame: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -613,6 +622,13 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+    // Negative assertion (review round 1, chunk 4): see the `set ap` sibling above for why
+    // "contains(\"dry run\")" alone cannot catch a reinstated SAVE frame.
+    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+    assert!(
+        !stdout.contains(&hex(&save)),
+        "dry-run output must not contain the SAVE frame: {stdout}"
+    );
 
     // Pins the exact previewed records, not just that something printed, bringing this test up
     // to the same standard as its `--off` sibling below: a regression in `rt_records`' touch
@@ -678,6 +694,13 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+    // Negative assertion (review round 1, chunk 4): see the `set ap` sibling above for why
+    // "contains(\"dry run\")" alone cannot catch a reinstated SAVE frame.
+    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
+    assert!(
+        !stdout.contains(&hex(&save)),
+        "dry-run output must not contain the SAVE frame: {stdout}"
+    );
 
     // Pins the exact previewed records, not just that something printed: the touch nibble
     // must flip to Single (nibble 1, per-key actuation point) on both keys while each key's own
