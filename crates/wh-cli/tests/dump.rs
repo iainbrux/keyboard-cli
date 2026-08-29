@@ -21,15 +21,37 @@ fn reply(cmd: u8, payload: &[u8]) -> [u8; 64] {
     wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
 }
 
-/// Every line of `stdout` that is a 128-hex-digit frame, in order: exactly what `print_frames`
-/// emits for `--dry-run`, one line per frame with nothing else on it. Review round 2, finding 2:
-/// comparing this list against the expected frames *exactly* (not just "each expected frame
-/// appears somewhere", the previous standard) is what catches an added, removed, or reordered
-/// frame, not only a fully absent or fully present one.
+/// True if `s` contains a run of at least `n` consecutive hex-digit characters anywhere in it,
+/// not just as the whole string.
+fn contains_hex_run(s: &str, n: usize) -> bool {
+    let mut run = 0usize;
+    for c in s.chars() {
+        if c.is_ascii_hexdigit() {
+            run += 1;
+            if run >= n {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+/// Every line of `stdout` that contains a 128-hex-digit run (one 64-byte frame's hex encoding),
+/// verbatim, in order: exactly what `print_frames` emits for `--dry-run` is one bare frame per
+/// line, with nothing else on it. Review round 3: a line that wraps the same frame in other text
+/// (the historical defect this whole test family exists to catch: `"dry run, no writes sent;
+/// save-to-flash frame {hex} would follow"`) is captured here too, whole line and all, rather
+/// than being invisible to a filter that only accepted a line that is *exactly* 128 hex digits.
+/// Such a line then shows up as a visible entry that cannot match anything in the expected,
+/// pure-hex list, so `assert_eq!` fails loudly instead of the frame being silently skipped. This
+/// property generalises to any stray frame text finds its way onto a printed line, not only to a
+/// reinstated SAVE frame specifically.
 fn frame_lines(stdout: &str) -> Vec<String> {
     stdout
         .lines()
-        .filter(|l| l.len() == 128 && l.chars().all(|c| c.is_ascii_hexdigit()))
+        .filter(|l| contains_hex_run(l, 128))
         .map(str::to_string)
         .collect()
 }
