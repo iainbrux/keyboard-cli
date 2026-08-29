@@ -906,8 +906,13 @@ mod tests {
 
     #[test]
     fn write_records_sends_nothing_when_there_are_no_records() {
-        // An empty script: if write_records sent anything at all with no usages selected,
-        // ReplayTransport would reject the unexpected send.
+        // An empty script: if anything at all reached the wire for an empty selection,
+        // ReplayTransport would reject the unexpected send. Note (review round 1, minor 7): this
+        // pins the resulting behaviour, not specifically the `is_empty` early return in
+        // `write_records` - `write_key_records(&[])` already yields no frames on its own, so
+        // this test would still pass with that guard deleted. It is kept because the guard
+        // documents the no-op case explicitly rather than relying on that encoder behaviour by
+        // coincidence.
         let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
         set_ap(&mut s, &[], Um(1500)).unwrap();
         assert!(s.into_inner().finished());
@@ -1129,8 +1134,11 @@ mod tests {
 
     #[test]
     fn restore_all_skips_key_batch_when_there_are_no_records() {
-        // Only the global travel write should reach the wire; no records means no key batch
-        // and, per write_records, no SAVE either.
+        // Only the global travel write should reach the wire; an empty `records` produces no
+        // key batch frames at all (there is no SAVE to skip any more, chunk 4). As with
+        // `write_records_sends_nothing_when_there_are_no_records` above (review round 1, minor
+        // 7), this pins the resulting wire behaviour rather than the presence of a specific
+        // early-return branch in `write_records`.
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
