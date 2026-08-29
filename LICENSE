@@ -102,7 +102,12 @@ redistribute the tool; see THIRD_PARTY_NOTICES.md for what that obligation
 requires and how it is satisfied here.
 
 The full list of vendored material, its origin, its licence, and the required
-notices are in THIRD_PARTY_NOTICES.md. Those notices are reproduced and
+notices are in THIRD_PARTY_NOTICES.md.
+
+Separately, the crates.io dependencies compiled into a released `wh` binary are
+listed with their full licence texts in THIRD_PARTY_LICENSES.md. Those licences
+govern that dependency code, not the Covered Work, and nothing in section 2
+restricts any right they grant you over it. Those notices are reproduced and
 retained deliberately, because the licences require it.
 
 ===============================================================================

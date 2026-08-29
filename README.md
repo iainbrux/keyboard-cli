@@ -200,6 +200,12 @@ owned by the author. They describe an interface; they are not a copy of anyone's
 **Third-party code under `research/` belongs to its own authors** and stays under its own licences,
 which this repository's licence does not override. See `THIRD_PARTY_NOTICES.md`.
 
+**The dependencies compiled into a released binary** are listed with their full licence texts in
+`THIRD_PARTY_LICENSES.md`: 90 crates, generated from the real dependency graph. Three need more than
+a notice, and that file explains each: HIDAPI is triple-licensed and this project elects the
+BSD-style option rather than the GPL, `option-ext` is MPL-2.0 so its source must stay obtainable, and
+`unicode-ident` carries a Unicode term on top of its permissive choice.
+
 ### Redistribution is not permitted
 
 Forking, re-forking, mirroring, redistributing, modifying, or creating derivative works of the `wh`
