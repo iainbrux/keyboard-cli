@@ -35,6 +35,23 @@ cargo build --release --workspace --target x86_64-pc-windows-gnu
 you can run `./bin/wh <command>` directly from your WSL shell exactly as you would a native binary,
 and it will find and control the keyboard through the Windows HID stack underneath.
 
+### Building a release archive
+
+A bare `wh.exe` download carries none of this project's licence, attribution, or third-party
+notices with it, and Apache-2.0 requires all three to reach whoever receives the binary. Run
+`scripts/package-release.sh` to build the actual release artefact, not just the binary:
+
+```
+scripts/package-release.sh
+```
+
+It builds the release binary, then writes `dist/wh-<version>-x86_64-pc-windows-gnu.zip` containing
+`wh.exe`, `LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`, `THIRD_PARTY_NOTICES.md`, and a short
+`README.txt` pointer back to this repository, and prints the archive's contents so a run is its own
+verification. Requires `cargo` and `python3` (used to build the archive itself; no `zip` binary is
+assumed to be installed). Given the same source tree, two runs produce a byte-identical archive.
+This is what should actually be attached to a GitHub release, not the bare `.exe`.
+
 ## The exclusive-access caveat
 
 **The vendor's own web configurator, `terminal.wallhack.com`, holds the device exclusively while its
@@ -178,18 +195,33 @@ the underlying measured frame counts it is built from.
 
 Read this before you run anything in this repository against a keyboard you care about.
 
-### Ownership
+### Licence
 
-**The `wh` tool is Iain Brookes' work,** with one exception: parts of `crates/wh-proto` are a port of
-MIT-licensed Sparklink Playjoy source, and that notice travels with the port. Copyright (c) 2026
-Iain Brookes, all rights reserved, for the rest. That covers `crates/`, `docs/`, `capture/`, `bin/`,
-`README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `.cargo/config.toml`, and the build files at the
-repository root. See `LICENSE` section 1 and `THIRD_PARTY_NOTICES.md` for exactly which files that
-exception covers.
+**`wh` is licensed under the Apache License 2.0.** See `LICENSE` for the full terms and `NOTICE` for
+the attribution that goes with them.
 
-**The keyboard is Wallhack's.** The Wallhack K-001, its firmware, its hardware design, its
-communication protocol, the Wallhack name and logo, and the web configurator at
-terminal.wallhack.com all belong solely to Wallhack. This project claims none of it.
+You may use, modify, redistribute and fork this work, including commercially. Apache-2.0 asks a few
+things in return, and section 4 has the detail:
+
+- Keep the licence and the copyright notices with anything you redistribute.
+- **Carry the `NOTICE` file's contents in your own distribution.** That is what keeps the credit and
+  the link back to this repository attached to forks, and it is a requirement of the licence rather
+  than a request.
+- State that you changed the files, if you changed them.
+
+### Credit
+
+Originally developed by **brux**: <https://brux.gg/>, `@brux` on Discord, repository owner
+`iainbrux`. Source: <https://github.com/iainbrux/keyboard-cli>.
+
+If you fork this, please keep pointing back here. It costs you nothing and it is how anyone finds
+where the work came from.
+
+### The keyboard is Wallhack's
+
+The Wallhack K-001, its firmware, its hardware design, its communication protocol, the Wallhack name
+and logo, and the web configurator at terminal.wallhack.com all belong solely to Wallhack. This
+project claims none of it.
 
 This is an independent, unofficial project. It is **not affiliated with, endorsed by, sponsored by,
 or supported by Wallhack.** `wh` is an independently written client that talks to the keyboard over
@@ -197,33 +229,44 @@ the USB HID interface the device already exposes. The notes in `docs/protocol.md
 device behaviour, recorded from traffic between a keyboard and its own vendor software on hardware
 owned by the author. They describe an interface; they are not a copy of anyone's software.
 
-**Third-party code under `research/` belongs to its own authors** and stays under its own licences,
-which this repository's licence does not override. See `THIRD_PARTY_NOTICES.md`.
+Apache-2.0 grants no trademark rights, and none are claimed here.
 
-### Redistribution is not permitted
+### Other people's code, which stays theirs
 
-Forking, re-forking, mirroring, redistributing, modifying, or creating derivative works of the `wh`
-tool is **strictly forbidden** without prior written permission. See `LICENSE` for the exact terms.
+**Parts of `crates/wh-proto` are a port of MIT licensed Sparklink Playjoy source**, and that notice
+travels with the port. `THIRD_PARTY_NOTICES.md` names the files.
 
-That restriction applies to the `wh` tool only. It does not apply to the third-party material under
-`research/`, which you may use under whatever its own licence allows.
+**Reference material under `research/`** is third-party work under its own MIT and ISC licences,
+which this repository's licence does not override. Same file.
+
+**The dependencies compiled into a released binary** are listed with their full licence texts in
+`THIRD_PARTY_LICENSES.md`: 90 crates, generated from the real dependency graph, **plus a separate
+section covering the Rust standard library's own runtime and the mingw-w64 C runtime**, neither of
+which is a crates.io dependency and so neither shows up in a dependency-graph walk on its own; that
+file explains why and what is in each. **If you distribute a binary of this project, those
+obligations pass to you.** Three of the crate entries need more than a notice, and that file explains
+each: HIDAPI is triple-licensed and this project elects the BSD-style option rather than the GPL,
+`option-ext` is MPL-2.0 so its source must stay obtainable by recipients, and `unicode-ident` carries
+a Unicode term on top of its permissive choice.
 
 ### No warranty
 
-`wh` is provided **as is**, with no warranty of any kind, express or implied.
+`wh` is provided **as is**, with no warranty of any kind, express or implied, as Apache-2.0 section 7
+sets out.
 
 It writes settings to keyboard hardware over a protocol worked out by observing traffic, not from a
 specification anyone published. It has been tested against exactly one board, on one firmware
 version.
 
-**Using this tool may void your keyboard's manufacturer warranty.** Neither Iain Brookes nor
-Wallhack is obliged to support, update, or repair any device it has been used with.
+**Using this tool may void your keyboard's manufacturer warranty.** Neither brux nor Wallhack is
+obliged to support, update, or repair any device it has been used with.
 
 ### No liability
 
-Neither Iain Brookes nor Wallhack accepts any liability for anything that happens as a result of
-using this tool. That includes damage to or malfunction of a keyboard or any other hardware, loss of
-settings, a voided warranty, and any direct, indirect, incidental, special, or consequential damage.
+Neither brux nor Wallhack accepts any liability for anything that happens as a result of using this
+tool, as far as the law allows and as Apache-2.0 section 8 sets out. That includes damage to or
+malfunction of a keyboard or any other hardware, loss of settings, a voided warranty, and any direct,
+indirect, incidental, special, or consequential damage.
 
 **You use it entirely at your own risk.** If that is not acceptable to you, use the vendor's own web
 configurator instead.

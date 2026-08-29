@@ -47,43 +47,154 @@ traffic accompanies it, that is most of the answer.
 
 ## Features
 
-### A terminal UI mirroring the vendor configurator
+### A TUI that mirrors terminal.wallhack.com, one to one
 
-**The idea.** A close clone of `terminal.wallhack.com` running inside the `wh` binary, so someone who
-wants neither a command line nor a browser tab gets the same experience in their terminal, navigable
-with mouse and arrow keys.
+**The idea.** Rebuild the vendor configurator as a terminal UI inside the `wh` binary, matching its
+layout closely enough that someone who knows the website can drive it without relearning anything.
+The vendor UI is already terminal-styled, so this is a far smaller leap than it would be for a
+typical configurator.
 
-**Why it fits.** The vendor UI is already terminal-styled, so a faithful TUI is a smaller leap than
-it would be for most configurators. `ratatui` and `crossterm` are already dependencies, and the
-Task 17 picker established the pattern of a pure state core with a thin terminal shell around it,
-which is what makes this testable rather than a blob of rendering.
+**The header is a collaboration mark, not a copy.** The vendor's ASCII logo at the top is replaced by
+a joint one: the `wh` logo in ASCII art alongside `brux` in ASCII art. Do not reproduce Wallhack's
+logo. The Wallhack name and logo are theirs, this project is independent and unendorsed, and the
+header is the most visible place that distinction gets made.
 
-**What it needs, roughly.** The vendor's structure is known from screenshots: a profile selector, a
-keyboard render, tabs for Actuation Point, Rapid Trigger, Mapping, Switches and Advanced, and the
-keyset concept where a set of keys shares a group of settings. The keyset model is worth thinking
-about carefully: ours is per-key settings addressed by key, theirs is settings held by a named group
-that keys belong to. Same wire format, different abstraction, and the TUI would have to pick one.
+**The structure to match**, read off the vendor UI:
 
-**Prerequisite.** Not until the write path has been exercised against hardware. A UI that makes it
-easy to change many settings quickly is the worst place to discover a write bug.
+- ASCII header, then a version line, then a hint line about navigation.
+- A device line showing model and firmware, and a `PROFILE < 1 >` stepper.
+- A tab bar: ACTUATION POINT, RAPID TRIGGER, MAPPING, SWITCHES, ADVANCED.
+- A left pane of settings rows, each a label padded with dots and a `< value >` stepper, with
+  keyset rows carrying a checkbox and their shared value.
+- A right pane rendering the 68-key board in its real physical layout, each key showing its current
+  value, with keys selectable to form a keyset.
+- A status line.
 
-### Writing keyset membership, layout `0xFE`
+**What we can already drive.** Actuation point, rapid trigger, profile reading, and now keysets,
+since layout `0xFF` turned out to hold the actuation-point keyset index and `0xFE` the rapid trigger
+equivalent. So the ACTUATION POINT and RAPID TRIGGER tabs are buildable today, keysets included.
 
-**What we know, measured on hardware.** Settings written by `wh` do apply and do work. `set ap` on F
-was confirmed physically actuating at 0.30mm, checked using the board's own actuation LEDs against E
-at 2.00mm, and `set rt` on W was confirmed in the vendor UI. But the
-vendor configurator renders those values greyed and outside any named keyset, because we never write
-layout `0xFE`. The vendor writes `1` to it when a keyset is created and `0` when one is deleted, and
-leaves it alone for edits within an existing set.
+**What is blocked on protocol work.** MAPPING needs layouts `0x00` and `0x01`, which are measured but
+unmodelled. SWITCHES and ADVANCED are unmeasured entirely. Profile *select* is measured but not
+implemented. So a genuinely one to one TUI depends on the remapping work and a capture session
+covering switches and the advanced tab. Build the two tabs we can drive first rather than waiting.
 
-**Why it is worth doing.** Cosmetic for an alpha, and explicitly accepted as such. It is the
-difference between our changes looking native in the vendor's own UI and looking like loose overrides
-sitting outside its model. It also matters for the TUI item below, because the vendor's abstraction is
-a named group that keys belong to, while ours is per-key settings addressed by key.
+**What it needs, technically.** `ratatui` 0.29 and `crossterm` 0.28 are already dependencies, used by
+the `--pick` picker, and Task 17 established the pattern of a pure state core with a thin terminal
+shell around it, which is what makes this testable rather than a blob of rendering. The vendor UI
+supports mouse as well as arrows; `crossterm` can capture mouse events, so that is achievable.
 
-**How to find out the rest.** We know when `0xFE` is written but not how a keyset's name or membership
-list is stored, and a keyset clearly has both. Capture while creating a named keyset with two keys in
-it, then while renaming it, then while adding a third key.
+**Prerequisite, now met.** The write path has been verified against hardware. A UI that makes it easy
+to change many settings quickly was the worst place to discover a write bug, and that risk is now
+retired.
+
+### A Windows installer with a licence acceptance step
+
+**The idea.** Ship a proper graphical installer, the familiar window with Next, Next, Finish, rather
+than asking people to download a bare executable or build from source. It should present the licence
+for acceptance, install the binary, and register it on `PATH` so `wh` just works from a shell.
+
+**Why it is worth more than convenience.** The installer is the natural vehicle for obligations this
+project already carries. Distributing a binary means the recipient must get the Apache-2.0 licence
+text and the `NOTICE` contents, plus the third-party notices for everything statically linked. An
+installer that lays `LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md` and `THIRD_PARTY_NOTICES.md` down
+beside the binary satisfies that cleanly and visibly.
+
+**On the word EULA.** Apache-2.0 is not an end user licence agreement and does not require anyone to
+click accept before using the software. An installer can still present it, and doing so is common and
+harmless, but it should present the actual Apache-2.0 terms rather than invent an agreement on top of
+them. If a genuine additional agreement is ever wanted, that is a separate decision with real
+consequences for a permissively licensed project.
+
+**Tooling.** `cargo-wix` produces an MSI from the crate metadata and is the closest fit for a Rust
+project. Inno Setup and NSIS are the alternatives and give more control over the wizard's appearance.
+An MSI is the better citizen for managed environments; an Inno installer is easier to make look the
+way you want.
+
+**The awkward part, and it needs deciding before any of this is built.** `wh` is currently a Windows
+binary driven from WSL through the `bin/wh` shim, because the keyboard is attached to the Windows
+host. An installer serves someone running `wh.exe` directly from PowerShell, which is a different
+workflow with a different `PATH`, a different config location, and no shim. Both can be supported,
+but the installer implies the native Windows path is a first-class way to use the tool, and the
+README currently does not describe it that way.
+
+### Decide what stays in `research/`
+
+**Where this came from.** GitHub reported the repository as 41% Rust, 34% Vue, 24% TypeScript,
+because linguist counts every tracked file and `research/` holds 195 vendored third-party files
+against 26 of our own. That symptom is fixed: `.gitattributes` marks `research/**` as
+`linguist-vendored`, so the files stay, their licences stay, and they stop being counted as ours.
+
+**The real question it exposed** is whether all four vendored packages have earned their place, and
+they have not equally:
+
+| Directory | Files | Size | Cited by our source? |
+|---|---|---|---|
+| `research/proto/` | 51 | 484K | **Yes.** Both `frame.rs` and `cmds.rs` name it as the origin of the port |
+| `research/kbdocs/` | 42 | 680K | No |
+| `research/hidpkg/` | 20 | 144K | No, and `THIRD_PARTY_NOTICES.md` says explicitly that nothing ports from it |
+| `research/aure/` | 82 | **4.3M** | No |
+
+For comparison, `crates/` is 26 files and 472K.
+
+**`research/proto/` should stay regardless.** It is load-bearing, not decorative:
+`crates/wh-proto/src/frame.rs` and `cmds.rs` carry `//! Port of research/proto/package/src/...` in
+their module docs, and those citations are how anyone verifies which files the Sparklink MIT notice
+attaches to. Removing it leaves the attribution chain pointing at nothing.
+
+**`research/aure/` is the one to think about.** It is a separate Vue driver project by another
+author, larger than the rest of the repository combined, cited nowhere in our code, and useful only
+as reference during reverse engineering. Keeping it is entirely legal with its MIT notice intact, and
+it is a genuinely useful frozen snapshot. It is also the bulk of a clone.
+
+**The two options.**
+
+1. **Keep all four as a pinned reference snapshot.** Costs clone size and nothing else. Defensible:
+   these are the exact versions the protocol work was done against, and a future capture session may
+   want to diff behaviour against them.
+2. **Trim to `research/proto/` and reference the rest by URL and exact version or commit.** Smaller
+   repository, but a URL can rot and a snapshot cannot, so record enough to re-fetch the identical
+   artefact rather than just a project name.
+
+**What a trim would touch**, so it is not done casually: `THIRD_PARTY_NOTICES.md` and
+`THIRD_PARTY_LICENSES.md` both enumerate all four packages with their licences, `research/README.md`
+tabulates them, and `.gitattributes` references the directory. The notices must keep covering
+whatever remains, and anything removed must stop being claimed.
+
+**Deliberately not urgent.** Nothing is wrong today. The licences are correct, the notices are
+complete, and the language bar is fixed. This is a housekeeping decision to take once a release is
+out, not something to rush while one is in flight.
+
+### Writing keyset membership, so our changes render as keysets
+
+**Measured, and this corrects an earlier wrong entry.** Keysets are stored on the board, not in the
+browser. Two per-key layouts hold them:
+
+| Layout | Meaning | Evidence |
+|---|---|---|
+| `0xFF` | Actuation point keyset index. `0` means the key is in none | reads `1` for `w,a,s,d` and `2` for `esc`, matching both entries the vendor UI displayed |
+| `0xFE` | Rapid trigger keyset membership | written `1` when an RT keyset was created on `w`, `0` when deleted |
+
+Confirmed from the other side too: the operator inspected the vendor site's browser storage and found
+five keys, none keyset-related, so there is nowhere else for this state to live.
+
+**Why our writes render greyed.** `wh set ap --keys f` writes F's actuation point and leaves
+`f.0xFF = 0`, so the board holds a per-key value belonging to no keyset and the UI shows it as an
+orphan. Writing the index alongside the value fixes it.
+
+**A keyset has no name.** The UI's labels, `W,A,S,D` and `ESC`, are just the member list. Nothing on
+the board carries a name and nothing in browser storage does either, so a keyset is exactly "the keys
+sharing an index" and needs no name modelling.
+
+**What is still unknown**, and one capture settles all of it: how the UI allocates the next index,
+whether it reuses a gap left by a deleted keyset or takes the maximum plus one, and whether `0xFE` is
+a boolean or an index we have only ever seen `0` and `1` of. Create two fresh actuation point keysets
+over untouched keys, delete the first, create a third, and watch `0xFF`.
+
+**An earlier version of this entry said keysets were probably browser state and the work likely
+unreachable from a CLI.** That was wrong. It came from checking layout `0xFE`, finding every key read
+zero, and generalising, when `0xFF` was sitting in the same inventory with a value distribution that
+matched the keyset count exactly.
 
 ### Listing backups, and what `--last` should mean
 
@@ -184,10 +295,10 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   exactly how the board behaves under FN.
 - `0x16` and `0x17`, 1858 records each across the corpus, written as zero alongside every rapid
   trigger change and **never once observed non-zero**. Purpose unknown.
-- `0x19`, 700 records, only ever `0x0000` or `0x3e2c`. Purpose unknown.
-- `0xFF`, 420 records, only ever `0`, `1` or `2`. Purpose unknown.
-- `0xFE`, written as 1 when a keyset is created and 0 when it is deleted, and untouched by edits
-  within an existing keyset. Reads as a membership flag.
+- `0x19`, 700 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
+  Purpose unknown.
+- `0xFF` is the **actuation point keyset index** and `0xFE` the **rapid trigger keyset membership**.
+  Both measured; see the keyset entry above.
 
 ### One key identity still inferred
 

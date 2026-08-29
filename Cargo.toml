@@ -4,7 +4,7 @@ members = ["crates/wh-proto", "crates/wh-device", "crates/wh-config", "crates/wh
 
 [workspace.package]
 edition = "2021"
-license = "LicenseRef-Proprietary"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 thiserror = "1"

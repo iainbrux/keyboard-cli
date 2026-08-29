@@ -2,7 +2,7 @@
 
 This repository vendors third-party source under `research/` for reference while porting the
 keyboard protocol to Rust. **None of the vendored copies under `research/` are covered by the
-repository's LICENCE**, none of it is owned by Iain Brookes, and each item stays under its own
+repository's own licence**, none of it belongs to this project, and each item stays under its own
 licence.
 
 **This does not mean nothing in `crates/` is ported.** `crates/wh-proto/src/frame.rs` and
@@ -14,8 +14,9 @@ reference; nothing in `crates/wh-proto` is ported from it, and no file's module 
 otherwise. Porting code carries the licence that covers it: the Sparklink MIT notice reproduced
 below, under "research/proto and research/hidpkg", attaches to `frame.rs` and `cmds.rs` in
 `crates/wh-proto` because of `research/proto` specifically, as well as to the vendored copies under
-`research/` (both packages). `LICENSE` section 1 says the same thing; this is the fuller statement
-the licence points at.
+`research/` (both packages). `NOTICE` says the same thing more briefly; this is the fuller statement
+it points at. The full notice text also travels with the released binary itself, in
+`THIRD_PARTY_LICENSES.md`, since that is the file most likely to accompany a distributed `wh.exe`.
 
 These notices are reproduced because the licences require it. Do not remove them.
 
@@ -122,12 +123,21 @@ here. We follow `research/aure/LICENSE`, the file, over `package.json`'s field, 
 aure/` as MIT above on that basis. It also recorded `@sparklinkplayjoy/hid` as 1.0.15; the vendored
 copy is 1.0.16. Both are corrected here and in that file.
 
-## A note on this project's own dependencies
+## The dependencies compiled into the binary
 
-The crates.io dependencies `wh` itself builds against (`thiserror`, `serde`, `serde_json`, `toml`,
-`clap`, `directories`, `hidapi`) are not covered by any entry above; none of their licences require a
-notice here. This is stated explicitly rather than left as an unexplained omission: while
-redistribution of the Covered Work is forbidden under `LICENSE` section 2, no permissive-licence
-attribution obligation triggered by redistributing a binary is currently live for anyone. If that
-restriction is ever lifted, this file would need those dependencies' own notices added before
-distributing a binary that links them.
+The crates.io dependencies `wh` builds against are **not** covered by the entries above. They have
+their own file: `THIRD_PARTY_LICENSES.md`, which lists all 90 crates linked into the released
+`wh.exe` from the crates.io dependency graph, plus a separate section for the Rust standard
+library's own runtime and the mingw-w64 C runtime, neither of which is a crates.io dependency and so
+neither would show up from a dependency-graph walk alone. Each licence text is reproduced with only
+its own first and last line's leading and trailing whitespace stripped, not altered line by line;
+that file's own "Licence texts" section explains exactly what that means and why.
+
+That file exists because publishing a binary distributes those crates in compiled form, which makes
+their notice requirements live. An earlier version of this file stated that no such obligation was
+triggered, which was true only while no binary was published. It is no longer true, and the
+obligations are now met in `THIRD_PARTY_LICENSES.md` rather than deferred.
+
+Three of them need more than a notice, and are explained there: HIDAPI is triple-licensed and this
+project elects the BSD-style option rather than the GPL, `option-ext` is MPL-2.0 and its source must
+remain obtainable, and `unicode-ident` carries a Unicode term in addition to its permissive choice.
