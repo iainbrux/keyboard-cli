@@ -116,9 +116,10 @@ pub fn write_key_records(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
 
 /// The same records, but one per report instead of batched.
 ///
-/// Measured: the vendor batches every value layout up to the 14-record limit, and writes keyset
-/// membership (`0xff`, `0xfe`) strictly one record per frame, never batched, in every capture that
-/// touches it. This exists so membership can match that without callers hand-rolling the chunking.
+/// Measured: vendor write frames carry 1, 2, 3, 4, 6, 7, 8, 9 or 12 records, never 13 or 14 (only
+/// reads use the full 14); keyset membership (`0xff`, `0xfe`) is always one record per frame. This
+/// matches that record count; the vendor's own frame pads to length byte `0x39` where this emits
+/// `0x05`, a difference the board accepts (`docs/tasks.md`).
 pub fn write_key_records_singly(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
     records
         .iter()
@@ -144,9 +145,9 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
 }
 
 /// Layout_Mode: touch mode in the high nibble of the low byte, advanced-key mode in the low
-/// nibble (recdata.getLayoutModelRecdata). Nibble values measured across 1224 captured frames:
-/// 0 = follow global, 1 = per-key actuation, 3 = rapid trigger, 4 = rapid trigger continuous.
-/// Nibble 2 never appeared on the wire, so it stays folded into `Unknown`.
+/// nibble (recdata.getLayoutModelRecdata). Nibble values measured: 0 = follow global travel,
+/// 1 = per-key actuation, 2 = rapid trigger following the global settings, 3 = rapid trigger with
+/// its own settings, 4 = rapid trigger continuous.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchMode {
     Global,       // 0x0
@@ -578,8 +579,9 @@ mod tests {
     }
 
     /// Nibble 2 is rapid trigger following the global settings, measured 2026-08-29: turning
-    /// GLOBAL RAPID TRIGGER on wrote it to every key outside a rapid trigger keyset. It must not
-    /// alias `Rt` (nibble 3), which is the same feature with the key's own sensitivity.
+    /// GLOBAL RAPID TRIGGER on wrote it to all 68 keys, since no rapid trigger keyset existed in
+    /// that capture to skip; the off write and both sensitivity writes are what measure the skip
+    /// over keys in a rapid trigger keyset (`docs/keysets.md`). Must not alias `Rt` (nibble 3).
     #[test]
     fn mode_nibble_2_is_rapid_trigger_from_the_global_settings() {
         let m = Mode::from_value(0x23);

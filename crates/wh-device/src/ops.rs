@@ -185,9 +185,9 @@ pub fn rt_off_records<T: Transport>(
             high: cur_mode.high,
         };
         let new_value = mode.value();
-        // Skip when nothing would change: a key that wasn't `Rt`/`RtContinuous` recomputes to
-        // the value just read, and sending it anyway would write a MODE value (nibble 0
-        // included) the vendor was never once observed sending, across 1224 captured frames.
+        // Skip when nothing would change: a key that isn't `RtGlobal`, `Rt`, or `RtContinuous`
+        // recomputes to the value just read, and sending it anyway would write a MODE value
+        // (nibble 0 included) the vendor was never once observed sending, over 3696 frames.
         if new_value != cur_value {
             records.push(KeyRecord {
                 key: u,
@@ -654,7 +654,7 @@ mod tests {
 
     /// The reply's high byte (`payload[4]`, the wire byte `parse_key_reply` puts in
     /// `KeyRecord.value`'s upper bits) must survive a read-modify-write intact. Reply lo `0x21`
-    /// (touch `Unknown(2)`, advanced `0x1`), hi `0x02`: `rt_records` forces touch to `Rt`
+    /// (touch `RtGlobal`, advanced `0x1`), hi `0x02`: `rt_records` forces touch to `Rt`
     /// (`0x3`) while preserving the advanced nibble and high byte, giving `0x0231`.
     ///
     /// The expected value is a hand-written literal, not built via `Mode { .. }.value()` again:
@@ -781,13 +781,22 @@ mod tests {
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
         assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");
+        // Uses `KeySettings::rt_enabled` itself, not a hand-copied nibble list, so refreshing
+        // `REAL_MODES` from a capture that includes a nibble-2 (`RtGlobal`) key fails this guard
+        // for the right reason instead of passing it while the assertion below goes stale.
         assert_eq!(
             REAL_MODES
                 .iter()
-                .filter(|&&(_, v)| matches!(
-                    Mode::from_value(v).touch,
-                    TouchMode::Rt | TouchMode::RtContinuous
-                ))
+                .filter(|&&(usage, v)| KeySettings {
+                    usage,
+                    ap: Um(0),
+                    mode: Mode::from_value(v),
+                    rt_press: Um(0),
+                    rt_release: Um(0),
+                    ap_keyset: 0,
+                    rt_keyset: 0,
+                }
+                .rt_enabled())
                 .count(),
             0,
             "none of the real captured keys have RT on; that is what makes this a regression test"
@@ -1079,9 +1088,10 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// A key following the board's global rapid trigger (nibble 2) has rapid trigger on. An
-    /// actuation point change must not write MODE for it, or the depth change would silently
-    /// turn rapid trigger off across every key the global switch covers.
+    /// A non-`Global` touch nibble must never get a promoted MODE record from an actuation point
+    /// change, or a depth change could silently turn rapid trigger off. Uses nibble 2
+    /// (`RtGlobal`) as the example, but the code path only ever distinguishes "not Global", so
+    /// this does not by itself prove nibble 2 is treated any differently from `Unknown`.
     #[test]
     fn ap_records_leaves_the_global_rapid_trigger_nibble_alone() {
         let lines = mode_read_script(0x1A, 0x20, 0x00).join("\n");

@@ -1342,8 +1342,6 @@ mod tests {
         );
     }
 
-    /// One line per key, naming both faults. The `else if` this replaced hid a MODE fault behind
-    /// an AP fault on the same key, which is exactly the pairing a failed write produces.
     /// The pre-write nibble is reported through `raw_mode_rt_on`, which had no case for nibble 2.
     /// A board that dropped a key out of the global rapid trigger would have been reported as
     /// "expected mode 0x0020 unchanged (rt off)", naming the loss of rapid trigger as no change.
@@ -1358,6 +1356,8 @@ mod tests {
         );
     }
 
+    /// One line per key, naming both faults. The `else if` this replaced hid a MODE fault behind
+    /// an AP fault on the same key, which is exactly the pairing a failed write produces.
     #[test]
     fn ap_fault_line_names_both_faults_when_depth_and_mode_are_both_wrong() {
         let ks = readback(Um(1100), 0x18);

@@ -274,6 +274,42 @@ fn dump_json_via_replay() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `wh dump` must report rapid trigger as on for a key following the board's global rapid
+/// trigger (nibble 2), not only for a key with its own rapid trigger settings (nibble 3): a
+/// board with the global switch on would otherwise dump every such key as `rt: false`.
+#[test]
+fn dump_reports_rt_true_for_a_key_following_the_global_rapid_trigger() {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNDUMPTEST000002", "V1.0.0.001"));
+    lines.extend(profile_lines(0));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines());
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 200, 200, 0, 0));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
+
+    let path = write_script("dump-global-rt", &lines);
+    let config_home = scratch_config_dir("dump-global-rt");
+
+    let out = run_wh(&["dump"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["keys"][0]["name"], "w");
+    assert_eq!(v["keys"][0]["mode_raw"], 0x0220);
+    assert_eq!(
+        v["keys"][0]["rt"], true,
+        "nibble 2 (RtGlobal) must dump as rt: true, not false"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `wh dump` with no flags is JSON. This is the format change: JSON is canonical, and the
 /// human table is opt-in.
 #[test]
@@ -663,7 +699,7 @@ fn auto_backup_lines_with_modes(profile_idx: u8, mode_w: u16, mode_a: u16) -> Ve
 /// for 'w'. `readback_ap` lets the happy-path and mismatch tests below share this builder and
 /// diverge only on that one number.
 ///
-/// 'w' reads back MODE 0x0220 (touch `Unknown(2)`), so no MODE record joins the write batch: the
+/// 'w' reads back MODE 0x0220 (touch `RtGlobal`), so no MODE record joins the write batch: the
 /// promotion path only fires for a `Global` key, covered separately by `set_ap_promotes_script`.
 fn set_ap_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1078,9 +1114,9 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
 /// would hit the exhausted script and `ReplayTransport` would reject it.
 #[test]
 fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
-    // 'w' (0x1A) starts at MODE 0x0220 (touch Unknown(2), advanced nibble 0, high byte 0x02,
-    // i.e. not already RT) and wants 0x0230 after `rt_records` forces the touch nibble to Rt
-    // (nibble 3, continuous off) while preserving the advanced nibble and high byte.
+    // 'w' (0x1A) starts at MODE 0x0220 (touch RtGlobal, advanced nibble 0, high byte 0x02:
+    // rapid trigger already on, following the global settings) and wants 0x0230 after
+    // `rt_records` collapses the touch nibble to Rt (nibble 3, the key's own setting now).
     let mut lines = matrix_lines();
     lines.extend(mode_read_lines(0x1A, 0x0220));
     let path = write_script("set-rt-dry-run", &lines);
@@ -1188,6 +1224,47 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// A key following the board's global rapid trigger (nibble 2) must still get a MODE frame
+/// turning it off: before nibble 2 was modelled as `RtGlobal`, `rt_off_records` had no match arm
+/// for it, folded it into `Unknown`, and sent nothing at all for `wh set rt --off`.
+#[test]
+fn set_rt_off_turns_off_a_key_following_the_global_rapid_trigger() {
+    let mut lines = matrix_lines();
+    lines.extend(mode_read_lines(0x1A, 0x0220));
+    let path = write_script("set-rt-off-global", &lines);
+    let config_home = scratch_config_dir("set-rt-off-global");
+
+    let out = run_wh(
+        &["set", "rt", "--keys", "w", "--off", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let expected: Vec<String> = cmds::write_key_records(&[KeyRecord {
+        key: 0x1A,
+        layout: layout::MODE,
+        value: 0x0210,
+    }])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "a nibble-2 key must still get a MODE frame turning rapid trigger off: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// Pins that `--dry-run` previews an operation that could actually happen: 'z' is a real key in
 /// `wh_proto::keys::TABLE` but is not on this two-key fixture board. A dry run resolving against
 /// the full static table instead of the live matrix would happily preview writing to it anyway,
@@ -1239,10 +1316,10 @@ fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
             name: "w".into(),
             usage: 0x1A,
             ap_mm,
-            // Agrees with mode_raw below: 0x0220 decodes to TouchMode::Unknown(2), not Rt, so
-            // `rt` is false. `restore` never reads this field, it round-trips mode_raw verbatim,
-            // but it should still describe the snapshot it sits in.
-            rt: false,
+            // Agrees with mode_raw below: 0x0220 decodes to TouchMode::RtGlobal, rapid trigger on
+            // following the global settings, so `rt` is true. `restore` never reads this field,
+            // it round-trips mode_raw verbatim, but it should still describe the snapshot it sits in.
+            rt: true,
             rt_press_mm: 0.5,
             rt_release_mm: 0.6,
             mode_raw: 0x0220,
@@ -1982,7 +2059,8 @@ fn restore_last_prints_the_picked_snapshot_and_its_origin() {
             name: "w".into(),
             usage: 0x1A,
             ap_mm: 1.2,
-            rt: false,
+            // mode_raw 0x0220 decodes to TouchMode::RtGlobal: rapid trigger on, so `rt` is true.
+            rt: true,
             rt_press_mm: 0.5,
             rt_release_mm: 0.6,
             mode_raw: 0x0220,
