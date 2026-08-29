@@ -75,12 +75,24 @@ pub(crate) fn key_label(usage: u8) -> String {
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
     // `ProfileNumber::from_wire_index` is where the wire's zero-based index becomes the UI's
-    // one-based number, and also where an index the board could never actually report (e.g. a
-    // misbehaving device echoing 0xFF, the very byte `read_profile` sends as its own argument) is
-    // rejected outright: such a device's snapshot provenance is not something to trust at all, so
-    // the whole backup fails rather than silently recording a bogus profile.
-    let profile = wh_config::profile::ProfileNumber::from_wire_index(ops::profile(s)?)
-        .context("reading the board's active profile")?;
+    // one-based number. An index the board could never actually report under the four measured
+    // profiles (review round 2, important 2: `MAX_WIRE_INDEX` is measured from one board on one
+    // firmware, so a future firmware shipping more profiles must not hard-fail every command that
+    // goes through this function) degrades to `None`, "provenance unknown", the same case an
+    // older pre-profile-recording snapshot already carries, rather than aborting `dump`, `backup`,
+    // and `set`'s auto-backup outright. `restore` is different: it reads the board's profile
+    // through its own separate call, not this one, and keeps its hard refusal, since it cannot
+    // compare what it cannot interpret.
+    let wire_idx = ops::profile(s)?;
+    let profile = match wh_config::profile::ProfileNumber::from_wire_index(wire_idx) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            best_effort_eprintln(&format!(
+                "warning: {e}; this snapshot's profile is recorded as unknown provenance"
+            ));
+            None
+        }
+    };
     let global = ops::global_travel(s)?;
     let matrix = ops::read_matrix(s)?;
     let mut keys = Vec::new();
@@ -100,7 +112,7 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         firmware: info.firmware,
         serial: info.serial,
         taken_at: httpdate_now()?,
-        profile: Some(profile),
+        profile,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
@@ -167,14 +179,15 @@ fn dump(json: bool) -> Result<()> {
             writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
-            // `snapshot_from_device` always fills `profile` in from a live read, never the
-            // "provenance unknown" `None` a loaded-from-file snapshot can carry, but that
-            // invariant lives in a different function from this one (review round 1, finding 4):
-            // an ordinary error here, not a `.expect` panic mid-output, if it were ever wrong.
-            let profile = snap
-                .profile
-                .ok_or_else(|| anyhow::anyhow!("internal error: a live dump has no profile"))?;
-            writeln!(out, "profile {profile}")?;
+            // `snapshot_from_device` degrades to `None` (with its own warning already printed to
+            // stderr) rather than aborting the whole dump when the board reports a profile index
+            // outside the known range (review round 2, important 2), so `None` is a real,
+            // reachable state here, not just the defensive case round 1 treated it as; print it
+            // plainly instead of erroring the command over it.
+            match snap.profile {
+                Some(profile) => writeln!(out, "profile {profile}")?,
+                None => writeln!(out, "profile unknown (unrecognised index reported)")?,
+            }
             writeln!(
                 out,
                 "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
@@ -1038,10 +1051,10 @@ mod tests {
     }
 
     /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") for the
-    /// tests below, going through `from_wire_index` since that is the type's only public
-    /// constructor from a plain integer.
+    /// tests below, via `from_one_based` (review round 2, minor 4): `from_wire_index(n - 1)`
+    /// would underflow-panic on `pn(0)` instead of returning a clear error.
     fn pn(n: u8) -> wh_config::profile::ProfileNumber {
-        wh_config::profile::ProfileNumber::from_wire_index(n - 1).unwrap()
+        wh_config::profile::ProfileNumber::from_one_based(n).unwrap()
     }
 
     #[test]

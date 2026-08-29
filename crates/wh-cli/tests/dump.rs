@@ -930,10 +930,9 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
 fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
     // `profile` is one-based here (the caller's own convention, matching every other profile
-    // number in this file); `ProfileNumber::from_wire_index` is the type's only public
-    // constructor from a plain integer, so it is built from `profile - 1`.
-    let profile =
-        profile.map(|p| wh_config::profile::ProfileNumber::from_wire_index(p - 1).unwrap());
+    // number in this file); built via `from_one_based` (review round 2, minor 4), not
+    // `from_wire_index(p - 1)`, which would underflow-panic on `Some(0)`.
+    let profile = profile.map(|p| wh_config::profile::ProfileNumber::from_one_based(p).unwrap());
     let snap = wh_config::snapshot::Snapshot {
         firmware: "V1.0.0.001".into(),
         serial: "SNRESTORETEST001".into(),
@@ -1186,6 +1185,14 @@ fn restore_refuses_an_unrecorded_profile_without_force() {
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // Review round 2, minor 3: `stderr.contains("--force")` alone would pass on an unrelated
+    // clap usage dump; a distinctive fragment of the actual refusal text, matching both the
+    // board's own profile number (like the two mismatch tests' siblings above) and the
+    // "no recorded profile" phrasing unique to this case, discriminates by construction.
+    assert!(
+        stderr.contains("no recorded profile") && stderr.contains("profile 1"),
+        "unexpected stderr: {stderr}"
+    );
     assert!(
         stderr.to_lowercase().contains("--force"),
         "unexpected stderr: {stderr}"
@@ -1228,6 +1235,88 @@ fn restore_force_rescues_an_unrecorded_profile() {
 
     std::fs::remove_file(snap_path).unwrap();
     std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `restore`'s own direct profile read is a hard refusal on a wire index the board could never
+/// actually report under the four measured profiles (review round 2, important 1 and 2): unlike
+/// `dump`/`backup`/`set`'s auto-backup, `restore` cannot compare what it cannot interpret, so it
+/// keeps aborting rather than degrading to "unknown provenance". The script is exactly restore's
+/// own direct profile read (wire index 0xFE, i.e. 254): if `restore` proceeded past it into
+/// `auto_backup`, `ReplayTransport` would reject the unscripted send.
+#[test]
+fn restore_refuses_when_the_boards_profile_index_is_out_of_range() {
+    let config_home = scratch_config_dir("restore-profile-out-of-range");
+    let snap_path = write_snapshot("restore-profile-out-of-range", 1.2, Some(1));
+    let path = write_script("restore-profile-out-of-range", &profile_lines(0xFE));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("254") && stderr.contains("4 profiles"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The `snapshot_from_device` sibling of the test above (review round 2, important 1 and 2): the
+/// same out-of-range wire index (0xFE), reached this time through `backup --to`, must not abort
+/// the command. It degrades to `profile = None` ("unknown provenance", the same case an older,
+/// pre-profile-recording snapshot already carries) with a warning on stderr naming the bad index,
+/// rather than hard-failing `dump`/`backup`/`set`'s auto-backup the way a firmware revision with
+/// more than four profiles otherwise would (a measurement bound on one board, not a protocol
+/// limit that should ever blame every other command for it).
+#[test]
+fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
+    let mut lines = sync_lines("SNOUTOFRANGE0001", "V1.0.0.001");
+    lines.extend(profile_lines(0xFE));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines());
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
+
+    let path = write_script("backup-out-of-range", &lines);
+    let config_home = scratch_config_dir("backup-out-of-range");
+    let out_path = std::env::temp_dir().join(format!("wh-backup-oor-{}.toml", std::process::id()));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("254") && stderr.to_lowercase().contains("unknown"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let text = std::fs::read_to_string(&out_path).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_toml(&text).unwrap();
+    assert_eq!(
+        snap.profile, None,
+        "an out-of-range index must record no profile, not a bogus one: {text}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(out_path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
 

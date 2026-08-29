@@ -47,6 +47,19 @@ impl ProfileNumber {
         Ok(Self(idx + 1))
     }
 
+    /// Converts a plain one-based number (`1..=4`) directly, rejecting `0` and anything past the
+    /// board's four measured profiles the same way `from_wire_index` rejects an impossible wire
+    /// index. Exists so a caller that already has a one-based number in hand (`Deserialize`
+    /// below, or a test building "profile 1") never has to fake one by subtracting 1 from it and
+    /// risking an underflow panic on the boundary value 0 (review round 2, minor 4): the whole
+    /// point of this type is to remove that boundary arithmetic, not relocate it to call sites.
+    pub fn from_one_based(n: u8) -> Result<Self, ProfileNumberError> {
+        if n == 0 || n > MAX_WIRE_INDEX + 1 {
+            return Err(ProfileNumberError::OneBasedOutOfRange(n));
+        }
+        Ok(Self(n))
+    }
+
     /// The one-based number as a plain integer, for storing into a TOML snapshot. Display
     /// (below) covers every other use, printing the same number.
     pub fn one_based(self) -> u8 {
@@ -79,12 +92,7 @@ impl<'de> Deserialize<'de> for ProfileNumber {
         D: serde::Deserializer<'de>,
     {
         let n = u8::deserialize(deserializer)?;
-        if n == 0 || n > MAX_WIRE_INDEX + 1 {
-            return Err(serde::de::Error::custom(
-                ProfileNumberError::OneBasedOutOfRange(n),
-            ));
-        }
-        Ok(Self(n))
+        Self::from_one_based(n).map_err(serde::de::Error::custom)
     }
 }
 
@@ -96,6 +104,24 @@ mod tests {
     fn from_wire_index_converts_zero_based_to_one_based() {
         assert_eq!(ProfileNumber::from_wire_index(0).unwrap().one_based(), 1);
         assert_eq!(ProfileNumber::from_wire_index(3).unwrap().one_based(), 4);
+    }
+
+    #[test]
+    fn from_one_based_accepts_the_full_range_without_underflowing() {
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().one_based(), 1);
+        assert_eq!(ProfileNumber::from_one_based(4).unwrap().one_based(), 4);
+    }
+
+    #[test]
+    fn from_one_based_rejects_zero_and_anything_past_four() {
+        assert_eq!(
+            ProfileNumber::from_one_based(0).unwrap_err(),
+            ProfileNumberError::OneBasedOutOfRange(0)
+        );
+        assert_eq!(
+            ProfileNumber::from_one_based(5).unwrap_err(),
+            ProfileNumberError::OneBasedOutOfRange(5)
+        );
     }
 
     #[test]
