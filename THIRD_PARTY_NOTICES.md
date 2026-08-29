@@ -14,7 +14,9 @@ reference; nothing in `crates/wh-proto` is ported from it, and no file's module 
 otherwise. Porting code carries the licence that covers it: the Sparklink MIT notice reproduced
 below, under "research/proto and research/hidpkg", attaches to `frame.rs` and `cmds.rs` in
 `crates/wh-proto` because of `research/proto` specifically, as well as to the vendored copies under
-`research/` (both packages). `NOTICE` says the same thing more briefly; this is the fuller statement it points at.
+`research/` (both packages). `NOTICE` says the same thing more briefly; this is the fuller statement
+it points at. The full notice text also travels with the released binary itself, in
+`THIRD_PARTY_LICENSES.md`, since that is the file most likely to accompany a distributed `wh.exe`.
 
 These notices are reproduced because the licences require it. Do not remove them.
 
@@ -125,7 +127,11 @@ copy is 1.0.16. Both are corrected here and in that file.
 
 The crates.io dependencies `wh` builds against are **not** covered by the entries above. They have
 their own file: `THIRD_PARTY_LICENSES.md`, which lists all 90 crates linked into the released
-`wh.exe` and reproduces every licence text verbatim.
+`wh.exe` from the crates.io dependency graph, plus a separate section for the Rust standard
+library's own runtime and the mingw-w64 C runtime, neither of which is a crates.io dependency and so
+neither would show up from a dependency-graph walk alone. Licence texts are reproduced with each
+line's leading and trailing whitespace normalised, not byte-for-byte verbatim; that file's own
+"Licence texts" section explains exactly what that means.
 
 That file exists because publishing a binary distributes those crates in compiled form, which makes
 their notice requirements live. An earlier version of this file stated that no such obligation was

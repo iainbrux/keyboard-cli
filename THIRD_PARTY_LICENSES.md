@@ -1,17 +1,32 @@
 # Third-party licences for the distributed `wh` binary
 
-This file covers the crates.io dependencies compiled into the released `wh.exe`. It exists because
-publishing a binary distributes those dependencies in compiled form, and their licences require their
-notices to travel with it.
+This file exists because publishing a binary distributes third-party code in compiled form, and
+licences require their notices to travel with it. **It covers two things, not one:** the crates.io
+dependencies compiled into the released `wh.exe`, and, separately, the Rust standard library's own
+runtime and the mingw-w64 C runtime it links against, which are not crates.io dependencies at all
+and are covered in their own section below, "The Rust standard library and mingw-w64 runtimes".
 
-It is generated from the actual dependency graph for the `x86_64-pc-windows-gnu` target, excluding
-development-only dependencies, and every licence text below is reproduced verbatim from the crate
-source that was compiled in.
+The crates.io section is generated from the actual dependency graph for the `x86_64-pc-windows-gnu`
+target, excluding development-only dependencies, and every licence text below is reproduced with
+leading and trailing whitespace normalised (see the "Licence texts" section for what that means and
+why) from the crate source that was compiled in. **This generation walks `cargo metadata`'s
+dependency graph, which is the crates.io half of what reaches the binary. It does not walk what the
+linker adds beyond that graph**, which is exactly what the standard-library and mingw-w64 section
+below exists to cover; earlier drafts of this file omitted that half entirely.
 
-**Vendored reference material under `research/` is not covered here.** That is a separate matter with
-its own file: see `THIRD_PARTY_NOTICES.md`.
+**Vendored reference material under `research/` is not covered here**, except where noted: parts of
+`crates/wh-proto` are themselves a compiled-in port of MIT-licensed Sparklink source, and that MIT
+permission notice is reproduced in full below, in "The Sparklink port compiled into `wh-proto`", not
+merely pointed at. The rest of `research/` is reference material that is never compiled into
+anything and stays covered by `THIRD_PARTY_NOTICES.md` alone.
 
-**90 third-party crates are linked into the binary.**
+**90 third-party crates are linked into the binary from the crates.io dependency graph**, and, on top
+of that, the Rust standard library's runtime and the mingw-w64 C runtime, covered below.
+
+**If you redistribute a build of this binary, these obligations pass to you, not just to this
+repository.** Several entries below require more than passive attribution: HIDAPI's licence election,
+`option-ext`'s source-availability requirement, and the notices this file exists to reproduce all
+travel with the binary itself, to whoever you give it to.
 
 ## Licence elections and obligations beyond attribution
 
@@ -34,6 +49,14 @@ or original licence, as the reason the choice exists.
 The Rust wrapper crate itself, `hidapi` 2.6.7 by The hidapi-rs Developers, is separately MIT, also
 reproduced below.
 
+**Closing a known upstream inconsistency, permanently, so it does not get re-litigated:** this same
+crate's `build.rs` (lines 6-17 of the vendored source) carries a GPL-3-or-later header, while its own
+`Cargo.toml` and `LICENSE.txt` both declare MIT. This is a genuine inconsistency in the upstream
+`hidapi` crate, not a mistake in this document, and it does not affect this project: `build.rs` runs
+only at build time on the developer's own machine to compile the bundled C library; none of its own
+code is compiled into, or reaches, the released `wh.exe`. This has been checked twice; it does not
+need checking a third time.
+
 ### `option-ext` 0.2.0 is MPL-2.0, and its source must be obtainable
 
 `option-ext` is reached through `directories` and `dirs-sys`, which `wh` uses to find the per-user
@@ -51,6 +74,271 @@ made no changes to it.
 Its expression is `(MIT OR Apache-2.0) AND Unicode-3.0`. The `AND` matters: the Unicode terms apply
 **in addition to** whichever of MIT or Apache-2.0 is taken, not instead of one. Its licence files are
 reproduced below.
+
+## The Sparklink port compiled into `wh-proto`
+
+`crates/wh-proto/src/frame.rs` and `crates/wh-proto/src/cmds.rs` are a Rust port of MIT-licensed
+source from Sparklink Playjoy's `@sparklinkplayjoy/protocol-keyboard` package (vendored for reference
+at `research/proto/`; each file's own module documentation names exactly which upstream file it
+ports). That is why `crates/wh-proto/Cargo.toml` declares `Apache-2.0 AND MIT` rather than plain
+Apache-2.0: the port is compiled into the released binary, and MIT requires its permission notice be
+included in all copies, including binary ones. `NOTICE` only points at `THIRD_PARTY_NOTICES.md` for
+this, which is not the same as including the notice itself; it is reproduced here in full instead.
+
+```
+MIT License
+
+Copyright (c) Sparklink Playjoy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+This is the same text `THIRD_PARTY_NOTICES.md` already reproduces for `research/proto/` and
+`research/hidpkg/`, copied here as well because this specific instance travels with the binary, not
+only with the repository. `research/`'s other vendored material (the rest of `research/proto/`,
+`research/hidpkg/`, `research/aure/`, `research/kbdocs/`) is never compiled into anything and stays
+covered by `THIRD_PARTY_NOTICES.md` alone; do not read this section as extending to any of that.
+
+## The Rust standard library and mingw-w64 runtimes
+
+Neither of these is a crates.io dependency, so neither appears in "Every crate in the binary" below,
+and an earlier version of this file did not cover them at all: the generator that built that section
+walks `cargo metadata`'s dependency graph for `wh`'s own `Cargo.lock`, and both of these are added by
+the linker from the Rust toolchain's sysroot and the mingw-w64 cross-compiler, underneath that graph
+entirely. Confirmed present in the actual released `wh.exe` with `strings`, not assumed from what a
+Windows Rust binary is generally expected to contain.
+
+### The Rust standard library's panic and backtrace runtime
+
+`std`'s backtrace support (used to format a panic) statically links a small dependency graph of its
+own, distinct from anything `wh` itself depends on. `strings target/x86_64-pc-windows-gnu/release/
+wh.exe` finds the literal source paths `addr2line-0.25.1`, `gimli-0.32.3`, `object-0.37.3`, and
+`rustc-demangle-0.1.26`, and the symbols `panic_unwind` and `_Unwind_RaiseException` (the GCC
+unwinder that implements it, covered separately below). It also finds `hashbrown-0.16.1` and
+`memchr-2.7.6`: **these are not the same copies already listed in "Every crate in the binary"**,
+which lists whichever versions `wh`'s own `Cargo.lock` resolved (`hashbrown` 0.15.5/0.17.1, `memchr`
+2.8.3); the sysroot pins its own, older versions internally, so both end up in the binary twice, at
+different versions, for different reasons.
+
+Per the Rust Project's own `COPYRIGHT.html` (shipped beside every toolchain, `~/.rustup/toolchains/
+*/share/doc/rust/COPYRIGHT.html` on this machine): "The Rust Project is dual-licensed under Apache
+2.0 and MIT terms." Its `library/backtrace` entry, the component responsible for pulling in the
+crates above, is listed explicitly: "License: Apache-2.0 OR MIT, Copyright: 2014 Alex Crichton,
+Copyright: The Rust Project Developers." The same document lists `addr2line`, `gimli`, `object`, and
+`rustc-demangle` individually among its out-of-tree dependencies, each `Apache-2.0 OR MIT`. `std`,
+`core`, `alloc`, `compiler_builtins`, and `panic_unwind` are themselves in-tree Rust Project source,
+also `Apache-2.0 OR MIT`, `Copyright: The Rust Project Developers`. `miniz_oxide` and `adler2` are
+part of the same `library/backtrace` dependency graph as the crates confirmed above, also each
+`Apache-2.0 OR MIT` (`adler2` additionally offers 0BSD, a strictly more permissive third option this
+project has no need to elect).
+
+The licence bodies are the same generic Apache-2.0 and MIT texts already reproduced above as Text 1
+and Text 2; nothing here needs its own copy of either. What differs per component is only the
+copyright holder, named above for each.
+
+### The mingw-w64 C runtime
+
+`wh.exe` is cross-compiled for `x86_64-pc-windows-gnu` and statically links the mingw-w64 C runtime.
+`strings` on the released binary finds `Mingw-w64 runtime failure:`, `__mingw_GetSectionCount`,
+`__gdtoa`, and `__mingw_raise_matherr`, confirming specific components are compiled in, not merely
+possible in general. mingw-w64 is a large, multi-licensed C library; the complete, file-by-file
+record is `/usr/share/doc/mingw-w64-common/copyright` on a Debian-family build host (925 lines). What
+follows is the notice for the components this project has positive evidence of, not a claim to have
+traced every object file the linker pulled in.
+
+The project as a whole, and everything not called out below, is:
+
+```
+Copyright: 2009-2016 the mingw-w64 project
+License: ZPL-2.1
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+   1. Redistributions in source code must retain the accompanying
+      copyright notice, this list of conditions, and the following
+      disclaimer.
+   2. Redistributions in binary form must reproduce the accompanying
+      copyright notice, this list of conditions, and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+   3. Names of the copyright holders must not be used to endorse or
+      promote products derived from this software without prior
+      written permission from the copyright holders.
+   4. The right to distribute this software or to use it for any
+      purpose does not give you the right to use Servicemarks (sm) or
+      Trademarks (tm) of the copyright holders.  Use of them is
+      covered by separate agreement with the copyright holders.
+   5. If any files are modified, you must cause the modified files to
+      carry prominent notices stating that you changed the files and
+      the date of any change.
+
+Disclaimer
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
+EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+`mingw-w64-crt/crt/*` (general C runtime startup and support code, covering
+`Mingw-w64 runtime failure:` and `__mingw_GetSectionCount`) is public domain, no notice required.
+
+`__gdtoa` (floating-point string conversion) is `mingw-w64-crt/gdtoa/*`:
+
+```
+Copyright: 1997-2001 Lucent Technologies
+Permission to use, copy, modify, and distribute this software and
+its documentation for any purpose and without fee is hereby
+granted, provided that the above copyright notice appear in all
+copies and that both that the copyright notice and this
+permission notice and warranty disclaimer appear in supporting
+documentation, and that the name of Lucent or any of its entities
+not be used in advertising or publicity pertaining to
+distribution of the software without specific, written prior
+permission.
+
+LUCENT DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+IN NO EVENT SHALL LUCENT OR ANY OF ITS ENTITIES BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+```
+
+and `mingw-w64-crt/gdtoa/qnan.c` and `strtodnrp.c` specifically add a second notice on top:
+
+```
+Copyright: 2004, 2005 David M. Gay
+           1998, 2000 Lucent Technologies
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appear in all copies and
+that both that the copyright notice and this permission notice and
+warranty disclaimer appear in supporting documentation, and that the
+name of the author or any of his current or former employers not be
+used in advertising or publicity pertaining to distribution of the
+software without specific, written prior permission.
+
+THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.  IN
+NO EVENT SHALL THE AUTHOR OR ANY OF HIS CURRENT OR FORMER EMPLOYERS
+BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY
+DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
+ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+OF THIS SOFTWARE.
+```
+
+`__mingw_raise_matherr` implicates the math-error-handling family alongside `mingw-w64-crt/math/
+s_erf.c` and related files, `Copyright: 1993 Sun Microsystems, Inc.`, permission granted "freely...
+provided that this notice is preserved":
+
+```
+Permission to use, copy, modify, and distribute this software is
+freely granted, provided that this notice is preserved.
+```
+
+### The GCC unwinder
+
+`_Unwind_RaiseException`, confirmed in the binary, is part of GCC's own unwind runtime, linked in to
+implement `panic_unwind` above. It is covered by the GNU GPL version 3 **with the GCC Runtime Library
+Exception**, which is precisely the mechanism that makes linking it into non-GPL, including
+closed-source, output permitted; no copyleft term reaches this binary because of it. Reproduced in
+full since it is short:
+
+```
+GCC RUNTIME LIBRARY EXCEPTION
+
+Version 3.1, 31 March 2009
+
+Copyright (c) 2009 Free Software Foundation, Inc. <https://fsf.org/>
+
+Everyone is permitted to copy and distribute verbatim copies of this license document, but changing
+it is not allowed.
+
+This GCC Runtime Library Exception ("Exception") is an additional permission under section 7 of the
+GNU General Public License, version 3 ("GPLv3"). It applies to a given file (the "Runtime Library")
+that bears a notice placed by the copyright holder of the file stating that the file is governed by
+GPLv3 along with this Exception.
+
+When you use GCC to compile a program, GCC may combine portions of certain GCC header files and
+runtime libraries with the compiled program. The purpose of this Exception is to allow compilation
+of non-GPL (including proprietary) programs to use, in this way, the header files and runtime
+libraries covered by this Exception.
+
+0. Definitions.
+
+A file is an "Independent Module" if it either requires the Runtime Library for execution after a
+Compilation Process, or makes use of an interface provided by the Runtime Library, but is not
+otherwise based on the Runtime Library.
+
+"GCC" means a version of the GNU Compiler Collection, with or without modifications, governed by
+version 3 (or a specified later version) of the GNU General Public License (GPL) with the option of
+using any subsequent versions published by the FSF.
+
+"GPL-compatible Software" is software whose conditions of propagation, modification and use would
+permit combination with GCC in accord with the license of GCC.
+
+"Target Code" refers to output from any compiler for a real or virtual target processor
+architecture, in executable form or suitable for input to an assembler, loader, linker and/or
+execution phase. Notwithstanding that, Target Code does not include data in any format that is used
+as a compiler intermediate representation, or used for producing a compiler intermediate
+representation.
+
+The "Compilation Process" transforms code entirely represented in non-intermediate languages
+designed for human-written code, and/or in Java Virtual Machine byte code, into Target Code. Thus,
+for example, use of source code generators and preprocessors need not be considered part of the
+Compilation Process, since the Compilation Process can be understood as starting with the output of
+the generators or preprocessors.
+
+A Compilation Process is "Eligible" if it is done using GCC, alone or with other GPL-compatible
+software, or if it is done without using any work based on GCC. For example, using non-GPL-compatible
+Software to optimize any GCC intermediate representations would not qualify as an Eligible
+Compilation Process.
+
+1. Grant of Additional Permission.
+
+You have permission to propagate a work of Target Code formed by combining the Runtime Library with
+Independent Modules, even if such propagation would otherwise violate the terms of GPLv3, provided
+that all Target Code was generated by Eligible Compilation Processes. You may then convey such a
+combination under terms of your choice, consistent with the licensing of the Independent Modules.
+
+2. No Weakening of GCC Copyleft.
+
+The availability of this Exception does not imply any general presumption that third-party software
+is unaffected by the copyleft requirements of the license of GCC.
+```
+
+Checked for completeness: `strings target/x86_64-pc-windows-gnu/release/wh.exe | grep -i 'general
+public'` finds nothing. No GPL text, obligation, or copyleft term reaches this binary from any
+source; the GCC exception above is why the unwinder specifically is clean, and every other component
+in this section is independently permissive.
 
 ## Every crate in the binary
 
@@ -156,7 +444,13 @@ those permissive options applies; both texts are reproduced so the notice is com
 
 ## Licence texts
 
-Reproduced verbatim and deduplicated. 50 distinct texts cover the crates above.
+Deduplicated: 50 distinct texts cover the crates above. No copyright line, holder, or condition was
+altered in any of them. They are reproduced with each line's leading and trailing whitespace
+normalised (stripped) rather than strictly verbatim: the generator that produced this section strips
+that whitespace, which loses centring and indentation on a handful of texts (for example, Text 1's
+own "Apache License" title line is centred and indented in the upstream file; the substance below it
+is unaffected). One file whose line endings were CRLF was also normalised to LF when merged into this
+document. Neither affects any text's legal content.
 
 ### Text 1
 

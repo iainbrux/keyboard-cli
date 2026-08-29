@@ -29,10 +29,13 @@ not a copy of anyone's software.
 --------------------------------------------------------------------------
 Third-party material
 
-Parts of crates/wh-proto are a port of MIT licensed Sparklink Playjoy source.
-Reference material vendored under research/ is third-party work under its own
-MIT and ISC licences. Neither is owned by this project, and both keep their own
-terms. See THIRD_PARTY_NOTICES.md.
+Parts of crates/wh-proto are a port of MIT licensed Sparklink Playjoy source,
+and that permission notice is compiled into the released binary along with the
+port; it is reproduced in full in THIRD_PARTY_LICENSES.md, not only pointed at.
+Reference material vendored under research/ (including the rest of the same
+Sparklink source, never compiled in) is third-party work under its own MIT and
+ISC licences. Neither is owned by this project, and both keep their own terms.
+See THIRD_PARTY_NOTICES.md.
 
 The crates.io dependencies compiled into a released binary are listed with
 their full licence texts in THIRD_PARTY_LICENSES.md. If you distribute a
