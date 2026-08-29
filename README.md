@@ -35,6 +35,23 @@ cargo build --release --workspace --target x86_64-pc-windows-gnu
 you can run `./bin/wh <command>` directly from your WSL shell exactly as you would a native binary,
 and it will find and control the keyboard through the Windows HID stack underneath.
 
+### Building a release archive
+
+A bare `wh.exe` download carries none of this project's licence, attribution, or third-party
+notices with it, and Apache-2.0 requires all three to reach whoever receives the binary. Run
+`scripts/package-release.sh` to build the actual release artefact, not just the binary:
+
+```
+scripts/package-release.sh
+```
+
+It builds the release binary, then writes `dist/wh-<version>-x86_64-pc-windows-gnu.zip` containing
+`wh.exe`, `LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`, `THIRD_PARTY_NOTICES.md`, and a short
+`README.txt` pointer back to this repository, and prints the archive's contents so a run is its own
+verification. Requires `cargo` and `python3` (used to build the archive itself; no `zip` binary is
+assumed to be installed). Given the same source tree, two runs produce a byte-identical archive.
+This is what should actually be attached to a GitHub release, not the bare `.exe`.
+
 ## The exclusive-access caveat
 
 **The vendor's own web configurator, `terminal.wallhack.com`, holds the device exclusively while its
@@ -173,6 +190,7 @@ configurator; `wh` does not implement either.
 
 See `docs/protocol.md` for the wire protocol this tool speaks, and `docs/protocol-inventory.md` for
 the underlying measured frame counts it is built from.
+
 ## Licence, warranty, and liability
 
 Read this before you run anything in this repository against a keyboard you care about.
@@ -222,11 +240,14 @@ travels with the port. `THIRD_PARTY_NOTICES.md` names the files.
 which this repository's licence does not override. Same file.
 
 **The dependencies compiled into a released binary** are listed with their full licence texts in
-`THIRD_PARTY_LICENSES.md`: 90 crates, generated from the real dependency graph. **If you distribute a
-binary of this project, those obligations pass to you.** Three need more than a notice, and that file
-explains each: HIDAPI is triple-licensed and this project elects the BSD-style option rather than the
-GPL, `option-ext` is MPL-2.0 so its source must stay obtainable by recipients, and `unicode-ident`
-carries a Unicode term on top of its permissive choice.
+`THIRD_PARTY_LICENSES.md`: 90 crates, generated from the real dependency graph, **plus a separate
+section covering the Rust standard library's own runtime and the mingw-w64 C runtime**, neither of
+which is a crates.io dependency and so neither shows up in a dependency-graph walk on its own; that
+file explains why and what is in each. **If you distribute a binary of this project, those
+obligations pass to you.** Three of the crate entries need more than a notice, and that file explains
+each: HIDAPI is triple-licensed and this project elects the BSD-style option rather than the GPL,
+`option-ext` is MPL-2.0 so its source must stay obtainable by recipients, and `unicode-ident` carries
+a Unicode term on top of its permissive choice.
 
 ### No warranty
 
