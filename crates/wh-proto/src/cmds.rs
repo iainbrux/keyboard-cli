@@ -221,6 +221,28 @@ pub fn parse_precision(payload: &[u8]) -> Result<Precision, DecodeError> {
     })
 }
 
+/// Read the board's active profile: cmd 0x00, sub-order `order::CONFIG` (0x70), arg 0xFF.
+/// `cmd_order` already lays out `[order_id, ...h_args, 0xFF, 0xFF]`, so passing `0xFF` as the
+/// single `h_args` byte produces exactly the measured `[0x70, 0xFF, 0xFF, 0xFF]` payload (task
+/// 19b group B).
+pub fn read_profile() -> [u8; REPORT_LEN] {
+    cmd_order(order::CONFIG, &[0xFF]).expect("4 bytes")
+}
+
+/// Reply payload `[status, sub-order, index, 0xff]` for the profile read above. Returns the
+/// zero-based profile index at `payload[2]`. Rejects a payload too short to contain it, and
+/// rejects a reply whose `payload[1]` is not `order::CONFIG`: a reply to a different sub-order
+/// landing here must not be misread as a plausible but wrong profile index.
+pub fn parse_profile(payload: &[u8]) -> Result<u8, DecodeError> {
+    if payload.len() < 3 {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    if payload[1] != order::CONFIG {
+        return Err(DecodeError::Shape);
+    }
+    Ok(payload[2])
+}
+
 pub fn sync() -> [u8; REPORT_LEN] {
     frame(cmd::SYNC, &[1, 2, 3, 4, 0xFF, 0xFF]).expect("6 bytes")
 }
@@ -533,6 +555,38 @@ mod tests {
                 min: Um(0),
                 max: Um(4000)
             }
+        );
+    }
+
+    /// The measured frame, checksum included: `5c 04 00 <crc> 70 ff ff ff`, task 19b group B.
+    #[test]
+    fn read_profile_matches_the_measured_frame() {
+        let f = read_profile();
+        assert_eq!(&f[..8], &[0x5C, 0x04, 0x00, 0x94, 0x70, 0xFF, 0xFF, 0xFF]);
+        assert!(f[8..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn parse_profile_reads_the_zero_based_index_from_the_real_replies() {
+        assert_eq!(parse_profile(&[0x00, 0x70, 0x00, 0xFF]).unwrap(), 0);
+        assert_eq!(parse_profile(&[0x00, 0x70, 0x01, 0xFF]).unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_profile_rejects_a_payload_too_short_to_hold_the_index() {
+        assert_eq!(
+            parse_profile(&[0x00, 0x70]).unwrap_err(),
+            DecodeError::Short(2)
+        );
+    }
+
+    #[test]
+    fn parse_profile_rejects_a_reply_to_a_different_sub_order() {
+        // payload[1] is 0x50 (order::POLLING), not order::CONFIG: a reply to a different
+        // sub-order landing here must be rejected, not misread as profile index 0x00.
+        assert_eq!(
+            parse_profile(&[0x00, 0x50, 0x00, 0xFF]).unwrap_err(),
+            DecodeError::Shape
         );
     }
 

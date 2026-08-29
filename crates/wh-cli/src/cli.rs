@@ -40,6 +40,12 @@ pub enum Cmd {
         /// Use the newest auto-backup instead of naming a file
         #[arg(long)]
         last: bool,
+        /// Restore a snapshot that predates profile recording (it has no recorded profile),
+        /// asserting it belongs to the board's current profile. Has no effect, and does not
+        /// rescue, a snapshot whose recorded profile differs from the board's: that refusal has
+        /// no override.
+        #[arg(long)]
+        force: bool,
     },
     /// Key names and groups
     Keys {

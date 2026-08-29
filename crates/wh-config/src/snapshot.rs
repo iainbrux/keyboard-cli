@@ -7,6 +7,15 @@ pub struct Snapshot {
     pub firmware: String,
     pub serial: String,
     pub taken_at: String, // RFC3339, informational
+    /// The board's active profile at the moment this snapshot was taken, in the UI's one-based
+    /// numbering (wire index 0 is profile 1, never the zero-based wire value directly; see
+    /// `wh_proto::cmds::parse_profile` for the wire's own convention). `None` means this
+    /// snapshot predates profile recording, so its provenance is unknown, not that the board
+    /// has no active profile (every board always has one; task 19b group B). Absent entirely
+    /// from a snapshot's TOML deserializes to `None` (serde's own behaviour for a missing
+    /// `Option` field), so backups taken before this field existed still parse.
+    #[serde(default)]
+    pub profile: Option<u8>,
     pub global: GlobalToml,
     pub keys: Vec<KeyToml>,
 }
@@ -49,6 +58,7 @@ mod tests {
             firmware: "V1.2.3".into(),
             serial: "SN1".into(),
             taken_at: "2026-08-28T12:00:00Z".into(),
+            profile: Some(1),
             global: GlobalToml {
                 travel_mm: 2.0,
                 press_dead_mm: 0.2,
@@ -67,5 +77,71 @@ mod tests {
         let text = snap.to_toml().unwrap();
         let back = Snapshot::from_toml(&text).unwrap();
         assert_eq!(back, snap);
+    }
+
+    /// A snapshot taken before profile recording existed serializes with `profile: None`, which
+    /// omits the `profile` key from the TOML entirely (task 19b group B: `None` is the "provenance
+    /// unknown" case, not "no active profile"). Round-tripped both ways here, not just parsed:
+    /// `to_toml` must not emit a `profile` line for `None` (it would otherwise emit something
+    /// TOML has no syntax for, since TOML has no null), and `from_toml` on the resulting text
+    /// must come back with `profile` still absent, not defaulted to `Some(0)` or any other value.
+    #[test]
+    fn snapshot_with_no_profile_round_trips_with_the_field_absent() {
+        let snap = Snapshot {
+            firmware: "V1.2.3".into(),
+            serial: "SN1".into(),
+            taken_at: "2026-08-28T12:00:00Z".into(),
+            profile: None,
+            global: GlobalToml {
+                travel_mm: 2.0,
+                press_dead_mm: 0.2,
+                release_dead_mm: 0.2,
+            },
+            keys: vec![KeyToml {
+                name: "w".into(),
+                usage: 0x1A,
+                ap_mm: 1.2,
+                rt: true,
+                rt_press_mm: 0.5,
+                rt_release_mm: 0.5,
+                mode_raw: 0x20,
+            }],
+        };
+        let text = snap.to_toml().unwrap();
+        assert!(
+            !text.contains("profile"),
+            "a None profile must not appear in the TOML at all: {text}"
+        );
+        let back = Snapshot::from_toml(&text).unwrap();
+        assert_eq!(back.profile, None);
+        assert_eq!(back, snap);
+    }
+
+    /// The literal shape an operator's real, pre-existing snapshot file takes: no `profile` key
+    /// anywhere, written by hand here (not round-tripped through `to_toml`) so this test does not
+    /// depend on the serializer's own behaviour for `None` to prove the parser accepts it.
+    #[test]
+    fn snapshot_toml_with_no_profile_key_at_all_still_parses() {
+        let text = r#"
+firmware = "V1.2.3"
+serial = "SN1"
+taken_at = "2026-08-28T12:00:00Z"
+
+[global]
+travel_mm = 2.0
+press_dead_mm = 0.2
+release_dead_mm = 0.2
+
+[[keys]]
+name = "w"
+usage = 26
+ap_mm = 1.2
+rt = true
+rt_press_mm = 0.5
+rt_release_mm = 0.5
+mode_raw = 32
+"#;
+        let snap = Snapshot::from_toml(text).unwrap();
+        assert_eq!(snap.profile, None);
     }
 }

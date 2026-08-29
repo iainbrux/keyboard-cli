@@ -151,6 +151,16 @@ fn mode_read_lines(usage: u8, mode: u16) -> Vec<String> {
     ]
 }
 
+/// The profile-read roundtrip `ops::profile` sends, as `[out, in]` lines: `idx` is the
+/// zero-based index the board replies with (the wire's own numbering; `snapshot_from_device`
+/// converts it to the UI's one-based numbering before storing it in `Snapshot::profile`).
+fn profile_lines(idx: u8) -> Vec<String> {
+    vec![
+        out_line(&cmds::read_profile()),
+        in_line(&reply(cmds::cmd::CMD, &[0x00, 0x70, idx, 0xFF])),
+    ]
+}
+
 /// The SYNC roundtrip `ops::device_info` sends, as `[out, in]` lines: `serial` and `firmware`
 /// are each written into the reply payload with the length prefix `cmds::parse_sync` reads them
 /// back through (task 19b chunk 6: both strings are length-prefixed on the wire, not fixed-width).
@@ -188,14 +198,15 @@ fn global_travel_lines(travel_um: u16, press_um: u16, release_um: u16) -> Vec<St
 }
 
 /// Composes, in order, exactly the frames `snapshot_from_device` sends against the two-key
-/// board: the SYNC request and info reply, the global travel DB read and reply, the matrix's
-/// three DEFKEY roundtrips, then four KEY reads and replies per key. Built with
-/// `wh_proto::cmds` encoders, not hand-written hex, so the test breaks if an encoder changes
-/// rather than silently drifting from it.
+/// board: the SYNC request and info reply, the profile read and reply, the global travel DB
+/// read and reply, the matrix's three DEFKEY roundtrips, then four KEY reads and replies per
+/// key. Built with `wh_proto::cmds` encoders, not hand-written hex, so the test breaks if an
+/// encoder changes rather than silently drifting from it.
 fn build_script() -> Vec<String> {
     let mut lines = Vec::new();
 
     lines.extend(sync_lines("SNDUMPTEST000001", "V1.0.0.001"));
+    lines.extend(profile_lines(0)); // board reports profile index 0, i.e. UI "profile 1"
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
 
@@ -244,6 +255,9 @@ fn dump_json_via_replay() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["serial"], "SNDUMPTEST000001");
     assert_eq!(v["firmware"], "V1.0.0.001");
+    // The board replied with the wire's zero-based index 0; the JSON field carries the same
+    // one-based value ("profile 1") the human-readable dump text below shows, task 19b group B.
+    assert_eq!(v["profile"], 1);
     assert_eq!(v["global"]["travel_mm"], 0.5);
     assert_eq!(v["keys"][0]["name"], "w");
     assert_eq!(v["keys"][0]["rt"], true);
@@ -258,6 +272,30 @@ fn dump_json_via_replay() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The human-readable sibling of `dump_json_via_replay`'s `v["profile"]` assertion above: both
+/// read the exact same fixture (the board replies with wire index 0), so a fix that mixed the
+/// two numbering conventions between the JSON field and the printed text (task 19b group B's own
+/// warning) would show up as a mismatch between this test and that one, not just an internally
+/// consistent but wrong pair.
+#[test]
+fn dump_text_prints_the_one_based_profile_number() {
+    let path = write_script("dump-profile-text", &build_script());
+    let config_home = scratch_config_dir("dump-profile-text");
+
+    let out = run_wh(&["dump"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("profile 1"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// Pins that a K-001 board-function key (task 19b chunk 7: `0xFA`, `0xFB`, `0xD6`, `0xFC`,
 /// confirmed by measurement) renders by its name in `dump` output, not as bare hex. A one-key
 /// board with 'ap' (usage `0xFA`) at row 0 col 0; before chunk 7 this printed as `"0xFA"`.
@@ -265,6 +303,7 @@ fn dump_json_via_replay() {
 fn dump_prints_a_board_function_key_by_name_not_hex() {
     let mut lines = Vec::new();
     lines.extend(sync_lines("SNBOARDFUNC000001", "V1.0.0.001"));
+    lines.extend(profile_lines(0));
     lines.extend(global_travel_lines(500, 200, 200));
     let row_pairs = [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)];
     for (i, &(a, b)) in row_pairs.iter().enumerate() {
@@ -417,14 +456,17 @@ fn keys_list_renders_an_unnamed_group_member_as_hex_not_dropping_it() {
 // --- write path: `set`, `backup`, `restore`, `selftest` -------------------------------------
 
 /// Exactly the frames `auto_backup` sends against the two-key board (`matrix_lines`): the full
-/// `snapshot_from_device` pipeline, sync, global travel, matrix, then one four-read
+/// `snapshot_from_device` pipeline, sync, profile, global travel, matrix, then one four-read
 /// `read_key_settings` per key on the board. The AP/press/release values here (1000um for 'w',
 /// the untouched defaults for 'a') are deliberately distinct from anything a write-path test
 /// writes or reads back afterwards, so a script that accidentally reused this phase's frames
-/// for the post-write readback could not pass by coincidence.
-fn auto_backup_lines() -> Vec<String> {
+/// for the post-write readback could not pass by coincidence. `profile_idx` (wire, zero-based) is
+/// a parameter, not fixed, so `restore`'s profile-safety tests can script the board reporting a
+/// profile that matches or differs from the snapshot being restored.
+fn auto_backup_lines(profile_idx: u8) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(sync_lines("SNWRITETEST00001", "V1.0.0.001"));
+    lines.extend(profile_lines(profile_idx));
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
     lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500)); // 'w' pre-write
@@ -440,7 +482,7 @@ fn auto_backup_lines() -> Vec<String> {
 fn set_ap_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
-    lines.extend(auto_backup_lines());
+    lines.extend(auto_backup_lines(0));
 
     let recs = vec![KeyRecord {
         key: 0x1A,
@@ -528,7 +570,7 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
 #[test]
 fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     let mut lines = matrix_lines(); // resolve_keys
-    lines.extend(auto_backup_lines());
+    lines.extend(auto_backup_lines(0));
 
     // ops::rt_records' own pre-write MODE read: 0x01 (touch Global, advanced nibble 1).
     lines.extend(mode_read_lines(0x1A, 0x01));
@@ -597,7 +639,7 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 #[test]
 fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     let mut lines = matrix_lines(); // resolve_keys
-    lines.extend(auto_backup_lines());
+    lines.extend(auto_backup_lines(0));
 
     // ops::rt_off_records' own pre-write MODE read: 0x31 (touch Rt, advanced nibble 1).
     lines.extend(mode_read_lines(0x1A, 0x31));
@@ -845,14 +887,15 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// A snapshot's TOML text for one key, 'w', with a caller-chosen `ap_mm`, so both the
-/// out-of-range and happy-path restore tests below can share it and diverge only on that one
-/// value.
-fn restore_snapshot_toml(ap_mm: f64) -> String {
+/// A snapshot's TOML text for one key, 'w', with a caller-chosen `ap_mm` and `profile` (one-based,
+/// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
+/// and profile-safety restore tests below can all share it and diverge only on those two values.
+fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
     let snap = wh_config::snapshot::Snapshot {
         firmware: "V1.0.0.001".into(),
         serial: "SNRESTORETEST001".into(),
         taken_at: "2026-08-28T12:00:00Z".into(),
+        profile,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: 2.0,
             press_dead_mm: 0.2,
@@ -875,9 +918,9 @@ fn restore_snapshot_toml(ap_mm: f64) -> String {
     snap.to_toml().unwrap()
 }
 
-fn write_snapshot(tag: &str, ap_mm: f64) -> std::path::PathBuf {
+fn write_snapshot(tag: &str, ap_mm: f64, profile: Option<u8>) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("wh-{tag}-{}.toml", std::process::id()));
-    std::fs::write(&path, restore_snapshot_toml(ap_mm)).unwrap();
+    std::fs::write(&path, restore_snapshot_toml(ap_mm, profile)).unwrap();
     path
 }
 
@@ -888,7 +931,7 @@ fn write_snapshot(tag: &str, ap_mm: f64) -> std::path::PathBuf {
 #[test]
 fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
     let config_home = scratch_config_dir("restore-out-of-range");
-    let snap_path = write_snapshot("restore-oor", 99.0);
+    let snap_path = write_snapshot("restore-oor", 99.0, Some(1));
     let empty_replay = write_script("restore-oor", &[]);
 
     let out = run_wh(
@@ -915,19 +958,14 @@ fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `restore` from a valid snapshot: the auto-backup happens before anything is overwritten
-/// (pinned by a real backup file existing on disk afterwards, not just the printed message),
-/// the global travel and per-key writes land, and the readback verifies. Exit 0, "verified" in
-/// stdout.
-#[test]
-fn restore_happy_path_backs_up_and_verifies() {
-    let config_home = scratch_config_dir("restore-happy");
-    let snap_path = write_snapshot("restore-happy", 1.2);
-
+/// The frames `ops::restore_all` sends plus `verify_restore`'s readback, for the same
+/// snapshot (`restore_snapshot_toml`'s ap_mm 1.2, mode_raw 0x0220) `restore_happy_path_backs_up_and_verifies`
+/// and the force-rescue test below both restore: global travel write first (2.0/0.2/0.1mm =
+/// 2000/200/100um), then the per-key batch for 'w' (ap, mode verbatim, rt press, rt release), no
+/// SAVE (task 19b chunk 4), then the readback that matches exactly. Shared so both tests restore
+/// the identical snapshot content and diverge only on the profile-safety fixture around it.
+fn restore_write_and_verify_lines() -> Vec<String> {
     let mut lines = Vec::new();
-    lines.extend(auto_backup_lines());
-
-    // restore_all: global travel write first (2.0/0.2/0.1mm = 2000/200/100um).
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um::from_mm(2.0, 0.0, 4.0).unwrap(),
         wh_proto::value::Um::from_mm(0.2, 0.0, 4.0).unwrap(),
@@ -936,7 +974,6 @@ fn restore_happy_path_backs_up_and_verifies() {
     lines.push(out_line(&db_write));
     lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
 
-    // Then the per-key batch for 'w': ap, mode (verbatim), rt press, rt release.
     let recs = vec![
         KeyRecord {
             key: 0x1A,
@@ -969,6 +1006,21 @@ fn restore_happy_path_backs_up_and_verifies() {
 
     // verify_restore reads 'w' back and finds every field matching what was restored.
     lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 600));
+    lines
+}
+
+/// `restore` from a valid snapshot: the auto-backup happens before anything is overwritten
+/// (pinned by a real backup file existing on disk afterwards, not just the printed message),
+/// the board's profile (1) matches the snapshot's recorded profile (1), the global travel and
+/// per-key writes land, and the readback verifies. Exit 0, "verified" in stdout.
+#[test]
+fn restore_happy_path_backs_up_and_verifies() {
+    let config_home = scratch_config_dir("restore-happy");
+    let snap_path = write_snapshot("restore-happy", 1.2, Some(1));
+
+    let mut lines = Vec::new();
+    lines.extend(auto_backup_lines(0)); // board profile index 0 = UI profile 1, matches the snapshot
+    lines.extend(restore_write_and_verify_lines());
 
     let path = write_script("restore-happy", &lines);
     let out = run_wh(
@@ -997,6 +1049,133 @@ fn restore_happy_path_backs_up_and_verifies() {
         backups, 1,
         "expected restore's auto-backup to have written exactly one file"
     );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The safety check this task exists for (task 19b group B), end to end: the snapshot recorded
+/// profile 1 but the board is on profile 2. `restore` must refuse before `ops::restore_all` ever
+/// runs, not just return some error: the script ends right after the auto-backup phase, so if
+/// the global-travel write or the key batch reached the wire at all, `ReplayTransport` would
+/// reject the unscripted send and this would fail for the wrong reason instead of the right one.
+#[test]
+fn restore_refuses_when_the_boards_profile_differs_from_the_snapshots() {
+    let config_home = scratch_config_dir("restore-profile-mismatch");
+    let snap_path = write_snapshot("restore-profile-mismatch", 1.2, Some(1));
+    let path = write_script("restore-profile-mismatch", &auto_backup_lines(1)); // board profile index 1 = UI profile 2
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--force` must not rescue a recorded mismatch (task 19b group B is explicit that this case
+/// has no override): identical fixture to the test above, `--force` added, same refusal expected.
+/// Same reasoning on why the script ends after the auto-backup phase.
+#[test]
+fn restore_force_does_not_rescue_a_profile_mismatch() {
+    let config_home = scratch_config_dir("restore-profile-mismatch-force");
+    let snap_path = write_snapshot("restore-profile-mismatch-force", 1.2, Some(1));
+    let path = write_script(
+        "restore-profile-mismatch-force",
+        &auto_backup_lines(1), // board profile index 1 = UI profile 2
+    );
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap(), "--force"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit even with --force, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The other refusal case: no recorded profile at all (an older snapshot). Refused without
+/// `--force`, before `ops::restore_all` ever runs; same "script ends after the auto-backup
+/// phase" reasoning as the mismatch tests above.
+#[test]
+fn restore_refuses_an_unrecorded_profile_without_force() {
+    let config_home = scratch_config_dir("restore-profile-unrecorded");
+    let snap_path = write_snapshot("restore-profile-unrecorded", 1.2, None);
+    let path = write_script("restore-profile-unrecorded", &auto_backup_lines(0));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.to_lowercase().contains("--force"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The rescue half of the unrecorded-profile case: identical fixture to the test above,
+/// `--force` added, and this time the restore actually proceeds all the way through the write
+/// and verification, unlike the mismatch case's `--force`, which never rescues anything.
+#[test]
+fn restore_force_rescues_an_unrecorded_profile() {
+    let config_home = scratch_config_dir("restore-profile-unrecorded-force");
+    let snap_path = write_snapshot("restore-profile-unrecorded-force", 1.2, None);
+
+    let mut lines = Vec::new();
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines());
+    let path = write_script("restore-profile-unrecorded-force", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap(), "--force"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
 
     std::fs::remove_file(snap_path).unwrap();
     std::fs::remove_file(path).unwrap();

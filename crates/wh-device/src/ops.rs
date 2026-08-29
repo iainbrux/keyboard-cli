@@ -264,6 +264,15 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
     cmds::parse_global_travel(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
 }
 
+/// The board's currently active profile, zero-based (the wire's own numbering; see
+/// `wh_proto::cmds::parse_profile`). Read only, task 19b group B: profile *select* is documented
+/// in the brief but deliberately not implemented, since nothing in Phase 1 needs to change the
+/// active profile.
+pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<u8, DeviceError> {
+    let payload = s.roundtrip(&cmds::read_profile())?;
+    cmds::parse_profile(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
+}
+
 /// Write a whole snapshot back to the board: global travel first, then every per-key record
 /// (via `write_records`, which skips the batch entirely when `records` is empty). Global travel
 /// goes first so a partial restore that fails partway through the per-key batch still leaves the
@@ -1050,6 +1059,30 @@ mod tests {
         let lines = [l("out", &cmds::read_global_travel()), l("in", &bad_reply)].join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let err = global_travel(&mut s).unwrap_err();
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn profile_reads_the_zero_based_index_from_the_reply() {
+        let lines = [
+            l("out", &cmds::read_profile()),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70, 0x01, 0xFF])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        assert_eq!(profile(&mut s).unwrap(), 1);
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn profile_maps_decode_failure_to_decode_error_not_timeout() {
+        let bad_reply = rf(cmds::cmd::CMD, &[0x00]); // too short to decode
+        let lines = [l("out", &cmds::read_profile()), l("in", &bad_reply)].join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let err = profile(&mut s).unwrap_err();
         assert!(
             matches!(err, DeviceError::Decode(_)),
             "expected Decode, got {err:?}"
