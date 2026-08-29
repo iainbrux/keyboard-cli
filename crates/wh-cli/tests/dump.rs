@@ -1119,6 +1119,116 @@ fn restore_happy_path_backs_up_and_verifies() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// A hand-written `.toml` snapshot, restored by naming its path explicitly: proves `restore`
+/// still picks the TOML parser off the extension via `Snapshot::from_file_text`, not always
+/// JSON. Written by hand, not through any serializer, since `to_toml` no longer exists and this
+/// is what a real Phase 1 backup looks like. Same values as `restore_write_and_verify_lines`
+/// expects, so this shares that fixture with the JSON happy path above.
+#[test]
+fn restore_from_an_explicit_toml_file_still_works() {
+    let config_home = scratch_config_dir("restore-toml-explicit");
+    let snap_path =
+        std::env::temp_dir().join(format!("wh-restore-toml-{}.toml", std::process::id()));
+    std::fs::write(
+        &snap_path,
+        r#"firmware = "V1.0.0.001"
+serial = "SNRESTORETEST001"
+taken_at = "2026-08-28T12:00:00Z"
+profile = 1
+
+[global]
+travel_mm = 2.0
+press_dead_mm = 0.2
+release_dead_mm = 0.1
+
+[[keys]]
+name = "w"
+usage = 26
+ap_mm = 1.2
+rt = false
+rt_press_mm = 0.5
+rt_release_mm = 0.6
+mode_raw = 544
+"#,
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines());
+    let path = write_script("restore-toml-explicit", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--last` restoring a `.toml` backup: the newest file in the store's `backups/` directory is a
+/// pre-existing `.toml` backup, not one this run wrote, so `load_backup`'s returned path has to
+/// carry through to `from_file_text` for the TOML parser to be picked at all. This is the one
+/// path the JSON-only happy path above never exercises.
+#[test]
+fn restore_last_from_a_toml_backup_still_works() {
+    let config_home = scratch_config_dir("restore-last-toml");
+    let backups = config_home.join("wh").join("backups");
+    std::fs::create_dir_all(&backups).unwrap();
+    std::fs::write(
+        backups.join("00000000001756000000.000000000.toml"),
+        r#"firmware = "V1.0.0.001"
+serial = "SNRESTORETEST001"
+taken_at = "2026-08-28T12:00:00Z"
+profile = 1
+
+[global]
+travel_mm = 2.0
+press_dead_mm = 0.2
+release_dead_mm = 0.1
+
+[[keys]]
+name = "w"
+usage = 26
+ap_mm = 1.2
+rt = false
+rt_press_mm = 0.5
+rt_release_mm = 0.6
+mode_raw = 544
+"#,
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines());
+    let path = write_script("restore-last-toml", &lines);
+
+    let out = run_wh(&["restore", "--last"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The profile-safety check, end to end: the snapshot recorded profile 1 but the board is on
 /// profile 2. `restore` must refuse before `ops::restore_all` ever runs: the script ends right
 /// after the auto-backup phase, so a global-travel write or key batch reaching the wire would
