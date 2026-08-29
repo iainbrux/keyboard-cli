@@ -54,6 +54,16 @@ hardware session precisely because of this bit: earlier code compared a reply's 
 directly against the request's, so every reply was silently rejected as unrecognised and every read
 appeared to hang or fail. Any reimplementation that skips this bit will reproduce that exact failure.
 
+This is the first of the three real divergences this document tracks between what the upstream
+Sparklink source suggests and what the K-001 actually does on the wire. It is not that upstream
+claims the bit is unset: `research/proto/package/src/controller/info.ts`'s `getCmd`/`getCmdSync`
+decode whatever payload arrives without comparing or masking a reply bit against the request's `cmd`
+at all, because the browser-side WebHID event model already separates outbound writes from inbound
+input reports, so the JS source never needed to check. Nothing in the ported source predicted this
+bit either way; the K-001 setting it had to be found from captures, and a port that carries over
+upstream's "just decode whatever arrived" assumption into a request/reply-matched `Session` (as this
+one's did, initially) reproduces the exact non-functional state described above.
+
 ## Value encoding
 
 Travel-like values (actuation point, rapid trigger press and release depth, global travel) are
@@ -109,6 +119,14 @@ purely as ported vocabulary from upstream, `PROTOCOL_VERSION` (`0x01`), `FACTORY
 same as SAVE. They are not exposed by the CLI and this document makes no claim about their real
 behaviour beyond their upstream names.
 
+`POLLING` (`0x50`) is a different case worth calling out explicitly, since it is not silent: upstream
+names sub-order `0x50` as the polling-rate order, and `0x50` is exactly the sub-order the table above
+lists as exercised, 3 pairs, reply always `005000`. That reply payload carries no polling-rate value
+or anything else recognisable, and nothing in the corpus writes a rate through it, so this document
+does not promote the upstream name to a fact: `0x50` is left in the unidentified list above rather
+than labelled "polling rate", even though the name and the traffic line up, because line-up alone is
+not the same standard of evidence this document uses everywhere else.
+
 ## Key records
 
 A key record is four bytes: `[key, layout, value_lo, value_hi]`, where `key` is the USB HID usage
@@ -150,8 +168,41 @@ full possible range. Within the corpus: layout `0x04` (actuation point) only eve
 
 `wh` models four of these: `0x04`, `0x08`, `0x14`, `0x15`. `0x00` and `0x01` are now identified (see
 below) but `wh` does not read or write the key mapping through them; remapping keys is out of Phase 1
-scope. `0x16`, `0x17`, `0x19`, `0xfe`, and `0xff` remain either unused by `wh` or, in `0xfe`'s case,
-managed entirely by the store rather than the wire.
+scope. `0x16`, `0x17`, `0x19`, and `0xff` remain unused by `wh`. `0xfe` is also never written by
+`wh`: it is board keyset membership, not the same thing as a `wh keys group`, which is a purely
+host-side name for a set of keys stored in `wh`'s own `config.toml` and never sent to the board at
+all. The two happen to share the word "group"/"keyset"; they are not the same mechanism, and `wh`
+never reads or writes `0xfe`.
+
+### Mode: nibble values, and a divergence from upstream
+
+Layout `0x08` (`Layout_Mode` upstream) packs two 4-bit fields into the low byte of a 16-bit value:
+touch mode in the high nibble, an advanced-key mode in the low nibble (`Mode`/`TouchMode` in
+`crates/wh-proto/src/cmds.rs`). The touch mode nibble is the one a reimplementation needs to get
+right to write `set rt` or `set ap` at all, and it is the second of this document's three tracked
+divergences.
+
+Upstream (`research/proto/package/src/constants/param.ts`'s `KeyTouchMode`, and
+`byte.ts`'s near-identical copy) declares three values: `global = 0x00`, `single = 0x01`,
+`rt = 0x02`. Measured against the real device across 1224 captured frames, the K-001 does not use
+`0x02` for anything: the nibble only ever took `0` (follow the global travel setting), `1` (per-key
+actuation point, no rapid trigger), `3` (per-key rapid trigger, continuous mode off), or `4` (the
+same with continuous mode on). `0x02` was never once observed on the wire, in either direction, in
+any of the ten captured scenarios. Whatever `KeyTouchMode.rt = 0x02` means upstream, on this
+firmware rapid trigger is `0x03` or `0x04`, not `0x02`; a port that writes `0x02` expecting rapid
+trigger to turn on will instead land on whatever this firmware treats an unrecognised nibble as,
+untested territory this document does not cover.
+
+To write actuation point on a key: set the nibble to `1`. To write rapid trigger: set it to `3`
+(matching what `wh` always writes; the CLI never turns on the `4`, continuous, variant, though it
+preserves one on a read-modify-write if it finds the board already in it, see below). To turn a key
+back to following the global travel setting: set the nibble to `0`.
+
+The high byte of the 16-bit value (bits 8..16) carries information this document does not identify
+and `wh` does not interpret. It must be preserved verbatim on every write: read the current 16-bit
+value first, keep its high byte, and only replace the low byte's nibbles. Writing `0x0000` in the
+high byte unconditionally has not been tested and may clear something this corpus never exercised
+changing.
 
 ### The FN layer is measured, not inferred
 
@@ -217,10 +268,14 @@ Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
 
 - Sending argument `0xFF` reads the current profile. The reply echoes the sub-order and returns a
   zero-based index in `payload[2]`.
-- Sending a zero-based index (`0x00`-`0x03` for the board's four profiles) selects that profile. The
-  reply echoes the same index back, the same shape as a read.
-- Select measurably takes roughly 120 times as long as a read (task 19b group B measurement); a
-  caller doing both in sequence should not assume they cost the same.
+- Sending a zero-based index selects that profile; the reply echoes the same index back, the same
+  shape as a read. The corpus contains exactly two selects, to index `1` and index `0`
+  (`captures/profile-switch.jsonl`), not one for each of the board's four profiles. That `0x00` to
+  `0x03` is the full valid range is an extrapolation, not a measurement of all four: it rests on
+  `wh-proto`'s own `MAX_WIRE_INDEX = 3` bound and the vendor UI showing four profile slots, not on
+  having selected profiles 2 and 3 on the wire and watched them succeed.
+- Select measurably takes roughly 120 times as long as a read (task 19b group B measurement, from
+  the same two selects above); a caller doing both in sequence should not assume they cost the same.
 
 `wh` implements read only. Select is documented here because the wire behaviour is known, but
 nothing in Phase 1 needs to change the board's active profile.
