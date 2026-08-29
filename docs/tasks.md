@@ -55,7 +55,9 @@ rather than as settings it recognises.
   the configurator still lists it in a keyset. That file's read sweep does not cover `0xFE`, so
   whether `W` was in a keyset beforehand is unmeasured; what is measured is that the write is sent
   unconditionally. Implement by routing `ops::set_rt_off` through `keyset::plan` with
-  `TouchChange::Off` and `membership: Some(0)` rather than by hand.
+  `Change::rt_off(press, release)` and `membership: Some(0)` rather than by hand. The sensitivities
+  come from `keyset::global_rt`, which reports whether the keys outside a keyset agree rather than
+  trusting one of them.
 
   Related, from the same review: on a board with the global rapid trigger switch on, every key
   outside a keyset sits at nibble `2`, so `wh set rt --keys all --off` now writes all 68 keys where
