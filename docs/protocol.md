@@ -193,10 +193,33 @@ firmware rapid trigger is `0x03` or `0x04`, not `0x02`; a port that writes `0x02
 trigger to turn on will instead land on whatever this firmware treats an unrecognised nibble as,
 untested territory this document does not cover.
 
-To write actuation point on a key: set the nibble to `1`. To write rapid trigger: set it to `3`
-(matching what `wh` always writes; the CLI never turns on the `4`, continuous, variant, though it
-preserves one on a read-modify-write if it finds the board already in it, see below). To turn a key
-back to following the global travel setting: set the nibble to `0`.
+**Writing an actuation point does not touch this layout at all.** `wh set ap` writes layout `0x04`
+alone. This is measured, not assumed: `docs/tasks.md` records a hardware check where a key's
+actuation point was changed with no accompanying mode write, and the key actuated at the new depth
+and read back correctly through both `wh dump` and the vendor UI. The vendor's own web app sends a
+mode write alongside every actuation-point change anyway, but it is not required for the value to
+take effect, and `wh` deliberately does not send one.
+
+Rapid trigger is the nibble this document's earlier draft got backwards, worth stating plainly
+since the wrong answer looks plausible and fails silently. `wh` writes `3` to turn rapid trigger on
+(the CLI never turns on the `4`, continuous, variant, though it preserves one on a read-modify-write
+if it finds the board already in it, see `ops::rt_records`) and `1` to turn rapid trigger off, via
+`ops::rt_off_records`. **Nibble `1` is rapid-trigger-off, not "write an actuation point"**: it is
+what `wh` writes on a key that already has its own actuation point recorded in layout `0x04`, to
+turn rapid trigger off while leaving that actuation point in place, which is why `rt_off_records`
+writes `Single` (`1`) rather than `Global` (`0`). Following the wrong nibble by treating `1` as an
+actuation-point-write instruction, on a key that currently has rapid trigger on, silently turns
+rapid trigger off as a side effect: nothing errors, and both `dump` and the vendor UI report the key
+as rapid-trigger-off afterward, with no indication that anything other than the actuation point was
+touched.
+
+**Nibble `0` is a trap, not a reset.** It means "follow the global travel setting", which discards
+whatever per-key actuation point layout `0x04` recorded for that key: a value this repository's own
+code once got wrong for exactly this reason. `ops::rt_off_records` exists specifically to avoid
+writing `0` when turning rapid trigger off, because doing so would silently drop the key's actuation
+point along with it. A reimplementation that wants "turn rapid trigger off, keep the actuation
+point" must write `1`; only write `0` when the intent really is to abandon the per-key actuation
+point and fall back to the global setting.
 
 The high byte of the 16-bit value (bits 8..16) carries information this document does not identify
 and `wh` does not interpret. It must be preserved verbatim on every write: read the current 16-bit
