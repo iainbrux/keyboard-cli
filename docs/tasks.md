@@ -90,14 +90,14 @@ rather than as settings it recognises.
 
 ### Protocol gaps
 
-- [ ] **Commands `0x18` and `0x2c`.** `0x2c` is almost certainly SOCD: it queries by key and replies
-  with symmetric pairs, measured as W with S and A with D. The behaviour is measured, the name is
-  inference.
+- [ ] **Command `0x18`.** Suspected RGB or LED control, 8 frames. `0x2c` was resolved on
+  2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
 - [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
   by anything in Phase 1.
-- [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` carry 1858 records each and were
-  never once observed non-zero. `0xff` is tracked under 2.3/2.4 above, not here: it is inferred as
-  the actuation point keyset index from read correlation (read 210 times, written 0), not unknown.
+- [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
+  observed non-zero across 1858 records. That held only until a keyset was created: they hold `100`
+  on every key a keyset touches, and they do not track the rapid trigger press and release values.
+  `0x19` is still only ever `0x0000` or `0x3e2c`.
 - [ ] **Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
   remapping FN away and FN is how you reach the layer that would let you undo that.
 - [ ] **Widen what a snapshot captures.** It currently records global travel, four layouts per key,
