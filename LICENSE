@@ -22,14 +22,13 @@ Iain Brookes authored the Covered Work, with one exception. Parts of
 `crates/wh-proto` (currently `frame.rs` and `cmds.rs`; check those files'
 own module documentation, which names any file that is a port) are a Rust
 port of MIT-licensed source from Sparklink Playjoy's
-`@sparklinkplayjoy/protocol-keyboard` and `@sparklinkplayjoy/hid` packages,
-vendored for reference at `research/proto/` and `research/hidpkg/`. Porting
-code carries the licence that covers it, so the MIT notice on that upstream
-source attaches to those ported portions of `crates/wh-proto` too; that
-notice, and exactly what it covers, is in THIRD_PARTY_NOTICES.md. Everything
-else in the Covered Work, including the rest of `crates/wh-proto` that is
-original rather than ported, is Iain Brookes' own authorship, and Iain
-Brookes holds the copyright in it.
+`@sparklinkplayjoy/protocol-keyboard` package, vendored for reference at
+`research/proto/`. Porting code carries the licence that covers it, so the
+MIT notice on that upstream source attaches to those ported portions of
+`crates/wh-proto` too; that notice, and exactly what it covers, is in
+THIRD_PARTY_NOTICES.md. Everything else in the Covered Work, including the
+rest of `crates/wh-proto` that is original rather than ported, is Iain
+Brookes' own authorship, and Iain Brookes holds the copyright in it.
 
 This licence does NOT cover the contents of `research/`, which is third-party
 material owned by other people and licensed separately. See section 4 and

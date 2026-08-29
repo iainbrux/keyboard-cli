@@ -7,13 +7,15 @@ licence.
 
 **This does not mean nothing in `crates/` is ported.** `crates/wh-proto/src/frame.rs` and
 `crates/wh-proto/src/cmds.rs` are themselves a Rust port of MIT-licensed source from
-`@sparklinkplayjoy/protocol-keyboard` (vendored at `research/proto/`) and, for `cmds.rs`, the same
-package's SDK conventions also mirrored in `@sparklinkplayjoy/hid` (vendored at `research/hidpkg/`);
-each file's own module documentation names exactly which upstream file it ports. Porting code
-carries the licence that covers it: the Sparklink MIT notice reproduced below, under "research/proto
-and research/hidpkg", attaches to those two ported files in `crates/wh-proto` as well as to the
-vendored copies under `research/`. `LICENSE` section 1 says the same thing; this is the fuller
-statement the licence points at.
+`@sparklinkplayjoy/protocol-keyboard` (vendored at `research/proto/`); each file's own module
+documentation names exactly which upstream file under `research/proto/package/src/` it ports.
+`research/hidpkg/` (`@sparklinkplayjoy/hid`) is a separate vendored package, also MIT, kept for
+reference; nothing in `crates/wh-proto` is ported from it, and no file's module doc claims
+otherwise. Porting code carries the licence that covers it: the Sparklink MIT notice reproduced
+below, under "research/proto and research/hidpkg", attaches to `frame.rs` and `cmds.rs` in
+`crates/wh-proto` because of `research/proto` specifically, as well as to the vendored copies under
+`research/` (both packages). `LICENSE` section 1 says the same thing; this is the fuller statement
+the licence points at.
 
 These notices are reproduced because the licences require it. Do not remove them.
 
