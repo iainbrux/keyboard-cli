@@ -64,8 +64,11 @@ wh set ap --keys wasd --set 1.2
 ```
 
 Key selectors accept comma-separated names, contiguous runs typed as one word (`wasd`), ranges
-(`f1-f12`), negation (`all,!space`), and user-defined groups (`wh keys group fps "w,a,s,d,space"`,
-then `--keys fps`). `wh keys list` shows every known key name and stored group.
+(`a-f`), negation (`all,!space`), and user-defined groups (`wh keys group fps "w,a,s,d,space"`,
+then `--keys fps`). `wh keys list` shows every known key name and stored group. A range is a range
+over `wh-proto`'s own key table, not the physical layout, so `f1-f12` parses but resolves to nothing
+on this board: the K-001 is 68 keys with no F row, and `wh keys list` is the source of truth for
+what actually exists to select.
 
 Pick keys interactively instead of naming them, on any `get`/`set` subcommand:
 
@@ -95,6 +98,29 @@ a real run would send, and sends nothing. Use it to check a command before it to
 especially the first time you type a new key selector. `wh restore` and `wh selftest` have no
 `--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
 only ever rewrites a setting to the value it already read.
+
+Every `wh` command names which transport it opened, on stderr, one line, before doing anything else:
+`transport: hardware (real keyboard)` or `transport: replay (<path>)`. Check that line before
+trusting that a run did what you expected, especially when driving `wh` from a script or another
+tool where the rest of the output might scroll past.
+
+### Running against a script instead of hardware (`WH_REPLAY`)
+
+Set `WH_REPLAY=<path-to-a-captured-jsonl-script>` and every `wh` command reads a scripted device
+conversation instead of opening the keyboard at all; this is how the test suite drives the whole CLI
+with no hardware attached, and it is the only way to safely try a command against something other
+than your own board.
+
+**On Linux, this just works**, since `wh` there is a native binary reading its own process
+environment directly. **Through `bin/wh`, it needs one more thing to be true.** `bin/wh` execs a
+Windows binary from a WSL shell, and WSL only carries an environment variable across that
+WSL-to-Windows boundary when it is named in `WSLENV`; `bin/wh` sets this for you (`WH_REPLAY/p`, the
+`/p` translating the WSL path into one the Windows binary can open), so `WH_REPLAY=<script> ./bin/wh
+dump` works exactly as expected. If `bin/wh` cannot confirm the variable will actually reach the
+Windows binary (for example, running somewhere `wslpath` is not on `PATH`), it refuses to start
+rather than silently falling back to your real keyboard: **a `wh restore` or `wh set` you believe is
+a replay must never turn out to have been a real write**, and the transport line above is the second
+line of defence for exactly that if the first one is ever wrong.
 
 ## What a backup does and does not contain, stated plainly
 
@@ -143,8 +169,12 @@ Read this before you run anything in this repository against a keyboard you care
 
 ### Ownership
 
-**The `wh` tool is Iain Brookes' work.** Copyright (c) 2026 Iain Brookes, all rights reserved. That
-covers `crates/`, `docs/`, `capture/`, `bin/`, and the build files at the repository root.
+**The `wh` tool is Iain Brookes' work,** with one exception: parts of `crates/wh-proto` are a port of
+MIT-licensed Sparklink Playjoy source, and that notice travels with the port. Copyright (c) 2026
+Iain Brookes, all rights reserved, for the rest. That covers `crates/`, `docs/`, `capture/`, `bin/`,
+`README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `.cargo/config.toml`, and the build files at the
+repository root. See `LICENSE` section 1 and `THIRD_PARTY_NOTICES.md` for exactly which files that
+exception covers.
 
 **The keyboard is Wallhack's.** The Wallhack K-001, its firmware, its hardware design, its
 communication protocol, the Wallhack name and logo, and the web configurator at
