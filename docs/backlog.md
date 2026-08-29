@@ -79,7 +79,7 @@ and cannot rename.
 
 **What it needs.** A delete, and probably a rename. The awkward part is that a group whose name
 collides is exactly the one you most want to remove, and any command that takes the group's name as a
-selector will hit the same ambiguity guard — so the delete has to address the group by name in a
+selector will hit the same ambiguity guard, so the delete has to address the group by name in a
 position that is unambiguously a group, not a selector.
 
 **Deliberately deferred.** It is a new CLI surface, and it was found during a task of protocol

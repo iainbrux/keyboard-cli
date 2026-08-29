@@ -48,10 +48,10 @@ nonsense.
 |---|---|---|---|
 | `0x00` | 418 | 74 | **base layer key mapping.** Measured: values are HID usages matching each key |
 | `0x01` | 420 | 69 | **FN layer key mapping.** Measured, see below |
-| `0x04` | 1858 | — | actuation point, micrometres. Modelled |
-| `0x08` | 2252 | — | mode. Modelled |
-| `0x14` | 1858 | — | RT press, micrometres. Modelled |
-| `0x15` | 1858 | — | RT release, micrometres. Modelled |
+| `0x04` | 1858 | many | actuation point, micrometres. Modelled |
+| `0x08` | 2252 | many | mode. Modelled |
+| `0x14` | 1858 | many | RT press, micrometres. Modelled |
+| `0x15` | 1858 | many | RT release, micrometres. Modelled |
 | `0x16` | 1858 | 1 | **always `0`**, never once observed non-zero. Written alongside every RT change |
 | `0x17` | 1858 | 1 | **always `0`**, same |
 | `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
