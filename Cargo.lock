@@ -842,7 +842,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wh-cli"
-version = "0.1.0"
+version = "0.1.0-alpha"
 dependencies = [
  "anyhow",
  "clap",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "wh-config"
-version = "0.1.0"
+version = "0.1.0-alpha"
 dependencies = [
  "directories",
  "serde",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "wh-device"
-version = "0.1.0"
+version = "0.1.0-alpha"
 dependencies = [
  "hidapi",
  "serde",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "wh-proto"
-version = "0.1.0"
+version = "0.1.0-alpha"
 dependencies = [
  "serde_json",
  "thiserror",
