@@ -36,7 +36,7 @@ Save each capture to its own file and record what you did alongside it.
 | 6 | Delete the actuation point keyset from step 2 | `ks-delete-ap-1` | What does a delete write? |
 | 7 | Create a third actuation point keyset on `o,p` | `ks-create-ap-3` | Gap reuse, or max plus one? |
 
-After each step run `wh dump --json` and keep the output. `wh` reads `0xFF` and `0xFE` per key now, so
+After each step run `wh dump` (JSON is the default output) and keep it. `wh` reads `0xFF` and `0xFE` per key now, so
 diffing consecutive dumps shows exactly which keys changed membership without reading any hex.
 
 **Steps 2 and 5 are the ones that matter.**
@@ -122,7 +122,7 @@ override, so make sure you are back on the profile you started from.
 
 ## What to bring back
 
-- The seven capture files, and the `wh dump --json` output taken after each step.
+- The seven capture files, and the `wh dump` output taken after each step.
 - Whether `0xFF` was written at all, and by what.
 - Whether `0xFE` ever read `2`.
 - Whether `f` was still greyed after check 1.
