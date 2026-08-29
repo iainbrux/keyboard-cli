@@ -261,8 +261,12 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     if payload.len() < 9 {
         return Err(DecodeError::Short(payload.len()));
     }
-    // `field` names the caller's field (`"serial"`/`"firmware"`) in the two messages below, so a
-    // shared closure can still report which of the two identity fields actually failed.
+    // Each caller passes its own two static messages (non-ASCII, empty) in directly, rather
+    // than a field-name string this closure would have to re-dispatch on: review round 3's
+    // minor finding on the previous version of this function, which matched a `field: &'static
+    // str` against the literal `"serial"` with a `_ => firmware...` default arm, silently
+    // mis-attributing any third field (a future one, e.g. the already-identified but
+    // unimplemented build date) to firmware instead of failing to compile over the missing arm.
     //
     // Trim at the first NUL, then trim trailing 0xFF padding, then reject any byte that is not
     // printable ASCII (space through `~`), then trim (only ever a leading/trailing literal
@@ -273,16 +277,16 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     // whitespace to tidy up, so `"\tABC\t"` is rejected rather than trimmed to `"ABC"` (deliberate,
     // review round 2 finding 6: a tab is not something a serial or firmware string should quietly
     // accept).
-    let clean = |field: &'static str, b: &[u8]| -> Result<String, DecodeError> {
+    let clean = |b: &[u8],
+                 non_ascii_msg: &'static str,
+                 empty_msg: &'static str|
+     -> Result<String, DecodeError> {
         let nul_end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
         let b = &b[..nul_end];
         let ff_end = b.iter().rposition(|&c| c != 0xFF).map_or(0, |i| i + 1);
         let b = &b[..ff_end];
         if !b.iter().all(|&c| c.is_ascii_graphic() || c == b' ') {
-            return Err(DecodeError::Identity(match field {
-                "serial" => "serial contains a non-printable byte",
-                _ => "firmware contains a non-printable byte",
-            }));
+            return Err(DecodeError::Identity(non_ascii_msg));
         }
         // `b` is now known to be printable ASCII, so this can never fail.
         let s = std::str::from_utf8(b)
@@ -290,10 +294,7 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
             .trim()
             .to_string();
         if s.is_empty() {
-            return Err(DecodeError::Identity(match field {
-                "serial" => "serial is empty",
-                _ => "firmware is empty",
-            }));
+            return Err(DecodeError::Identity(empty_msg));
         }
         Ok(s)
     };
@@ -306,7 +307,11 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
         .ok_or(DecodeError::Identity(
             "serial length prefix overruns the reply",
         ))?;
-    let serial = clean("serial", &payload[serial_start..serial_end])?;
+    let serial = clean(
+        &payload[serial_start..serial_end],
+        "serial contains a non-printable byte",
+        "serial is empty",
+    )?;
 
     if serial_end >= payload.len() {
         return Err(DecodeError::Short(payload.len()));
@@ -319,7 +324,11 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
         .ok_or(DecodeError::Identity(
             "firmware length prefix overruns the reply",
         ))?;
-    let firmware = clean("firmware", &payload[firmware_start..firmware_end])?;
+    let firmware = clean(
+        &payload[firmware_start..firmware_end],
+        "firmware contains a non-printable byte",
+        "firmware is empty",
+    )?;
 
     Ok(DeviceInfo { serial, firmware })
 }
