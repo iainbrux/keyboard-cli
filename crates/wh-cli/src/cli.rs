@@ -87,10 +87,10 @@ pub enum SetWhat {
         #[arg(long, conflicts_with = "off")]
         set: Option<f64>,
         /// Press sensitivity in mm (overrides --set for press)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "off")]
         press: Option<f64>,
         /// Release sensitivity in mm (overrides --set for release)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "off")]
         release: Option<f64>,
         /// Disable rapid trigger on these keys
         #[arg(long)]
@@ -146,6 +146,33 @@ mod tests {
             Cli::try_parse_from(["wh", "set", "rt", "--keys", "w", "--set", "0.5", "--off"])
                 .is_err()
         );
+    }
+
+    /// Whole-branch review, minor 3: `--press`/`--release` only mean anything as an override on
+    /// top of a `--set` base, so combining either with `--off` used to parse successfully and
+    /// silently discard the value, since only `--set` itself conflicted with `--off`. Both must
+    /// refuse to parse, the same as `--set --off` does above.
+    #[test]
+    fn press_and_off_conflict() {
+        assert!(
+            Cli::try_parse_from(["wh", "set", "rt", "--keys", "w", "--press", "0.4", "--off"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn release_and_off_conflict() {
+        assert!(Cli::try_parse_from([
+            "wh",
+            "set",
+            "rt",
+            "--keys",
+            "w",
+            "--release",
+            "0.4",
+            "--off"
+        ])
+        .is_err());
     }
 
     #[test]
