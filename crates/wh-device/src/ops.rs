@@ -258,13 +258,14 @@ impl ApPlan {
 /// the non-destructive reading. `Unknown` nibbles have never been observed on hardware, so
 /// overwriting one would discard state we cannot interpret.
 ///
-/// A key's MODE and AP records can land in different write frames (measured: 6 of 68 keys in a
-/// realistic mixed selection, 125 records over 9 frames), so a failure mid-batch can leave those
-/// keys `Single`, detached from global travel, still holding their old actuation point. That
-/// surfaces as `DeviceError::Batch` with progress detail; `wh restore --last` rolls it back.
+/// A key's MODE and AP records can land in different write frames, and a failure between the two
+/// leaves those keys `Single`, detached from global travel, still holding their old actuation
+/// point. Over the 68 keys and modes of `captures/initial-load.jsonl` a whole-board write is 126
+/// records in 9 frames, of which 4 straddle a boundary in DEFKEY order, 5 in usage order.
 ///
-/// The vendor's own MODE-then-AP grouping is strictly worse for this failure mode: a failure
-/// between its two phases would leave every key in the selection in that state, not six.
+/// `DeviceError::Batch` reports how far the batch got, and `wh restore --last` rolls it back from
+/// the auto-backup. The vendor's own MODE-then-AP grouping is strictly worse here: a failure
+/// between its two phases would leave every key in the selection in that state, not four.
 pub fn ap_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -769,77 +770,6 @@ mod tests {
     /// value: the correct output is no records at all.
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
-        // (key, MODE value), verbatim from captures/initial-load.jsonl.
-        const REAL_MODES: &[(u8, u16)] = &[
-            (0x01, 0x0010),
-            (0x04, 0x0018),
-            (0x05, 0x0000),
-            (0x06, 0x0000),
-            (0x07, 0x0018),
-            (0x08, 0x0000),
-            (0x09, 0x0000),
-            (0x0A, 0x0000),
-            (0x0B, 0x0000),
-            (0x0C, 0x0000),
-            (0x0D, 0x0000),
-            (0x0E, 0x0000),
-            (0x0F, 0x0000),
-            (0x10, 0x0000),
-            (0x11, 0x0000),
-            (0x12, 0x0000),
-            (0x13, 0x0000),
-            (0x14, 0x0000),
-            (0x15, 0x0000),
-            (0x16, 0x0018),
-            (0x17, 0x0000),
-            (0x18, 0x0000),
-            (0x19, 0x0000),
-            (0x1A, 0x0018),
-            (0x1B, 0x0000),
-            (0x1C, 0x0000),
-            (0x1D, 0x0000),
-            (0x1E, 0x0000),
-            (0x1F, 0x0000),
-            (0x20, 0x0000),
-            (0x21, 0x0000),
-            (0x22, 0x0000),
-            (0x23, 0x0000),
-            (0x24, 0x0000),
-            (0x25, 0x0000),
-            (0x26, 0x0000),
-            (0x27, 0x0000),
-            (0x28, 0x0000),
-            (0x29, 0x0010),
-            (0x2A, 0x0000),
-            (0x2B, 0x0000),
-            (0x2C, 0x0000),
-            (0x2D, 0x0000),
-            (0x2E, 0x0000),
-            (0x2F, 0x0000),
-            (0x30, 0x0000),
-            (0x31, 0x0000),
-            (0x33, 0x0000),
-            (0x34, 0x0000),
-            (0x36, 0x0000),
-            (0x37, 0x0000),
-            (0x38, 0x0000),
-            (0x39, 0x0000),
-            (0x4F, 0x0000),
-            (0x50, 0x0000),
-            (0x51, 0x0000),
-            (0x52, 0x0000),
-            (0xD6, 0x0010),
-            (0xE0, 0x0000),
-            (0xE1, 0x0000),
-            (0xE2, 0x0000),
-            (0xE3, 0x0000),
-            (0xE4, 0x0000),
-            (0xE5, 0x0000),
-            (0xE6, 0x0000),
-            (0xFA, 0x0010),
-            (0xFB, 0x0010),
-            (0xFC, 0x0010),
-        ];
         assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");
         assert_eq!(
             REAL_MODES
@@ -960,6 +890,79 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
+    /// Every key on the board with its MODE value, verbatim from `captures/initial-load.jsonl`, in
+    /// ascending usage order. The real board state two tests below are measured against.
+    const REAL_MODES: &[(u8, u16)] = &[
+        (0x01, 0x0010),
+        (0x04, 0x0018),
+        (0x05, 0x0000),
+        (0x06, 0x0000),
+        (0x07, 0x0018),
+        (0x08, 0x0000),
+        (0x09, 0x0000),
+        (0x0A, 0x0000),
+        (0x0B, 0x0000),
+        (0x0C, 0x0000),
+        (0x0D, 0x0000),
+        (0x0E, 0x0000),
+        (0x0F, 0x0000),
+        (0x10, 0x0000),
+        (0x11, 0x0000),
+        (0x12, 0x0000),
+        (0x13, 0x0000),
+        (0x14, 0x0000),
+        (0x15, 0x0000),
+        (0x16, 0x0018),
+        (0x17, 0x0000),
+        (0x18, 0x0000),
+        (0x19, 0x0000),
+        (0x1A, 0x0018),
+        (0x1B, 0x0000),
+        (0x1C, 0x0000),
+        (0x1D, 0x0000),
+        (0x1E, 0x0000),
+        (0x1F, 0x0000),
+        (0x20, 0x0000),
+        (0x21, 0x0000),
+        (0x22, 0x0000),
+        (0x23, 0x0000),
+        (0x24, 0x0000),
+        (0x25, 0x0000),
+        (0x26, 0x0000),
+        (0x27, 0x0000),
+        (0x28, 0x0000),
+        (0x29, 0x0010),
+        (0x2A, 0x0000),
+        (0x2B, 0x0000),
+        (0x2C, 0x0000),
+        (0x2D, 0x0000),
+        (0x2E, 0x0000),
+        (0x2F, 0x0000),
+        (0x30, 0x0000),
+        (0x31, 0x0000),
+        (0x33, 0x0000),
+        (0x34, 0x0000),
+        (0x36, 0x0000),
+        (0x37, 0x0000),
+        (0x38, 0x0000),
+        (0x39, 0x0000),
+        (0x4F, 0x0000),
+        (0x50, 0x0000),
+        (0x51, 0x0000),
+        (0x52, 0x0000),
+        (0xD6, 0x0010),
+        (0xE0, 0x0000),
+        (0xE1, 0x0000),
+        (0xE2, 0x0000),
+        (0xE3, 0x0000),
+        (0xE4, 0x0000),
+        (0xE5, 0x0000),
+        (0xE6, 0x0000),
+        (0xFA, 0x0010),
+        (0xFB, 0x0010),
+        (0xFC, 0x0010),
+    ];
+
     /// One key's MODE-only read roundtrip, mirroring `rt_records`' own script shape above.
     fn mode_read_script(usage: u8, mode_lo: u8, mode_hi: u8) -> Vec<String> {
         vec![
@@ -1078,6 +1081,53 @@ mod tests {
             "only the touch nibble may change"
         );
         assert!(s.into_inner().finished());
+    }
+
+    /// Pins the partial-failure figures `ap_records`' doc comment quotes, so the documented risk
+    /// cannot drift from what the code does: a whole-board `wh set ap` over the real captured
+    /// modes is 126 records in 9 frames, and some keys have their MODE record in a different frame
+    /// from their AP record, which is what a mid-batch failure would strand.
+    ///
+    /// `REAL_MODES` is in ascending usage order, which splits 5 keys. `--keys all` sends in DEFKEY
+    /// matrix order instead, which splits 4: the count depends on the order, the existence of the
+    /// split does not.
+    #[test]
+    fn ap_records_over_the_whole_captured_board_splits_keys_across_write_frames() {
+        let mut lines = Vec::new();
+        let usages: Vec<u8> = REAL_MODES.iter().map(|&(k, _)| k).collect();
+        for &(k, v) in REAL_MODES {
+            lines.extend(mode_read_script(k, (v & 0xFF) as u8, (v >> 8) as u8));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let plan = ap_records(&mut s, &usages, Um(1200)).unwrap();
+        assert!(s.into_inner().finished());
+
+        assert_eq!(plan.records.len(), 126);
+        let frames = cmds::write_key_records(&plan.records);
+        assert_eq!(frames.len(), 9);
+
+        // Which frame each record landed in, by its position in the flat record list.
+        let frame_of = |i: usize| i / cmds::MAX_RECORDS_PER_REPORT;
+        let split = usages
+            .iter()
+            .filter(|&&u| {
+                let mode = plan
+                    .records
+                    .iter()
+                    .position(|r| r.key == u && r.layout == layout::MODE);
+                let ap = plan
+                    .records
+                    .iter()
+                    .position(|r| r.key == u && r.layout == layout::AP)
+                    .expect("every key gets an AP record");
+                mode.is_some_and(|m| frame_of(m) != frame_of(ap))
+            })
+            .count();
+        assert_eq!(
+            split, 5,
+            "in usage order 5 keys have MODE and AP in different frames; a mid-batch failure \
+             strands exactly those"
+        );
     }
 
     #[test]
