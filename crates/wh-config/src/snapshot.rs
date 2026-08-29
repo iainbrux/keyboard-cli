@@ -47,6 +47,12 @@ pub struct KeyToml {
     pub rt_release_mm: f64,
     /// Raw Layout_Mode value, restored verbatim so advanced-key modes survive.
     pub mode_raw: u16,
+    /// Keyset membership as read from layouts 0xFF and 0xFE. 0 means no keyset. Defaulted so
+    /// snapshots taken before these fields existed still load. `wh restore` ignores them.
+    #[serde(default)]
+    pub ap_keyset: u16,
+    #[serde(default)]
+    pub rt_keyset: u16,
 }
 
 /// Which parser a snapshot file needs. JSON is what `wh backup` writes; TOML is read so backups
@@ -102,6 +108,8 @@ mod tests {
                 rt_press_mm: 0.5,
                 rt_release_mm: 0.5,
                 mode_raw: 0x20,
+                ap_keyset: 0,
+                rt_keyset: 0,
             }],
         }
     }
@@ -200,5 +208,31 @@ mode_raw = 32
 "#;
         let snap = Snapshot::from_toml(text).unwrap();
         assert_eq!(snap.profile, None);
+    }
+
+    /// A snapshot JSON body with neither `ap_keyset` nor `rt_keyset` must still deserialise:
+    /// snapshots taken before these fields existed have no way to carry them.
+    #[test]
+    fn snapshot_json_with_no_keyset_fields_still_parses() {
+        let text = r#"{
+  "firmware": "V1.2.3",
+  "serial": "SN1",
+  "taken_at": "2026-08-28T12:00:00Z",
+  "global": { "travel_mm": 2.0, "press_dead_mm": 0.2, "release_dead_mm": 0.2 },
+  "keys": [
+    {
+      "name": "w",
+      "usage": 26,
+      "ap_mm": 1.2,
+      "rt": true,
+      "rt_press_mm": 0.5,
+      "rt_release_mm": 0.5,
+      "mode_raw": 32
+    }
+  ]
+}"#;
+        let snap = Snapshot::from_json(text).unwrap();
+        assert_eq!(snap.keys[0].ap_keyset, 0);
+        assert_eq!(snap.keys[0].rt_keyset, 0);
     }
 }

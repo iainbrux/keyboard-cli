@@ -78,6 +78,12 @@ pub mod layout {
     pub const MODE: u8 = 0x08; // Layout_Mode
     pub const RT_PRESS: u8 = 0x14; // Layout_RTP
     pub const RT_RELEASE: u8 = 0x15; // Layout_RTR
+    /// Actuation point keyset index. Read as 1 for w,a,s,d and 2 for esc, matching the two
+    /// keysets the vendor UI showed. Never observed being written, so do not write it.
+    pub const KEYSET_AP: u8 = 0xFF;
+    /// Rapid trigger keyset membership. Written 1 on create (`captures/rt-on-w-0.5.jsonl`) and
+    /// 0 on delete (`captures/rt-off-w.jsonl`).
+    pub const KEYSET_RT: u8 = 0xFE;
 }
 
 /// MaxPack from constants/byte.ts.
@@ -887,6 +893,15 @@ mod tests {
         payload[fw_len_pos] = 10;
         payload[fw_len_pos + 1..fw_len_pos + 11].copy_from_slice(b"V1.2.3.456");
         assert_eq!(parse_sync(&payload).unwrap().serial, "ABC");
+    }
+
+    /// The two keyset layouts. `0xFE` has direct write evidence (1 on rapid trigger create, 0 on
+    /// delete). `0xFF` correlates with the actuation point keysets the vendor UI showed but has
+    /// never been observed being written, so nothing here may write it.
+    #[test]
+    fn keyset_layout_ids() {
+        assert_eq!(layout::KEYSET_AP, 0xFF);
+        assert_eq!(layout::KEYSET_RT, 0xFE);
     }
 
     #[test]

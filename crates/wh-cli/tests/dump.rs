@@ -98,14 +98,16 @@ fn matrix_lines() -> Vec<String> {
     lines
 }
 
-/// One key's [AP, MODE, RT_PRESS, RT_RELEASE] roundtrips, in the exact order
-/// `ops::read_key_settings` sends them.
+/// One key's [AP, MODE, RT_PRESS, RT_RELEASE, KEYSET_AP, KEYSET_RT] roundtrips, in the exact
+/// order `ops::read_key_settings` sends them.
 fn key_settings_lines(
     usage: u8,
     ap: u16,
     mode: u16,
     rt_press: u16,
     rt_release: u16,
+    ap_keyset: u16,
+    rt_keyset: u16,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     for (layout_id, value) in [
@@ -113,6 +115,8 @@ fn key_settings_lines(
         (layout::MODE, mode),
         (layout::RT_PRESS, rt_press),
         (layout::RT_RELEASE, rt_release),
+        (layout::KEYSET_AP, ap_keyset),
+        (layout::KEYSET_RT, rt_keyset),
     ] {
         lines.push(out_line(&cmds::read_key_layout(usage, layout_id)));
         let payload = [
@@ -205,8 +209,10 @@ fn build_script() -> Vec<String> {
     // non-zero high byte, 0x02, over the Rt touch nibble 0x3 and a zero advanced nibble) so the
     // fixture actually exercises `Mode`'s full 16-bit round trip rather than only its low
     // byte, which the wire format always carried and a truncating bug could hide behind.
-    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500));
-    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
+    // 'w' carries a non-zero AP keyset (1) so `dump_json_via_replay` can assert the raw value is
+    // read through, distinct from 'a', which carries none (0).
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500, 1, 0));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
 
     lines
 }
@@ -255,8 +261,14 @@ fn dump_json_via_replay() {
     // The fixture's MODE reply is 0x0230; mode_raw must come back exactly that, not truncated
     // to 0x30.
     assert_eq!(v["keys"][0]["mode_raw"], 0x0230);
+    // 'w' carries AP keyset 1, 'a' carries none (0): distinct per key, not a constant, and
+    // carried raw rather than coerced to a boolean.
+    assert_eq!(v["keys"][0]["ap_keyset"], 1);
+    assert_eq!(v["keys"][0]["rt_keyset"], 0);
     assert_eq!(v["keys"][1]["name"], "a");
     assert_eq!(v["keys"][1]["rt"], false);
+    assert_eq!(v["keys"][1]["ap_keyset"], 0);
+    assert_eq!(v["keys"][1]["rt_keyset"], 0);
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -306,6 +318,46 @@ fn dump_table_flag_prints_the_human_table() {
     assert!(
         !stdout.trim_start().starts_with('{'),
         "--table must not be JSON"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The table's two new columns: `apks` and `rtks`, printing the raw keyset value ('w' has AP
+/// keyset 1) or `-` for no keyset (both of 'a's, and 'w's RT keyset).
+#[test]
+fn dump_table_prints_the_keyset_columns() {
+    let path = write_script("dump-table-keyset", &build_script());
+    let config_home = scratch_config_dir("dump-table-keyset");
+
+    let out = run_wh(&["dump", "--table"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("apks") && stdout.contains("rtks"),
+        "table header must carry the keyset columns: {stdout}"
+    );
+    let w_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("w "))
+        .unwrap_or_else(|| panic!("no 'w' row in table: {stdout}"));
+    assert!(
+        w_line.contains(" 1 "),
+        "'w's ap keyset (1) must appear in its row: {w_line}"
+    );
+    let a_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("a "))
+        .unwrap_or_else(|| panic!("no 'a' row in table: {stdout}"));
+    assert!(
+        a_line.contains("-"),
+        "'a's keysets (both 0) must print as '-': {a_line}"
     );
 
     std::fs::remove_file(path).unwrap();
@@ -422,7 +474,7 @@ fn dump_prints_a_board_function_key_by_name_not_hex() {
         };
         lines.push(in_line(&reply(cmds::cmd::DEFKEY, &payload)));
     }
-    lines.extend(key_settings_lines(0xFA, 0, 0x10, 0, 0));
+    lines.extend(key_settings_lines(0xFA, 0, 0x10, 0, 0, 0, 0));
 
     let path = write_script("dump-board-func", &lines);
     let config_home = scratch_config_dir("dump-board-func");
@@ -449,8 +501,9 @@ fn get_rt_via_replay() {
     let mut lines = matrix_lines();
     // Press and release are deliberately distinct (0.40mm / 0.60mm, not the same value
     // twice): equal fixture values can't catch the two being swapped anywhere between the
-    // wire reply and the printed line.
-    lines.extend(key_settings_lines(0x1A, 1200, 0x30, 400, 600)); // 'w': rt on
+    // wire reply and the printed line. RT keyset 2, non-zero, so the printed suffix exercises
+    // the "keyset N" branch rather than "keyset none".
+    lines.extend(key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 2)); // 'w': rt on
     let path = write_script("get-rt", &lines);
     let config_home = scratch_config_dir("get-rt");
 
@@ -463,7 +516,33 @@ fn get_rt_via_replay() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("w: rt on press 0.40mm release 0.60mm"),
+        stdout.contains("w: rt on press 0.40mm release 0.60mm keyset 2"),
+        "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The `wh get ap` sibling: 'w's AP keyset is 0 (none) here, so the printed suffix exercises the
+/// "keyset none" branch, the other half of `get_rt_via_replay`'s "keyset N" coverage above.
+#[test]
+fn get_ap_prints_keyset_none_when_the_key_has_no_ap_keyset() {
+    let mut lines = matrix_lines();
+    lines.extend(key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0));
+    let path = write_script("get-ap-keyset-none", &lines);
+    let config_home = scratch_config_dir("get-ap-keyset-none");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("w: ap 1.20mm keyset none"),
         "unexpected stdout: {stdout}"
     );
 
@@ -567,8 +646,8 @@ fn auto_backup_lines(profile_idx: u8) -> Vec<String> {
     lines.extend(profile_lines(profile_idx));
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
-    lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500)); // 'w' pre-write
-    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0)); // 'a' pre-write
+    lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500, 0, 0)); // 'w' pre-write
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0)); // 'a' pre-write
     lines
 }
 
@@ -595,7 +674,15 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
 
     // Readback verification reads all four layouts for 'w', not just AP; MODE/press/release
     // echo back unchanged so only the AP field can drive a match or mismatch here.
-    lines.extend(key_settings_lines(0x1A, readback_ap, 0x0220, 500, 500));
+    lines.extend(key_settings_lines(
+        0x1A,
+        readback_ap,
+        0x0220,
+        500,
+        500,
+        0,
+        0,
+    ));
     lines
 }
 
@@ -694,7 +781,7 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 
     // verify_rt's readback: MODE comes back 0x30, not the 0x31 that was written, with
     // press/release otherwise matching exactly.
-    lines.extend(key_settings_lines(0x1A, 1000, 0x30, 400, 400));
+    lines.extend(key_settings_lines(0x1A, 1000, 0x30, 400, 400, 0, 0));
 
     let path = write_script("set-rt-nibble-mismatch", &lines);
     let config_home = scratch_config_dir("set-rt-nibble-mismatch");
@@ -743,7 +830,7 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 
     // verify_rt_off's readback: MODE comes back 0x10, not the 0x11 that was written; press and
     // release are unrelated to this check and left at whatever the board otherwise reports.
-    lines.extend(key_settings_lines(0x1A, 1000, 0x10, 400, 400));
+    lines.extend(key_settings_lines(0x1A, 1000, 0x10, 400, 400, 0, 0));
 
     let path = write_script("set-rt-off-nibble-mismatch", &lines);
     let config_home = scratch_config_dir("set-rt-off-nibble-mismatch");
@@ -977,6 +1064,8 @@ fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
             rt_press_mm: 0.5,
             rt_release_mm: 0.6,
             mode_raw: 0x0220,
+            ap_keyset: 0,
+            rt_keyset: 0,
         }],
     };
     snap.to_json().unwrap()
@@ -1066,7 +1155,7 @@ fn restore_write_and_verify_lines() -> Vec<String> {
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
     // verify_restore reads 'w' back and finds every field matching what was restored.
-    lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 600));
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 600, 0, 0));
     lines
 }
 
@@ -1410,8 +1499,8 @@ fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
     lines.extend(profile_lines(0xFE));
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
-    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500));
-    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500, 0, 0));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
 
     let path = write_script("backup-out-of-range", &lines);
     let config_home = scratch_config_dir("backup-out-of-range");

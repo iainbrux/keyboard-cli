@@ -12,6 +12,9 @@ pub struct KeySettings {
     pub mode: Mode,
     pub rt_press: Um,
     pub rt_release: Um,
+    /// Raw layout `0xFF` and `0xFE` values, uninterpreted. 0 means the key is in no keyset.
+    pub ap_keyset: u16,
+    pub rt_keyset: u16,
 }
 
 impl KeySettings {
@@ -47,12 +50,16 @@ pub fn read_key_settings<T: Transport>(
     let mode = Mode::from_value(read_layout_value(s, usage, layout::MODE)?);
     let rt_press = Um(read_layout_value(s, usage, layout::RT_PRESS)?);
     let rt_release = Um(read_layout_value(s, usage, layout::RT_RELEASE)?);
+    let ap_keyset = read_layout_value(s, usage, layout::KEYSET_AP)?;
+    let rt_keyset = read_layout_value(s, usage, layout::KEYSET_RT)?;
     Ok(KeySettings {
         usage,
         ap,
         mode,
         rt_press,
         rt_release,
+        ap_keyset,
+        rt_keyset,
     })
 }
 
@@ -909,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn read_key_settings_reads_four_layouts() {
+    fn read_key_settings_reads_six_layouts() {
         // Press and release deliberately distinct (500 vs 650): equal values, or asserting
         // only one field, couldn't catch the pair being swapped.
         let mut lines = Vec::new();
@@ -918,6 +925,8 @@ mod tests {
             (layout::MODE, 0x30),
             (layout::RT_PRESS, 500),
             (layout::RT_RELEASE, 650),
+            (layout::KEYSET_AP, 1),
+            (layout::KEYSET_RT, 0),
         ] {
             lines.push(l("out", &cmds::read_key_layout(0x1A, lid)));
             lines.push(l(
@@ -934,6 +943,41 @@ mod tests {
         assert!(ks.rt_enabled());
         assert_eq!(ks.rt_press, Um(500));
         assert_eq!(ks.rt_release, Um(650));
+        // Proves all six scripted reads were actually sent, not just the first four: a
+        // regression that stopped reading after RT_RELEASE would still pass every assertion
+        // above, leaving the last two script lines unconsumed.
+        assert!(s.into_inner().finished());
+    }
+
+    /// `read_key_settings` reads six layouts per key, in order AP, MODE, RT_PRESS, RT_RELEASE,
+    /// KEYSET_AP, KEYSET_RT. The two keyset values are carried raw, with no interpretation,
+    /// because whether 0xFE is a boolean or an index is unmeasured.
+    #[test]
+    fn read_key_settings_reads_both_keyset_layouts() {
+        let mut lines = Vec::new();
+        for (lid, val) in [
+            (layout::AP, 300u16),
+            (layout::MODE, 0x18),
+            (layout::RT_PRESS, 100),
+            (layout::RT_RELEASE, 100),
+            (layout::KEYSET_AP, 1),
+            (layout::KEYSET_RT, 0),
+        ] {
+            lines.push(l("out", &cmds::read_key_layout(0x1A, lid)));
+            lines.push(l(
+                "in",
+                &rf(
+                    cmds::cmd::KEY,
+                    &[0x00, 0x1A, lid, (val & 0xFF) as u8, (val >> 8) as u8],
+                ),
+            ));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let ks = read_key_settings(&mut s, 0x1A).unwrap();
+        assert_eq!(ks.ap, Um(300));
+        assert_eq!(ks.ap_keyset, 1);
+        assert_eq!(ks.rt_keyset, 0);
+        assert!(s.into_inner().finished());
     }
 
     #[test]

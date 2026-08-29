@@ -79,6 +79,26 @@ pub(crate) fn key_label(usage: u8) -> String {
         .unwrap_or_else(|| format!("0x{usage:02X}"))
 }
 
+/// Renders a raw keyset value for display: `0` (no keyset) as `-`, anything else as its decimal
+/// index verbatim, since whether the wire value is a boolean or an index is unmeasured.
+fn keyset_display(v: u16) -> String {
+    if v == 0 {
+        "-".to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+/// The `" keyset N"` / `" keyset none"` suffix `wh get ap`/`wh get rt` appends, from the raw
+/// keyset value: `0` means no keyset, anything else is printed as its decimal index verbatim.
+fn keyset_suffix(v: u16) -> String {
+    if v == 0 {
+        " keyset none".to_string()
+    } else {
+        format!(" keyset {v}")
+    }
+}
+
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
     // `ops::profile` returns a validated `ProfileNumber`; an index outside the four measured
@@ -114,6 +134,8 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
             rt_press_mm: ks.rt_press.to_mm(),
             rt_release_mm: ks.rt_release.to_mm(),
             mode_raw: ks.mode.value(),
+            ap_keyset: ks.ap_keyset,
+            rt_keyset: ks.rt_keyset,
         });
     }
     Ok(wh_config::snapshot::Snapshot {
@@ -196,18 +218,20 @@ fn dump(table: bool) -> Result<()> {
             )?;
             writeln!(
                 out,
-                "{:<12} {:>6} {:>4} {:>8} {:>8}",
-                "key", "ap", "rt", "press", "release"
+                "{:<12} {:>6} {:>4} {:>4} {:>8} {:>8} {:>4}",
+                "key", "ap", "apks", "rt", "press", "release", "rtks"
             )?;
             for k in &snap.keys {
                 writeln!(
                     out,
-                    "{:<12} {:>4.2}mm {:>4} {:>6.2}mm {:>6.2}mm",
+                    "{:<12} {:>4.2}mm {:>4} {:>4} {:>6.2}mm {:>6.2}mm {:>4}",
                     k.name,
                     k.ap_mm,
+                    keyset_display(k.ap_keyset),
                     if k.rt { "on" } else { "off" },
                     k.rt_press_mm,
-                    k.rt_release_mm
+                    k.rt_release_mm,
+                    keyset_display(k.rt_keyset)
                 )?;
             }
         }
@@ -252,13 +276,19 @@ fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
             if show_rt {
                 writeln!(
                     out,
-                    "{name}: rt {} press {:.2}mm release {:.2}mm",
+                    "{name}: rt {} press {:.2}mm release {:.2}mm{}",
                     if ks.rt_enabled() { "on" } else { "off" },
                     ks.rt_press.to_mm(),
-                    ks.rt_release.to_mm()
+                    ks.rt_release.to_mm(),
+                    keyset_suffix(ks.rt_keyset)
                 )?;
             } else {
-                writeln!(out, "{name}: ap {:.2}mm", ks.ap.to_mm())?;
+                writeln!(
+                    out,
+                    "{name}: ap {:.2}mm{}",
+                    ks.ap.to_mm(),
+                    keyset_suffix(ks.ap_keyset)
+                )?;
             }
         }
         Ok(())
