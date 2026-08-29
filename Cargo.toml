@@ -4,7 +4,7 @@ members = ["crates/wh-proto", "crates/wh-device", "crates/wh-config", "crates/wh
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "LicenseRef-Proprietary"
 
 [workspace.dependencies]
 thiserror = "1"

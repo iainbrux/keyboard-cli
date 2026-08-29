@@ -122,3 +122,55 @@ does not implement either.
 
 See `docs/protocol.md` for the wire protocol this tool speaks, and `docs/protocol-inventory.md` for
 the underlying measured frame counts it is built from.
+
+## Licence, warranty, and liability
+
+Read this before you run anything in this repository against a keyboard you care about.
+
+### Ownership
+
+**The `wh` tool is Iain Brookes' work.** Copyright (c) 2026 Iain Brookes, all rights reserved. That
+covers `crates/`, `docs/`, `capture/`, `bin/`, and the build files at the repository root.
+
+**The keyboard is Wallhack's.** The Wallhack K-001, its firmware, its hardware design, its
+communication protocol, the Wallhack name and logo, and the web configurator at
+terminal.wallhack.com all belong solely to Wallhack. This project claims none of it.
+
+This is an independent, unofficial project. It is **not affiliated with, endorsed by, sponsored by,
+or supported by Wallhack.** `wh` is an independently written client that talks to the keyboard over
+the USB HID interface the device already exposes. The notes in `docs/protocol.md` describe observed
+device behaviour, recorded from traffic between a keyboard and its own vendor software on hardware
+owned by the author. They describe an interface; they are not a copy of anyone's software.
+
+**Third-party code under `research/` belongs to its own authors** and stays under its own licences,
+which this repository's licence does not override. See `THIRD_PARTY_NOTICES.md`.
+
+### Redistribution is not permitted
+
+Forking, re-forking, mirroring, redistributing, modifying, or creating derivative works of the `wh`
+tool is **strictly forbidden** without prior written permission. See `LICENSE` for the exact terms.
+
+That restriction applies to the `wh` tool only. It does not apply to the third-party material under
+`research/`, which you may use under whatever its own licence allows.
+
+### No warranty
+
+`wh` is provided **as is**, with no warranty of any kind, express or implied.
+
+It writes settings to keyboard hardware over a protocol worked out by observing traffic, not from a
+specification anyone published. It has been tested against exactly one board, on one firmware
+version.
+
+**Using this tool may void your keyboard's manufacturer warranty.** Neither Iain Brookes nor
+Wallhack is obliged to support, update, or repair any device it has been used with.
+
+### No liability
+
+Neither Iain Brookes nor Wallhack accepts any liability for anything that happens as a result of
+using this tool. That includes damage to or malfunction of a keyboard or any other hardware, loss of
+settings, a voided warranty, and any direct, indirect, incidental, special, or consequential damage.
+
+**You use it entirely at your own risk.** If that is not acceptable to you, use the vendor's own web
+configurator instead.
+
+Nothing here excludes liability where the law does not allow it to be excluded.
