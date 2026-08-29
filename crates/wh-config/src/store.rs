@@ -13,6 +13,8 @@ pub enum StoreError {
     Toml(#[from] toml::de::Error),
     #[error("config encode: {0}")]
     TomlEncode(#[from] toml::ser::Error),
+    #[error("config JSON: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("no backups found")]
     NoBackups,
     #[error("could not resolve a home directory for this user")]
@@ -172,37 +174,48 @@ impl Store {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.root.join("config.toml")
+        self.root.join("config.json")
     }
 
+    /// Reads `config.json`, falling back to a `config.toml` written before the format change.
+    /// JSON wins when both exist, since every write produces JSON.
     pub fn groups(&self) -> Result<HashMap<String, Vec<u8>>, StoreError> {
-        let p = self.config_path();
-        if !p.exists() {
-            return Ok(HashMap::new());
-        }
         #[derive(serde::Deserialize)]
         struct Cfg {
             #[serde(default)]
             groups: HashMap<String, Vec<u8>>,
         }
-        let cfg: Cfg = toml::from_str(&fs::read_to_string(p)?)?;
-        Ok(cfg.groups)
+        let json_path = self.config_path();
+        if json_path.exists() {
+            let cfg: Cfg = serde_json::from_str(&fs::read_to_string(json_path)?)?;
+            return Ok(cfg.groups);
+        }
+        let toml_path = self.root.join("config.toml");
+        if toml_path.exists() {
+            let cfg: Cfg = toml::from_str(&fs::read_to_string(toml_path)?)?;
+            return Ok(cfg.groups);
+        }
+        Ok(HashMap::new())
     }
 
     pub fn set_group(&self, name: &str, usages: &[u8]) -> Result<(), StoreError> {
         let mut groups = self.groups()?;
         groups.insert(name.to_string(), usages.to_vec());
+        self.write_groups(&groups)
+    }
+
+    /// Atomic write: land the content in a temp file, then rename into place, so a crash
+    /// mid-write cannot truncate the config and drop every group the user defined.
+    fn write_groups(&self, groups: &HashMap<String, Vec<u8>>) -> Result<(), StoreError> {
         #[derive(serde::Serialize)]
         struct Cfg<'a> {
             groups: &'a HashMap<String, Vec<u8>>,
         }
         fs::create_dir_all(&self.root)?;
-        let text = toml::to_string_pretty(&Cfg { groups: &groups })?;
-        // Atomic write: land the content in a temp file, then rename into place, so a crash
-        // mid-write cannot leave config.toml truncated and drop every group the user defined.
+        let text = serde_json::to_string_pretty(&Cfg { groups })?;
         let tmp_path = self
             .root
-            .join(format!(".tmp-config-{}.toml", std::process::id()));
+            .join(format!(".tmp-config-{}.json", std::process::id()));
         fs::write(&tmp_path, text)?;
         fs::rename(&tmp_path, self.config_path())?;
         Ok(())
@@ -304,6 +317,48 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups.get("fps"), Some(&vec![0x1A, 0x04, 0x16]));
         assert_eq!(groups.get("moba"), Some(&vec![0x14, 0x1B]));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Groups are written as `config.json`, not `config.toml`.
+    #[test]
+    fn set_group_writes_json() {
+        let dir = test_dir("groups-json");
+        let store = Store::at(dir.clone());
+        store.set_group("fps", &[0x1A, 0x04]).unwrap();
+        assert!(dir.join("config.json").exists(), "config.json must exist");
+        assert!(
+            !dir.join("config.toml").exists(),
+            "config.toml must not be written"
+        );
+        let text = std::fs::read_to_string(dir.join("config.json")).unwrap();
+        assert!(text.contains("\"fps\""), "json must name the group: {text}");
+        assert_eq!(store.groups().unwrap()["fps"], vec![0x1A, 0x04]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A config.toml written before the format change is still read, so a user's existing groups
+    /// survive the upgrade.
+    #[test]
+    fn groups_reads_a_pre_existing_toml_config() {
+        let dir = test_dir("groups-toml-compat");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[groups]\nfps = [26, 4, 22, 7]\n").unwrap();
+        let store = Store::at(dir.clone());
+        assert_eq!(store.groups().unwrap()["fps"], vec![26, 4, 22, 7]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// When both exist, JSON wins: it is the format every write produces, so it is the newer of
+    /// the two by construction.
+    #[test]
+    fn groups_prefers_json_when_both_files_exist() {
+        let dir = test_dir("groups-both");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[groups]\nfps = [1]\n").unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"groups":{"fps":[2]}}"#).unwrap();
+        let store = Store::at(dir.clone());
+        assert_eq!(store.groups().unwrap()["fps"], vec![2]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
