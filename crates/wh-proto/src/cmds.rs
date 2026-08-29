@@ -21,6 +21,27 @@ pub enum DecodeError {
     Short(usize),
     #[error("unexpected reply shape")]
     Shape,
+    /// A SYNC-specific decode failure (`parse_sync` only, review round 2 finding 5), naming both
+    /// the command and the specific field that failed rather than collapsing every cause into
+    /// the same opaque `Shape` message. Deliberately scoped to `parse_sync`'s identity fields:
+    /// every other `DecodeError::Shape` call site in this module is unchanged.
+    #[error("SYNC reply: {0}")]
+    Identity(&'static str),
+    /// The wire's own zero-based profile index (`ProfileNumber::from_wire_index`) is past the
+    /// board's four measured profiles. Kept distinct from `Shape`, which means the reply itself
+    /// does not look like a profile reply at all: this means the reply parsed fine as a profile
+    /// reply, but the index inside it is one the board could never actually report, e.g. a
+    /// misbehaving device echoing its own request byte `0xFF` back. Callers that want to treat
+    /// "the reply was garbled" and "the reply named an impossible profile" differently (see
+    /// `wh_device::ops::profile`) rely on this variant staying separate from `Short` and `Shape`.
+    #[error("profile index {0} is out of range: the board has 4 profiles (wire index 0..=3)")]
+    ProfileOutOfRange(u8),
+    /// A one-based profile number (`ProfileNumber::from_one_based`) outside `1..=4`. Distinct
+    /// from `ProfileOutOfRange` above because the two constructors are validating different
+    /// conventions (a live wire index versus a stored one-based number), and the error should
+    /// name which one, not report a wire index that was never on the wire.
+    #[error("profile {0} is out of range: the board has 4 profiles, numbered 1..=4")]
+    ProfileNumberOutOfRange(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -172,12 +193,16 @@ impl Mode {
 
 pub mod order {
     pub const PROTOCOL_VERSION: u8 = 0x01;
-    pub const SAVE: u8 = 0x02; // ORDER_TYPE_SAVING_PARAMETER
+    // ORDER_TYPE_SAVING_PARAMETER. Kept as protocol vocabulary, but never sent by `wh-device`:
+    // across 1224 captured frames covering ten scenarios and five complete write sequences
+    // (task 19b), the vendor web configurator never sends this order. Do not wire it back into
+    // a write path without first measuring what it actually does on this firmware.
+    pub const SAVE: u8 = 0x02;
     pub const FACTORY_RESET: u8 = 0x11; // not exposed in CLI; documented only
     pub const PRECISION: u8 = 0x25;
     pub const KEYBOARD_NAME: u8 = 0x26;
     pub const POLLING: u8 = 0x50;
-    pub const CONFIG: u8 = 0x70;
+    pub const PROFILE: u8 = 0x70;
 }
 
 /// `h_args` is caller-supplied and unbounded, unlike the other encoders in
@@ -211,6 +236,107 @@ pub fn parse_precision(payload: &[u8]) -> Result<Precision, DecodeError> {
     })
 }
 
+/// The board's own bound: the K-001 has four profiles, wire index `0..=3` (task 19b group B,
+/// measured).
+const MAX_WIRE_INDEX: u8 = 3;
+
+/// A validated profile index. Wire-index-native: internally this holds the same zero-based index
+/// the board itself uses (`0..=3` for the four measured profiles), because `parse_profile` below
+/// is the seam where a wire byte becomes a program value, and it already rejects a reply to the
+/// wrong sub-order three lines away; rejecting a wire index the board could never actually report
+/// is the same class of check.
+///
+/// Two constructors exist, for two different conventions, and they are not interchangeable
+/// despite both taking a bare `u8`:
+///
+/// - [`from_wire_index`](Self::from_wire_index) takes the wire's own zero-based index, exactly
+///   what a live `parse_profile` reply carries. This is the only constructor `parse_profile`
+///   itself calls, so a value read straight off the wire is validated in the one place it becomes
+///   a `ProfileNumber`, before a caller ever sees a bare index.
+/// - [`from_one_based`](Self::from_one_based) takes a plain one-based number (`1..=4`), for a
+///   caller that already has one in hand: a snapshot's TOML field (stored one-based, since that
+///   is the number a human reads and types), or a test building "profile 2" directly. It exists
+///   so those callers never have to fake a wire index by subtracting 1 by hand, which underflows
+///   on the boundary value 0.
+///
+/// **What this type does not protect against.** Both constructors take a bare `u8`, so nothing
+/// stops a caller who already holds a `ProfileNumber` from pulling the wire index back out via
+/// [`wire_index`](Self::wire_index) and feeding it to `from_one_based`, or vice versa, and getting
+/// a different profile out the other side silently. What this type does close is the specific,
+/// measured case where that mistake used to matter most: a live wire read (`ops::profile`, in
+/// `wh-device`) now returns an already-validated `ProfileNumber` directly, so a call site that
+/// consumes a live read never has a bare wire-index `u8` in hand to pass to the wrong constructor
+/// in the first place. A caller that goes out of its way to unwrap one convention and rebuild the
+/// other is still possible; a caller that just reads the board's profile and uses it is not
+/// exposed to the mistake at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProfileNumber(u8);
+
+impl ProfileNumber {
+    /// Converts the wire's own zero-based index. Rejects anything past the board's four measured
+    /// profiles instead of accepting it: a device reporting an index like `0xFE` or `0xFF` is not
+    /// one whose profile provenance should be trusted at all.
+    pub fn from_wire_index(idx: u8) -> Result<Self, DecodeError> {
+        if idx > MAX_WIRE_INDEX {
+            return Err(DecodeError::ProfileOutOfRange(idx));
+        }
+        Ok(Self(idx))
+    }
+
+    /// Converts a plain one-based number (`1..=4`) directly, rejecting `0` and anything past the
+    /// board's four measured profiles. See the type's own doc comment for why this exists
+    /// alongside `from_wire_index` rather than making every caller do `from_wire_index(n - 1)`.
+    pub fn from_one_based(n: u8) -> Result<Self, DecodeError> {
+        if n == 0 || n > MAX_WIRE_INDEX + 1 {
+            return Err(DecodeError::ProfileNumberOutOfRange(n));
+        }
+        Ok(Self(n - 1))
+    }
+
+    /// The wire's own zero-based index, for a caller that needs to send it back (a future
+    /// profile-select encoder) rather than display it.
+    pub fn wire_index(self) -> u8 {
+        self.0
+    }
+
+    /// The one-based number, for storing into a TOML snapshot or any other UI-facing text.
+    /// `Display` (below) covers every other use, printing the same number.
+    pub fn one_based(self) -> u8 {
+        self.0 + 1
+    }
+}
+
+impl std::fmt::Display for ProfileNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.one_based())
+    }
+}
+
+/// Read the board's active profile: cmd 0x00, sub-order `order::PROFILE` (0x70), arg 0xFF.
+/// `cmd_order` already lays out `[order_id, ...h_args, 0xFF, 0xFF]`, so passing `0xFF` as the
+/// single `h_args` byte produces exactly the measured `[0x70, 0xFF, 0xFF, 0xFF]` payload (task
+/// 19b group B).
+pub fn read_profile() -> [u8; REPORT_LEN] {
+    cmd_order(order::PROFILE, &[0xFF]).expect("4 bytes")
+}
+
+/// Reply payload `[status, sub-order, index, 0xff]` for the profile read above. Returns the
+/// wire's own zero-based profile index at `payload[2]`, already validated: this is the sole
+/// place a wire byte becomes a `ProfileNumber` (see that type's own doc comment), so a caller
+/// holding a `ProfileNumber` never has to trust an unchecked index again. Rejects a payload too
+/// short to contain the index, rejects a reply whose `payload[1]` is not `order::PROFILE` (a
+/// reply to a different sub-order landing here must not be misread as a plausible but wrong
+/// profile index), and rejects an index the board's four measured profiles could never produce.
+pub fn parse_profile(payload: &[u8]) -> Result<ProfileNumber, DecodeError> {
+    if payload.len() < 3 {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    if payload[1] != order::PROFILE {
+        return Err(DecodeError::Shape);
+    }
+    ProfileNumber::from_wire_index(payload[2])
+}
+
 pub fn sync() -> [u8; REPORT_LEN] {
     frame(cmd::SYNC, &[1, 2, 3, 4, 0xFF, 0xFF]).expect("6 bytes")
 }
@@ -221,20 +347,106 @@ pub struct DeviceInfo {
     pub firmware: String,
 }
 
-/// recdata.getCmdSyncRecdata: SN at bytes 9..25, firmware at 26..36.
+/// recdata.getCmdSyncRecdata: both the serial and the firmware string are length-prefixed on
+/// the wire, not fixed-width. `p[8]` is the serial's declared length, with the string itself
+/// starting at `p[9]`; the firmware's declared length follows immediately after the serial (at
+/// `p[9 + serial_len]`), with that string starting one byte later. Measured against the real
+/// device's 60-byte SYNC reply (task 19b chunk 6, `initial-load.jsonl` frames 1 and 3): the old
+/// code read the firmware from a hardcoded `payload[26..36]`, which took 10 bytes where the wire
+/// actually declares 16, truncating it.
+///
+/// A declared length that runs past the end of `payload` is a `DecodeError::Identity` (the
+/// payload itself may be exactly the right size; it is the declared length that is bogus, so
+/// `Short` - which reports the payload's own length - would misdiagnose it), never a panic or a
+/// silent truncation: this parses whatever the device sends back, including a device in a bad
+/// state.
+///
+/// A cleaned serial or firmware string that comes back empty, or that contains a byte outside
+/// printable ASCII, is also a `DecodeError::Identity`, not a successful empty/garbled identity:
+/// a truncated or corrupted reply must not make `wh backup` succeed with a snapshot that has
+/// silently lost the identity of the board it came from (review round 1, chunk 6), and a
+/// misbehaving device must not be able to smuggle control bytes (e.g. an ANSI escape) into
+/// `wh dump`'s terminal output through `serial`/`firmware` (review round 1, chunk 7's sibling
+/// finding on this same function). Each of these six failure paths (review round 2, finding 5)
+/// carries its own static message naming SYNC and the specific field, rather than collapsing
+/// into the same opaque `DecodeError::Shape` every other decoder in this module still uses for
+/// an unexpected shape; `parse_sync` is singled out because `device_info` is the first roundtrip
+/// of both `snapshot_from_device` and every auto-backup, so an opaque message here makes a
+/// misbehaving device unusable for every command, not just `wh dump`.
 pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
-    if payload.len() < 36 {
+    if payload.len() < 9 {
         return Err(DecodeError::Short(payload.len()));
     }
-    let clean = |b: &[u8]| {
-        String::from_utf8_lossy(b)
-            .trim_end_matches('\0')
-            .to_string()
+    // Each caller passes its own two static messages (non-ASCII, empty) in directly, rather
+    // than a field-name string this closure would have to re-dispatch on: review round 3's
+    // minor finding on the previous version of this function, which matched a `field: &'static
+    // str` against the literal `"serial"` with a `_ => firmware...` default arm, silently
+    // mis-attributing any third field (a future one, e.g. the already-identified but
+    // unimplemented build date) to firmware instead of failing to compile over the missing arm.
+    //
+    // Trim at the first NUL, then trim trailing 0xFF padding, then reject any byte that is not
+    // printable ASCII (space through `~`), then trim (only ever a leading/trailing literal
+    // space, since that check has already ruled out every other whitespace or control byte, tab
+    // included) - in that order. The wire pads a string's declared length with a NUL terminator
+    // plus any remaining slack, and the payload's own tail is 0xFF-padded; a tab or other control
+    // byte inside the declared length, unlike that padding, is treated as corruption rather than
+    // whitespace to tidy up, so `"\tABC\t"` is rejected rather than trimmed to `"ABC"` (deliberate,
+    // review round 2 finding 6: a tab is not something a serial or firmware string should quietly
+    // accept).
+    let clean = |b: &[u8],
+                 non_ascii_msg: &'static str,
+                 empty_msg: &'static str|
+     -> Result<String, DecodeError> {
+        let nul_end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        let b = &b[..nul_end];
+        let ff_end = b.iter().rposition(|&c| c != 0xFF).map_or(0, |i| i + 1);
+        let b = &b[..ff_end];
+        if !b.iter().all(|&c| c.is_ascii_graphic() || c == b' ') {
+            return Err(DecodeError::Identity(non_ascii_msg));
+        }
+        // `b` is now known to be printable ASCII, so this can never fail.
+        let s = std::str::from_utf8(b)
+            .expect("printable ASCII is always valid UTF-8")
+            .trim()
+            .to_string();
+        if s.is_empty() {
+            return Err(DecodeError::Identity(empty_msg));
+        }
+        Ok(s)
     };
-    Ok(DeviceInfo {
-        serial: clean(&payload[9..25]),
-        firmware: clean(&payload[26..36]),
-    })
+
+    let serial_len = payload[8] as usize;
+    let serial_start = 9usize;
+    let serial_end = serial_start
+        .checked_add(serial_len)
+        .filter(|&end| end <= payload.len())
+        .ok_or(DecodeError::Identity(
+            "serial length prefix overruns the reply",
+        ))?;
+    let serial = clean(
+        &payload[serial_start..serial_end],
+        "serial contains a non-printable byte",
+        "serial is empty",
+    )?;
+
+    if serial_end >= payload.len() {
+        return Err(DecodeError::Short(payload.len()));
+    }
+    let firmware_len = payload[serial_end] as usize;
+    let firmware_start = serial_end + 1;
+    let firmware_end = firmware_start
+        .checked_add(firmware_len)
+        .filter(|&end| end <= payload.len())
+        .ok_or(DecodeError::Identity(
+            "firmware length prefix overruns the reply",
+        ))?;
+    let firmware = clean(
+        &payload[firmware_start..firmware_end],
+        "firmware contains a non-printable byte",
+        "firmware is empty",
+    )?;
+
+    Ok(DeviceInfo { serial, firmware })
 }
 
 pub const MATRIX_ROWS: u8 = 6;
@@ -415,7 +627,7 @@ mod tests {
         assert_eq!(f[1], 3);
         assert_eq!(&f[4..7], &[0x02, 0xFF, 0xFF]);
 
-        let f2 = cmd_order(order::CONFIG, &[0x01]).unwrap();
+        let f2 = cmd_order(order::PROFILE, &[0x01]).unwrap();
         assert_eq!(&f2[4..8], &[0x70, 0x01, 0xFF, 0xFF]);
     }
 
@@ -440,6 +652,117 @@ mod tests {
         );
     }
 
+    /// The measured frame, checksum included: `5c 04 00 <crc> 70 ff ff ff`, task 19b group B.
+    #[test]
+    fn read_profile_matches_the_measured_frame() {
+        let f = read_profile();
+        assert_eq!(&f[..8], &[0x5C, 0x04, 0x00, 0x94, 0x70, 0xFF, 0xFF, 0xFF]);
+        assert!(f[8..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn parse_profile_reads_the_zero_based_index_from_the_real_replies() {
+        assert_eq!(
+            parse_profile(&[0x00, 0x70, 0x00, 0xFF])
+                .unwrap()
+                .wire_index(),
+            0
+        );
+        assert_eq!(
+            parse_profile(&[0x00, 0x70, 0x01, 0xFF])
+                .unwrap()
+                .wire_index(),
+            1
+        );
+    }
+
+    #[test]
+    fn parse_profile_rejects_a_payload_too_short_to_hold_the_index() {
+        assert_eq!(
+            parse_profile(&[0x00, 0x70]).unwrap_err(),
+            DecodeError::Short(2)
+        );
+    }
+
+    #[test]
+    fn parse_profile_rejects_a_reply_to_a_different_sub_order() {
+        // payload[1] is 0x50 (order::POLLING), not order::PROFILE: a reply to a different
+        // sub-order landing here must be rejected, not misread as profile index 0x00.
+        assert_eq!(
+            parse_profile(&[0x00, 0x50, 0x00, 0xFF]).unwrap_err(),
+            DecodeError::Shape
+        );
+    }
+
+    #[test]
+    fn parse_profile_rejects_an_index_the_board_cannot_report() {
+        // 0xFE is past the board's four measured profiles (wire index 0..=3): a garbled or
+        // misbehaving reply must not decode into a plausible-looking but meaningless profile.
+        assert_eq!(
+            parse_profile(&[0x00, 0x70, 0xFE, 0xFF]).unwrap_err(),
+            DecodeError::ProfileOutOfRange(0xFE)
+        );
+    }
+
+    #[test]
+    fn profile_number_from_wire_index_converts_zero_based_to_one_based() {
+        assert_eq!(ProfileNumber::from_wire_index(0).unwrap().one_based(), 1);
+        assert_eq!(ProfileNumber::from_wire_index(3).unwrap().one_based(), 4);
+    }
+
+    #[test]
+    fn profile_number_from_one_based_accepts_the_full_range_without_underflowing() {
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().one_based(), 1);
+        assert_eq!(ProfileNumber::from_one_based(4).unwrap().one_based(), 4);
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().wire_index(), 0);
+    }
+
+    #[test]
+    fn profile_number_from_one_based_rejects_zero_and_anything_past_four() {
+        assert_eq!(
+            ProfileNumber::from_one_based(0).unwrap_err(),
+            DecodeError::ProfileNumberOutOfRange(0)
+        );
+        assert_eq!(
+            ProfileNumber::from_one_based(5).unwrap_err(),
+            DecodeError::ProfileNumberOutOfRange(5)
+        );
+    }
+
+    /// The two constructors take the same argument type but different conventions: pinned here
+    /// as a behavioural difference, not just a doc comment. The same input, `1`, means "profile
+    /// 2" through `from_wire_index` (it is a wire index) and "profile 1" through `from_one_based`
+    /// (it is already the one-based number).
+    #[test]
+    fn profile_number_constructors_disagree_on_the_same_input_by_design() {
+        assert_eq!(ProfileNumber::from_wire_index(1).unwrap().one_based(), 2);
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().one_based(), 1);
+    }
+
+    #[test]
+    fn profile_number_from_wire_index_rejects_an_index_the_board_cannot_report() {
+        assert_eq!(
+            ProfileNumber::from_wire_index(0xFE).unwrap_err(),
+            DecodeError::ProfileOutOfRange(0xFE)
+        );
+        assert_eq!(
+            ProfileNumber::from_wire_index(0xFF).unwrap_err(),
+            DecodeError::ProfileOutOfRange(0xFF)
+        );
+        // The two wire indices `saturating_add(1)` would otherwise collapse into the same 255
+        // must stay distinct all the way to the error a caller sees.
+        assert_ne!(
+            ProfileNumber::from_wire_index(0xFE).unwrap_err(),
+            ProfileNumber::from_wire_index(0xFF).unwrap_err()
+        );
+    }
+
+    #[test]
+    fn profile_number_display_prints_the_one_based_number() {
+        let p = ProfileNumber::from_wire_index(1).unwrap();
+        assert_eq!(p.to_string(), "2");
+    }
+
     #[test]
     fn sync_request_and_reply() {
         let f = sync();
@@ -447,11 +770,208 @@ mod tests {
         assert_eq!(&f[4..10], &[1, 2, 3, 4, 0xFF, 0xFF]);
 
         let mut payload = vec![0u8; 60];
+        payload[8] = 16; // serial length prefix
         payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        payload[25] = 10; // firmware length prefix
         payload[26..36].copy_from_slice(b"V1.2.3.456");
         let info = parse_sync(&payload).unwrap();
         assert_eq!(info.serial, "SN0123456789ABCD");
         assert_eq!(info.firmware, "V1.2.3.456");
+    }
+
+    /// The real device's own 60-byte SYNC reply payload, captured twice identically in
+    /// `initial-load.jsonl` (frames 1 and 3, task 19b chunk 6). This is the test that matters:
+    /// the old hardcoded `payload[26..36]` firmware slice produced `App_V1.1.0`, ten bytes where
+    /// the wire actually declares sixteen (`App_V1.1.046000`).
+    #[test]
+    fn parse_sync_reads_the_real_device_reply() {
+        let hex =
+            "00140802468002001033343833313431333933453033353032104170705f56312e312e30343630303\
+                    00000417567203230203230323600ffffffffff";
+        let payload: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let info = parse_sync(&payload).unwrap();
+        assert_eq!(info.serial, "3483141393E03502");
+        assert_eq!(info.firmware, "App_V1.1.046000");
+    }
+
+    /// Review round 1, minor 5: an overrunning length prefix is a bogus *declaration*, not a
+    /// too-short *payload* - this one is a full, real-size 60-byte SYNC reply, exactly what the
+    /// device actually sends (review round 1, important 3, on moving these off artificially
+    /// tiny payloads), with only its serial length byte corrupted. `DecodeError::Identity`, not
+    /// `Short`, is the honest diagnosis: `Short(60)` would claim the payload itself was too
+    /// small, which is false. Review round 2, finding 5: the message also now names SYNC and
+    /// the specific field, not just "unexpected reply shape".
+    #[test]
+    fn parse_sync_rejects_a_serial_length_prefix_that_overruns_the_payload() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 0xFF; // declares a serial far longer than the payload has room for
+        let err = parse_sync(&payload).unwrap_err();
+        assert_eq!(
+            err,
+            DecodeError::Identity("serial length prefix overruns the reply")
+        );
+        assert!(err.to_string().contains("SYNC"));
+        assert!(err.to_string().contains("serial"));
+    }
+
+    #[test]
+    fn parse_sync_rejects_a_firmware_length_prefix_that_overruns_the_payload() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 4; // serial: 4 bytes, well within the payload
+        payload[9..13].copy_from_slice(b"1234");
+        payload[13] = 0xFF; // firmware length prefix declares far more than remains
+        let err = parse_sync(&payload).unwrap_err();
+        assert_eq!(
+            err,
+            DecodeError::Identity("firmware length prefix overruns the reply")
+        );
+        assert!(err.to_string().contains("SYNC"));
+        assert!(err.to_string().contains("firmware"));
+    }
+
+    /// The guard between the two length-prefixed strings (`if serial_end >= payload.len()`) has
+    /// no test of its own without this one (review round 1, minor 4): a serial that declares
+    /// exactly to the end of the payload leaves no byte for the firmware's own length prefix.
+    /// This *is* a too-short payload (there is no bogus declaration here, just not enough bytes
+    /// to hold a second string at all), so `Short`, not `Identity`, is the right diagnosis,
+    /// unlike the two overrun cases above.
+    #[test]
+    fn parse_sync_rejects_a_serial_that_leaves_no_room_for_the_firmware_length_prefix() {
+        let mut payload = vec![0u8; 20];
+        payload[8] = 11; // 9 + 11 == 20 == payload.len(): no byte left for the firmware prefix
+                         // A real, non-empty serial filling every one of those 11 bytes, so this
+                         // test exercises the guard between the two strings, not the separate
+                         // empty-serial rejection above.
+        payload[9..20].copy_from_slice(b"ABCDEFGHIJK");
+        assert_eq!(
+            parse_sync(&payload).unwrap_err(),
+            DecodeError::Short(payload.len())
+        );
+    }
+
+    /// Proves the parse follows the declared length prefix rather than a hardcoded constant: a
+    /// shorter serial (6 bytes, not 16) shifts where the firmware length prefix and firmware
+    /// string are read from, and both still come back correctly. A full 60-byte payload (review
+    /// round 1, important 3): the real device's replies are always this size, so the test no
+    /// longer needs an artificially tiny one just to exercise a short serial.
+    #[test]
+    fn parse_sync_follows_a_shorter_declared_serial_length_not_a_constant() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 6; // serial length
+        payload[9..15].copy_from_slice(b"ABC123");
+        payload[15] = 5; // firmware length prefix, right after the 6-byte serial
+        payload[16..21].copy_from_slice(b"V9.9.");
+        let info = parse_sync(&payload).unwrap();
+        assert_eq!(info.serial, "ABC123");
+        assert_eq!(info.firmware, "V9.9.");
+    }
+
+    /// Review round 1, important 3: lowering the length floor from 36 to 9 (chunk 6) must not
+    /// let a truncated or bad-state reply decode as a well-formed, empty identity. A zero-length
+    /// serial is a `DecodeError`, not `Ok(DeviceInfo { serial: "", .. })`: `wh backup` must never
+    /// silently write a snapshot that has lost the identity of the board it came from.
+    #[test]
+    fn parse_sync_rejects_an_empty_serial() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 0; // serial length: 0
+        payload[9] = 10; // firmware length prefix, right after the zero-length serial
+        payload[10..20].copy_from_slice(b"V1.2.3.456");
+        let err = parse_sync(&payload).unwrap_err();
+        assert_eq!(err, DecodeError::Identity("serial is empty"));
+        // Review round 2, finding 5: this is the exact scenario measured against the real
+        // binary ("a device replying with a zero-length serial field"), and the old opaque
+        // `DecodeError::Shape` ("unexpected reply shape") named neither SYNC nor the field.
+        assert!(err.to_string().contains("SYNC"));
+        assert!(err.to_string().contains("serial"));
+    }
+
+    /// The firmware sibling of the empty-serial test above.
+    #[test]
+    fn parse_sync_rejects_an_empty_firmware() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 16;
+        payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        payload[25] = 0; // firmware length: 0
+        let err = parse_sync(&payload).unwrap_err();
+        assert_eq!(err, DecodeError::Identity("firmware is empty"));
+        assert!(err.to_string().contains("SYNC"));
+        assert!(err.to_string().contains("firmware"));
+    }
+
+    /// Review round 1, minor 6: the brief's premise that the current code already rejected
+    /// non-ASCII/non-printable bytes was false; this implements that rejection. A serial
+    /// carrying a BEL and an ANSI escape sequence (`\x07\x1b[31m...`) must be a `DecodeError`,
+    /// not a successfully parsed string: `wh dump`'s non-JSON path writes `serial` straight to
+    /// the terminal, so a misbehaving device must not be able to smuggle control bytes into an
+    /// operator's terminal through it.
+    #[test]
+    fn parse_sync_rejects_control_bytes_in_the_serial() {
+        let mut payload = vec![0u8; 60];
+        let serial = b"SN\x07\x1b[31mEVIL\"";
+        payload[8] = serial.len() as u8;
+        payload[9..9 + serial.len()].copy_from_slice(serial);
+        let fw_len_pos = 9 + serial.len();
+        payload[fw_len_pos] = 10;
+        payload[fw_len_pos + 1..fw_len_pos + 11].copy_from_slice(b"V1.2.3.456");
+        let err = parse_sync(&payload).unwrap_err();
+        assert_eq!(
+            err,
+            DecodeError::Identity("serial contains a non-printable byte")
+        );
+        assert!(err.to_string().contains("SYNC"));
+        assert!(err.to_string().contains("serial"));
+    }
+
+    /// The firmware sibling: raw bytes outside printable ASCII (not just invalid UTF-8, which
+    /// `from_utf8_lossy` would have silently replaced rather than rejected) must also be
+    /// refused.
+    #[test]
+    fn parse_sync_rejects_non_ascii_bytes_in_the_firmware() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 16;
+        payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        let firmware = [0x80, 0x81, 0x82, b'V', b'1'];
+        payload[25] = firmware.len() as u8;
+        payload[26..26 + firmware.len()].copy_from_slice(&firmware);
+        let err = parse_sync(&payload).unwrap_err();
+        assert_eq!(
+            err,
+            DecodeError::Identity("firmware contains a non-printable byte")
+        );
+        assert!(err.to_string().contains("SYNC"));
+        assert!(err.to_string().contains("firmware"));
+    }
+
+    /// Review round 2, finding 6: the printable-ASCII check runs before `.trim()`, so a tab
+    /// (unlike a literal space) is corruption, not whitespace to tidy up, and the whole string
+    /// is rejected rather than trimmed down to its non-tab content. Deliberate, per the doc
+    /// comment on `clean` above: a tab in a serial number is not something to quietly accept.
+    /// Space padding, by contrast, is still trimmed exactly as before.
+    #[test]
+    fn parse_sync_rejects_a_tab_padded_serial_but_still_trims_space_padding() {
+        let mut payload = vec![0u8; 60];
+        let tab_padded = b"\tABC\t";
+        payload[8] = tab_padded.len() as u8;
+        payload[9..9 + tab_padded.len()].copy_from_slice(tab_padded);
+        let fw_len_pos = 9 + tab_padded.len();
+        payload[fw_len_pos] = 10;
+        payload[fw_len_pos + 1..fw_len_pos + 11].copy_from_slice(b"V1.2.3.456");
+        assert_eq!(
+            parse_sync(&payload).unwrap_err(),
+            DecodeError::Identity("serial contains a non-printable byte")
+        );
+
+        let mut payload = vec![0u8; 60];
+        let space_padded = b" ABC ";
+        payload[8] = space_padded.len() as u8;
+        payload[9..9 + space_padded.len()].copy_from_slice(space_padded);
+        let fw_len_pos = 9 + space_padded.len();
+        payload[fw_len_pos] = 10;
+        payload[fw_len_pos + 1..fw_len_pos + 11].copy_from_slice(b"V1.2.3.456");
+        assert_eq!(parse_sync(&payload).unwrap().serial, "ABC");
     }
 
     #[test]

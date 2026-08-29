@@ -67,6 +67,57 @@ that keys belong to. Same wire format, different abstraction, and the TUI would 
 **Prerequisite.** Not until the write path has been exercised against hardware. A UI that makes it
 easy to change many settings quickly is the worst place to discover a write bug.
 
+### Writing keyset membership, layout `0xFE`
+
+**What we know, measured on hardware.** Settings written by `wh` do apply and do work. `set ap` on F
+was confirmed physically actuating at 0.30mm, checked using the board's own actuation LEDs against E
+at 2.00mm, and `set rt` on W was confirmed in the vendor UI. But the
+vendor configurator renders those values greyed and outside any named keyset, because we never write
+layout `0xFE`. The vendor writes `1` to it when a keyset is created and `0` when one is deleted, and
+leaves it alone for edits within an existing set.
+
+**Why it is worth doing.** Cosmetic for an alpha, and explicitly accepted as such. It is the
+difference between our changes looking native in the vendor's own UI and looking like loose overrides
+sitting outside its model. It also matters for the TUI item below, because the vendor's abstraction is
+a named group that keys belong to, while ours is per-key settings addressed by key.
+
+**How to find out the rest.** We know when `0xFE` is written but not how a keyset's name or membership
+list is stored, and a keyset clearly has both. Capture while creating a named keyset with two keys in
+it, then while renaming it, then while adding a third key.
+
+### Listing backups, and what `--last` should mean
+
+**The problem.** There is no `wh backups list`, and a manual `wh backup` is indistinguishable from the
+automatic one every write takes before it writes. So `wh restore --last` means "undo the last
+command", not "return to where I started".
+
+**How it showed up.** During the hardware session the sequence was: manual backup, `set rt`, `set ap`,
+`restore --last`. That restored the auto-backup taken immediately before `set ap`, which already had
+the rapid trigger change in it. The tool named the snapshot it used and restored it exactly, and 68
+keys verified, but it briefly read as a restore bug.
+
+**What it needs.** At minimum a way to list backups with their timestamps and a marker for manual
+versus automatic. Possibly `--last` should prefer the last manual backup, or there should be a
+separate flag for each meaning. Worth deciding deliberately rather than by accident.
+
+### Deleting or renaming a stored key group
+
+**The problem.** `wh keys group <name> <selector>` creates a group, and nothing removes one. That
+became visible when four board-function key names (`ap`, `rt`, `play`, `light`) were added to the key
+table: a group created under one of those names before the change is now refused by the selector,
+correctly, because a bare name that is both a key and a stored group is ambiguous and writing to the
+wrong key on hardware is unacceptable. But the operator's only recovery is to read the group's
+members off `wh keys list` and retype them under a new name, because `wh keys group` cannot delete
+and cannot rename.
+
+**What it needs.** A delete, and probably a rename. The awkward part is that a group whose name
+collides is exactly the one you most want to remove, and any command that takes the group's name as a
+selector will hit the same ambiguity guard, so the delete has to address the group by name in a
+position that is unambiguously a group, not a selector.
+
+**Deliberately deferred.** It is a new CLI surface, and it was found during a task of protocol
+corrections where adding one would have been unreviewed scope creep.
+
 ### A loading spinner on CLI commands
 
 **The idea.** When a command runs, show a brief spinner cycling `|`, `/`, `-`, `\` for something in
@@ -123,10 +174,18 @@ All request and reply balanced, none ever failing, all confined to the connect s
 | `0xBD` | 9 | `00bd01ff` |
 | `0xC0` | 3 | `00c001` |
 
-### Unidentified layouts
+### Layouts, identified and not
 
-- `0x16` and `0x17`, written as zero alongside every rapid trigger change and never once observed
-  non-zero. Purpose unknown.
+Two former unknowns are now measured. See `docs/protocol-inventory.md` for the full table and counts.
+
+- `0x00` is the **base layer key mapping** and `0x01` is the **FN layer**. Measured from
+  `initial-load` by reading each key's `0x00` against its `0x01`: esc maps to grave, and 1 through 0
+  map to F1 through F10, holding across 69 distinct values in two independent series. That is
+  exactly how the board behaves under FN.
+- `0x16` and `0x17`, 1858 records each across the corpus, written as zero alongside every rapid
+  trigger change and **never once observed non-zero**. Purpose unknown.
+- `0x19`, 700 records, only ever `0x0000` or `0x3e2c`. Purpose unknown.
+- `0xFF`, 420 records, only ever `0`, `1` or `2`. Purpose unknown.
 - `0xFE`, written as 1 when a keyset is created and 0 when it is deleted, and untouched by edits
   within an existing keyset. Reads as a membership flag.
 
@@ -137,9 +196,24 @@ because confirming it means remapping FN away and FN is how you reach the FN lay
 non-standard keys were confirmed by measurement: `0xFA` is AP, `0xFB` is RT, `0xD6` is PLAY, and
 `0xFC` is LIGHT.
 
+One honest limit on those four, raised in review. The captures prove that the four usage codes exist,
+are configurable, and were remapped to F2, F3, F4 and F5 respectively. They do not by themselves
+prove that `0xFA` is the key *legended* AP rather than the one legended RT. That binding rests on the
+operator's report of which key they remapped, corroborated by the four codes sitting in the same
+column across four consecutive matrix rows. Good enough to name them; not the same standard as the
+byte-level facts elsewhere in this document.
+
 ### Settings a snapshot does not capture
 
-`wh backup` stores global travel plus four layouts per key. It does not capture key mappings, SOCD,
-dynamic keystroke, mod tap, gamepad configuration, RGB, polling rate, or which profile it came from.
-The profile gap is being closed in Phase 1. The rest are Phase 2 scope questions, and the README
-must say plainly what a snapshot does and does not contain either way.
+`wh backup` stores global travel plus four layouts per key, and, as of Phase 1, the profile the
+board was on when the snapshot was taken: `Snapshot::profile` records it. `wh restore` checks that
+recorded profile against the board's current one, and the two refusals are not the same and do not
+share an override. When the snapshot's recorded profile differs from the board's, `wh restore`
+refuses unconditionally; there is no `--force` for that case, since restoring would silently
+overwrite the wrong profile's settings. When the snapshot has no recorded profile at all (an older
+snapshot from before this field existed, or one whose board reported a profile index this build does
+not recognise), `wh restore` refuses by default but accepts `--force`, asserting the settings belong
+to the board's current profile. That gap is closed. It still does not capture the base layer key
+mapping (layout `0x00`), the FN layer (layout `0x01`), SOCD, dynamic keystroke, mod tap, gamepad
+configuration, RGB, or polling rate. Those are Phase 2 scope questions, and the README says plainly
+what a snapshot does and does not contain either way.

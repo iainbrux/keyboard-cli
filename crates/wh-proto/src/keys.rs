@@ -1,4 +1,7 @@
-//! Key name ↔ USB HID keyboard usage mapping.
+//! Key name ↔ usage code mapping. Most entries are USB HID keyboard usages, but the K-001 board
+//! also carries a handful of board-specific function identifiers in the reserved usage range
+//! (`0xD6`, `0xFA`-`0xFC`); this table holds both, and callers should not assume every entry is a
+//! standard HID usage.
 
 pub const TABLE: &[(&str, u8)] = &[
     ("a", 0x04),
@@ -98,6 +101,10 @@ pub const TABLE: &[(&str, u8)] = &[
     ("kpdot", 0x63),
     ("iso", 0x64),
     ("menu", 0x65),
+    // K-001 board function, not a USB HID keyboard usage: confirmed by measurement (task 19b
+    // chunk 7, the operator remapped this key to F4 in the vendor UI and the matrix read back
+    // that remap).
+    ("play", 0xD6),
     ("lctrl", 0xE0),
     ("lshift", 0xE1),
     ("lalt", 0xE2),
@@ -106,6 +113,15 @@ pub const TABLE: &[(&str, u8)] = &[
     ("rshift", 0xE5),
     ("ralt", 0xE6),
     ("rgui", 0xE7),
+    // K-001 board functions, not USB HID keyboard usages: confirmed by measurement (task 19b
+    // chunk 7, the operator remapped each to a distinct function key in the vendor UI and the
+    // matrix read back each remap). `0x01` is probably FN from its position in the enumeration,
+    // but it was deliberately never measured, since confirming it means remapping FN away, and
+    // FN is how you reach the layer that would let you undo that; it is deliberately not in
+    // this table.
+    ("ap", 0xFA),
+    ("rt", 0xFB),
+    ("light", 0xFC),
 ];
 
 pub fn usage_for_name(name: &str) -> Option<u8> {
@@ -177,6 +193,32 @@ mod tests {
         assert_eq!(usage_for_name("nosuchkey"), None);
         assert_eq!(name_for_usage(0x1A), Some("w"));
         assert_eq!(name_for_usage(0x2C), Some("space"));
+    }
+
+    /// The four K-001 board-function keys added in task 19b chunk 7, confirmed by measurement:
+    /// each name resolves to its usage and round-trips back to the same name, and none of the
+    /// four names collided with an existing entry (a collision would have shadowed the old
+    /// name silently instead of erroring, so this checks the resolved usage matches the one the
+    /// brief measured, not just that the name resolves to something).
+    #[test]
+    fn board_function_keys_round_trip() {
+        for (name, usage) in [
+            ("ap", 0xFAu8),
+            ("rt", 0xFB),
+            ("play", 0xD6),
+            ("light", 0xFC),
+        ] {
+            assert_eq!(
+                usage_for_name(name),
+                Some(usage),
+                "{name} should resolve to {usage:#04x}"
+            );
+            assert_eq!(
+                name_for_usage(usage),
+                Some(name),
+                "{usage:#04x} should resolve back to {name}"
+            );
+        }
     }
 
     #[test]

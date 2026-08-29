@@ -1,0 +1,231 @@
+# wh
+
+A command-line tool for reading and writing rapid-trigger and actuation-point settings on a
+Wallhack K-001 hall-effect keyboard, over raw HID. No other board is supported or tested.
+
+## Why WSL and a Windows binary
+
+`wh` talks to the keyboard through `hidapi`, which needs the Windows HID stack to see the device;
+WSL has no direct access to it. The workflow this repository is built around is: develop and run
+`cargo` from WSL, but cross-compile to a Windows binary and run that binary against the real
+hardware, from WSL, through a small shim. You do not need a Windows shell open to use `wh`, only the
+cross-compiled binary and the shim below.
+
+## Install and build
+
+You need the `x86_64-pc-windows-gnu` Rust target and a mingw-w64 linker:
+
+```
+rustup target add x86_64-pc-windows-gnu
+```
+
+On a Debian/Ubuntu-based WSL distribution:
+
+```
+sudo apt install mingw-w64
+```
+
+Then build the release binary:
+
+```
+cargo build --release --workspace --target x86_64-pc-windows-gnu
+```
+
+`bin/wh` is a shim script that execs the built `wh.exe` from WSL, so once the build above succeeds
+you can run `./bin/wh <command>` directly from your WSL shell exactly as you would a native binary,
+and it will find and control the keyboard through the Windows HID stack underneath.
+
+## The exclusive-access caveat
+
+**The vendor's own web configurator, `terminal.wallhack.com`, holds the device exclusively while its
+tab is open.** If a browser tab to that site is open (even in the background, even if you are not
+looking at it), `wh` will fail to open the device. Close the tab first. This bites everyone once:
+the failure looks like a missing or broken keyboard, not like a competing process, because nothing
+about the error names the browser.
+
+## Commands
+
+Read the whole board configuration:
+
+```
+wh dump
+wh dump --json
+```
+
+Read or write rapid trigger and actuation point for a key selection:
+
+```
+wh get rt --keys "w,a,s,d"
+wh set rt --keys "w,a,s,d" --set 0.5
+wh set rt --keys "w,a,s,d" --set 0.5 --press 0.4 --release 0.6
+wh set rt --keys "w,a,s,d" --off
+wh get ap --keys wasd
+wh set ap --keys wasd --set 1.2
+```
+
+Key selectors accept comma-separated names, contiguous runs typed as one word (`wasd`), ranges
+(`a-f`), negation (`all,!space`), and user-defined groups (`wh keys group fps "w,a,s,d,space"`,
+then `--keys fps`). `wh keys list` shows every known key name and stored group. A range is a range
+over `wh-proto`'s own key table, not the physical layout, so `f1-f12` parses but resolves to nothing
+on this board: the K-001 is 68 keys with no F row, and `wh keys list` is the source of truth for
+what actually exists to select.
+
+Pick keys interactively instead of naming them, on any `get`/`set` subcommand:
+
+```
+wh set rt --pick --set 0.5
+```
+
+Back up and restore a full snapshot:
+
+```
+wh backup --to my-profile.toml
+wh restore my-profile.toml
+wh restore --last
+```
+
+A self-test that exercises a real write/read round trip without changing anything on the board:
+
+```
+wh selftest
+```
+
+## A safety note before you write anything
+
+`wh set`, `wh restore`, and `wh selftest` write to the physical keyboard. `wh set rt` and `wh set ap`
+accept `--dry-run` (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports
+a real run would send, and sends nothing. Use it to check a command before it touches hardware,
+especially the first time you type a new key selector. `wh restore` and `wh selftest` have no
+`--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
+only ever rewrites a setting to the value it already read.
+
+Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`)
+names which transport it opened, on stderr, one line, before doing anything else: `transport:
+hardware (real keyboard)` or `transport: replay (<path>)`. Check that line before trusting that a run
+did what you expected, especially when driving `wh` from a script or another tool where the rest of
+the output might scroll past. `wh keys list` and `wh keys group` never open a transport at all (they
+only ever touch the local key store), so they print no such line; that absence is expected for those
+two, not a sign the announcement failed.
+
+### Running against a script instead of hardware (`WH_REPLAY`)
+
+Set `WH_REPLAY=<path-to-a-captured-jsonl-script>` and every `wh` command reads a scripted device
+conversation instead of opening the keyboard at all; this is how the test suite drives the whole CLI
+with no hardware attached, and it is the only way to safely try a command against something other
+than your own board.
+
+**On Linux, this just works**, since `wh` there is a native binary reading its own process
+environment directly. **Through `bin/wh`, it needs one more thing to be true.** `bin/wh` execs a
+Windows binary from a WSL shell, and WSL only carries an environment variable across that
+WSL-to-Windows boundary when it is named in `WSLENV`; `bin/wh` sets this for you (`WH_REPLAY/p`, the
+`/p` translating the WSL path into one the Windows binary can open), so `WH_REPLAY=<script> ./bin/wh
+dump` works exactly as expected. If `bin/wh` cannot confirm the variable will actually reach the
+Windows binary (for example, running somewhere `wslpath` is not on `PATH`), it refuses to start
+rather than silently falling back to your real keyboard: **a `wh restore` or `wh set` you believe is
+a replay must never turn out to have been a real write**, and the transport line above is the second
+line of defence for exactly that if the first one is ever wrong.
+
+## What a backup does and does not contain, stated plainly
+
+A snapshot recorded by `wh backup` (or the automatic backup every write command takes first)
+contains: global travel and its press/release dead zones, actuation point and rapid trigger
+press/release depth for every physical key, the raw per-key mode value, and, since Phase 1, the
+profile the board was on when the snapshot was taken.
+
+Each key's `rt` field in the snapshot file is informational only, a human-readable summary of the
+raw mode value at the moment the snapshot was taken. `wh restore` never reads it; it writes the raw
+mode value back verbatim. Hand-editing `rt = false` in a snapshot file before restoring it does not
+turn rapid trigger off, and `wh restore` will report success and a verified readback while doing
+exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
+change what a restore writes, change the settings on the board and take a fresh backup, not the
+`rt` field in an old one.
+
+**It does not contain**, and `wh restore` cannot bring back:
+
+- The base layer key mapping (which physical key produces which keystroke).
+- The FN layer mapping.
+- SOCD (simultaneous opposing cursor direction key pairing).
+- Dynamic keystroke, mod tap, or any other advanced-key behaviour beyond the raw mode value.
+- Gamepad configuration.
+- RGB lighting.
+- Polling rate.
+
+**`wh restore` is not a factory-reset recovery path.** It restores exactly the settings listed above,
+and nothing more, and it guards the profile they were recorded on with two separate refusals that do
+not share an override:
+
+- If the snapshot recorded a profile and the board is currently on a different one, `wh restore`
+  refuses unconditionally. There is no `--force` for this case: restoring would silently overwrite
+  the wrong profile's settings, which `wh` will not do even if asked. Switch the board to the
+  recorded profile first, or restore only when you actually mean to overwrite the profile you are
+  currently on.
+- If the snapshot has no recorded profile at all (it predates profile recording, or the board it
+  came from reported a profile index this build does not recognise), `wh restore` also refuses by
+  default, since it cannot verify which profile the settings belong to. `--force` rescues only this
+  case, asserting the settings belong to the board's current profile; it does nothing for the
+  mismatch case above.
+
+If you need to undo a change to remapping, SOCD, lighting, or anything else in the list above, use
+the board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
+configurator; `wh` does not implement either.
+
+## Protocol
+
+See `docs/protocol.md` for the wire protocol this tool speaks, and `docs/protocol-inventory.md` for
+the underlying measured frame counts it is built from.
+
+## Licence, warranty, and liability
+
+Read this before you run anything in this repository against a keyboard you care about.
+
+### Ownership
+
+**The `wh` tool is Iain Brookes' work,** with one exception: parts of `crates/wh-proto` are a port of
+MIT-licensed Sparklink Playjoy source, and that notice travels with the port. Copyright (c) 2026
+Iain Brookes, all rights reserved, for the rest. That covers `crates/`, `docs/`, `capture/`, `bin/`,
+`README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `.cargo/config.toml`, and the build files at the
+repository root. See `LICENSE` section 1 and `THIRD_PARTY_NOTICES.md` for exactly which files that
+exception covers.
+
+**The keyboard is Wallhack's.** The Wallhack K-001, its firmware, its hardware design, its
+communication protocol, the Wallhack name and logo, and the web configurator at
+terminal.wallhack.com all belong solely to Wallhack. This project claims none of it.
+
+This is an independent, unofficial project. It is **not affiliated with, endorsed by, sponsored by,
+or supported by Wallhack.** `wh` is an independently written client that talks to the keyboard over
+the USB HID interface the device already exposes. The notes in `docs/protocol.md` describe observed
+device behaviour, recorded from traffic between a keyboard and its own vendor software on hardware
+owned by the author. They describe an interface; they are not a copy of anyone's software.
+
+**Third-party code under `research/` belongs to its own authors** and stays under its own licences,
+which this repository's licence does not override. See `THIRD_PARTY_NOTICES.md`.
+
+### Redistribution is not permitted
+
+Forking, re-forking, mirroring, redistributing, modifying, or creating derivative works of the `wh`
+tool is **strictly forbidden** without prior written permission. See `LICENSE` for the exact terms.
+
+That restriction applies to the `wh` tool only. It does not apply to the third-party material under
+`research/`, which you may use under whatever its own licence allows.
+
+### No warranty
+
+`wh` is provided **as is**, with no warranty of any kind, express or implied.
+
+It writes settings to keyboard hardware over a protocol worked out by observing traffic, not from a
+specification anyone published. It has been tested against exactly one board, on one firmware
+version.
+
+**Using this tool may void your keyboard's manufacturer warranty.** Neither Iain Brookes nor
+Wallhack is obliged to support, update, or repair any device it has been used with.
+
+### No liability
+
+Neither Iain Brookes nor Wallhack accepts any liability for anything that happens as a result of
+using this tool. That includes damage to or malfunction of a keyboard or any other hardware, loss of
+settings, a voided warranty, and any direct, indirect, incidental, special, or consequential damage.
+
+**You use it entirely at your own risk.** If that is not acceptable to you, use the vendor's own web
+configurator instead.
+
+Nothing here excludes liability where the law does not allow it to be excluded.

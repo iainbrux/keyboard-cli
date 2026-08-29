@@ -24,7 +24,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Get { what } => get(what, &store),
         Cmd::Set { what } => set(what, &store),
         Cmd::Backup { to } => backup(to, &store),
-        Cmd::Restore { file, last } => restore(file, last, &store),
+        Cmd::Restore { file, last, force } => restore(file, last, force, &store),
         Cmd::Selftest => selftest(),
     }
 }
@@ -39,16 +39,30 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 
 /// Open the real device on Windows, or a replay script when WH_REPLAY is set to a non-empty
 /// path.
+///
+/// Announces which transport it opened, on stderr, one line, after the transport is actually
+/// ready rather than merely attempted: a review subagent that set `WH_REPLAY` and ran `wh
+/// restore --force` believing it was driving a fixture instead performed a real restore, because
+/// `bin/wh` (the shim that execs the cross-compiled Windows binary from WSL) never told WSL to
+/// carry `WH_REPLAY` across that boundary, so this function saw an unset variable and silently
+/// opened the real keyboard. `bin/wh` is fixed to propagate the variable, but this line exists so
+/// a run that is quietly talking to real hardware is never silent about it, independent of
+/// whether the shim, a future caller of this binary directly, or anything else in between gets it
+/// right. Kept off stdout deliberately, so `dump --json`'s parseable output stays clean.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading WH_REPLAY script from {path}"))?;
-            Box::new(wh_device::replay::ReplayTransport::from_jsonl(&text)?)
+            let t = wh_device::replay::ReplayTransport::from_jsonl(&text)?;
+            best_effort_eprintln(&format!("transport: replay ({path})"));
+            Box::new(t)
         } else {
             #[cfg(windows)]
             {
-                Box::new(wh_device::hid::HidTransport::open()?)
+                let t = wh_device::hid::HidTransport::open()?;
+                best_effort_eprintln("transport: hardware (real keyboard)");
+                Box::new(t)
             }
             #[cfg(not(windows))]
             {
@@ -74,6 +88,31 @@ pub(crate) fn key_label(usage: u8) -> String {
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
+    // `ops::profile` already returns a validated `ProfileNumber`: an index the board could never
+    // actually report under the four measured profiles surfaces as `DeviceError::ProfileOutOfRange`
+    // (review round 2, important 2: this is a measurement bound from one board on one firmware, so
+    // a future firmware shipping more profiles must not hard-fail every command that goes through
+    // this function), which degrades to `None`, "provenance unknown", the same case an older
+    // pre-profile-recording snapshot already carries, rather than aborting `dump`, `backup`, and
+    // `set`'s auto-backup outright. Any other failure (a garbled reply, a transport error) still
+    // propagates via `?` below, unchanged from before this function existed. `restore` is
+    // different: it reads the board's profile through its own separate call, not this one, and
+    // keeps its hard refusal on every failure, since it cannot compare what it cannot interpret.
+    let profile = match ops::profile(s) {
+        Ok(p) => Some(p),
+        Err(wh_device::transport::DeviceError::ProfileOutOfRange(idx)) => {
+            // Caller-agnostic (review round 3, minor 3): this function backs `dump`, which
+            // records no snapshot at all, as well as `backup` and every write command's
+            // auto-backup, which do. The message must be true for all three, so it describes
+            // this read's own profile as unrecorded rather than claiming a snapshot exists.
+            best_effort_eprintln(&format!(
+                "warning: board reported profile index {idx}, but the board only has 4 profiles \
+                 (wire index 0..=3); this read's profile is unrecorded (unknown provenance)"
+            ));
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
     let global = ops::global_travel(s)?;
     let matrix = ops::read_matrix(s)?;
     let mut keys = Vec::new();
@@ -93,6 +132,7 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         firmware: info.firmware,
         serial: info.serial,
         taken_at: httpdate_now()?,
+        profile,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
@@ -159,6 +199,15 @@ fn dump(json: bool) -> Result<()> {
             writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
+            // `snapshot_from_device` degrades to `None` (with its own warning already printed to
+            // stderr) rather than aborting the whole dump when the board reports a profile index
+            // outside the known range (review round 2, important 2), so `None` is a real,
+            // reachable state here, not just the defensive case round 1 treated it as; print it
+            // plainly instead of erroring the command over it.
+            match snap.profile {
+                Some(profile) => writeln!(out, "profile {profile}")?,
+                None => writeln!(out, "profile unknown (unrecognised index reported)")?,
+            }
             writeln!(
                 out,
                 "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
@@ -267,10 +316,13 @@ fn list_keys(store: &Store) -> Result<()> {
         let mut sorted: Vec<_> = groups.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         for (name, usages) in sorted {
-            let names: Vec<_> = usages
-                .iter()
-                .filter_map(|&u| wh_proto::keys::name_for_usage(u))
-                .collect();
+            // Review round 2, finding 3: a usage with no `TABLE` entry must still be listed, as
+            // hex (the same fallback `key_label`/`dump` already use for an unnamed key), not
+            // silently dropped. Reading a stale group's members off this output is the operator's
+            // only recovery route once finding 1's `AmbiguousWithGroup` refuses to resolve it, so
+            // a listing that silently under-reports would send them to recreate an incomplete
+            // group.
+            let names: Vec<_> = usages.iter().map(|&u| key_label(u)).collect();
             writeln!(out, "  {name:<12} {}", names.join(","))?;
         }
     }
@@ -374,6 +426,12 @@ fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
+/// Takes and saves an auto-backup. `restore` used to read the board's current profile off this
+/// function's own returned snapshot (review round 1, finding 1): that coupling was invisible, a
+/// future `--no-backup` flag or a best-effort backup (the `best_effort_eprintln` pattern two
+/// lines above) could delete the profile safety check as a side effect with nothing failing to
+/// compile. `restore` now calls `ops::profile` directly and independently instead, so this
+/// function is back to returning only whether the backup itself succeeded.
 fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     let snap = snapshot_from_device(s)?;
     let path = store.save_backup(&snap.to_toml()?)?;
@@ -381,22 +439,19 @@ fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// Prints the exact reports `--dry-run` would otherwise send, plus the SAVE frame that never
-/// follows them, to `out`. Propagates a write failure rather than swallowing it (unlike
-/// `best_effort_eprintln`): this is the dry-run path's only output, and it is the one most
-/// likely to be piped into a pager (`wh set ap --keys all --set 1.2 --dry-run | less`), so a
-/// closed reader has to surface as an ordinary `io::Error` that `main.rs` recognises as a
-/// broken pipe, not a panic.
+/// Prints the exact reports `--dry-run` would otherwise send to `out`, and nothing else: a real
+/// run sends only these frames (see `write_records` in `wh-device`, which no longer sends a
+/// SAVE order either), so the dry run must print exactly them and no more, since an operator
+/// compares this output against the captures by eye. Propagates a write failure rather than
+/// swallowing it (unlike `best_effort_eprintln`): this is the dry-run path's only output, and it
+/// is the one most likely to be piped into a pager (`wh set ap --keys all --set 1.2 --dry-run |
+/// less`), so a closed reader has to surface as an ordinary `io::Error` that `main.rs`
+/// recognises as a broken pipe, not a panic.
 fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
     for f in frames {
         writeln!(out, "{}", wh_device::replay::hex(f))?;
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[])?;
-    writeln!(
-        out,
-        "dry run, no writes sent; save-to-flash frame {} would follow",
-        wh_device::replay::hex(&save)
-    )?;
+    writeln!(out, "dry run, no writes sent")?;
     Ok(())
 }
 
@@ -485,9 +540,11 @@ fn verify_rt<T: Transport>(
 }
 
 /// The `verify_rt_off` sibling of `verify_rt` above, same reasoning: `records` (built by
-/// `ops::rt_off_records`, one MODE record per key) is the sole source of both the key list and
-/// the wanted MODE value, so there is nothing for a separate `usages` parameter to disagree
-/// with.
+/// `ops::rt_off_records`) is the sole source of both the key list and the wanted MODE value, so
+/// there is nothing for a separate `usages` parameter to disagree with. `records` no longer means
+/// one entry per selected key (whole-branch review): `rt_off_records` skips a key with nothing to
+/// change, so `report_verification`'s reported count here reflects how many keys were actually
+/// changed, not how many `--keys` selected.
 fn verify_rt_off<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -544,7 +601,10 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 RtAction::Off
             } else {
                 let base = set.ok_or_else(|| {
-                    anyhow::anyhow!("--set, --press/--release, or --off required")
+                    anyhow::anyhow!(
+                        "--set is required unless --off is given; --press and --release only \
+                         override a --set base and cannot be used alone"
+                    )
                 })?;
                 RtAction::On {
                     press: mm(press.unwrap_or(base))?,
@@ -746,7 +806,58 @@ fn verify_restore<T: Transport>(
     report_verification(out, "restore", &usages, &bad)
 }
 
-fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Result<()> {
+/// The restore-time profile safety check (task 19b group B): `wh backup` records no provenance
+/// beyond global travel and per-key settings, so restoring a snapshot taken on one profile while
+/// the board sits on another silently overwrites the wrong profile, and `restore`'s own readback
+/// verification cannot catch it, since it reads back exactly what it just wrote. `snap_profile`
+/// is what the snapshot being restored recorded; `board_profile` is the board's current profile.
+/// Both are `wh_proto::cmds::ProfileNumber`, not a bare `u8` (review round 1, finding 2): the
+/// wire's own zero-based index and the UI's one-based number are different things. Since task 20
+/// step 4c, `ops::profile` itself returns an already-validated `ProfileNumber`, so the call at
+/// `restore`'s own call site below is simply `ops::profile(s)?`, with no conversion in sight to
+/// get wrong: the natural, wrong call the review round found, `check_restore_profile(snap.profile,
+/// ops::profile(s)?, force)`, is now also the only call that compiles, because there is no second
+/// constructor to reach for at that call site any more.
+///
+/// Three cases, deliberately not collapsed into one flag:
+/// - recorded and matching: proceed.
+/// - recorded and differing: refuse, unconditionally. `force` does not rescue this case: copying
+///   settings between profiles on purpose is a real thing someone might want, but it is not what
+///   this flag is for, and a single flag covering both this and the case below would let this,
+///   the more dangerous mistake, through.
+/// - not recorded: refuse, but `force` rescues it, since the caller is asserting something this
+///   snapshot itself cannot vouch for, not overriding a known mismatch. `None` covers two
+///   causes, an older snapshot from before profile recording, or one whose board reported an
+///   index outside the known range (review round 3, important 1): both are gated the same way,
+///   since neither can be compared against the board's current profile, but they are not the
+///   same claim, and the refusal message below has to say so rather than naming only the first.
+fn check_restore_profile(
+    snap_profile: Option<wh_proto::cmds::ProfileNumber>,
+    board_profile: wh_proto::cmds::ProfileNumber,
+    force: bool,
+) -> Result<()> {
+    match snap_profile {
+        Some(p) if p == board_profile => Ok(()),
+        Some(p) => bail!(
+            "snapshot was taken on profile {p} but the board is on profile {board_profile}; \
+             restoring would silently overwrite profile {board_profile}'s settings with profile \
+             {p}'s. Switch the board to profile {p} first, or restore to the profile you \
+             actually intend; there is no override for this refusal"
+        ),
+        None if force => Ok(()),
+        None => bail!(
+            "snapshot has no recorded profile: either it predates profile recording, or the \
+             board it was taken from reported a profile index this build does not recognise \
+             (in which case the settings really do belong to some profile, just not one this \
+             build can name). Either way, whether it belongs to the board's current profile \
+             (profile {board_profile}) cannot be verified; pass --force to restore anyway, \
+             asserting it belongs to profile {board_profile}, which may overwrite a different \
+             profile's settings if that assertion is wrong"
+        ),
+    }
+}
+
+fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &Store) -> Result<()> {
     if file.is_some() && last {
         bail!("pass a snapshot file or --last, not both");
     }
@@ -767,6 +878,16 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Resul
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     with_session(|s| {
+        // Read independently of `auto_backup` below, deliberately (review round 1, finding 1):
+        // this used to come from `auto_backup`'s own returned snapshot, a coupling invisible at
+        // the call site, since `auto_backup`'s job is to save a backup, not to report the
+        // profile. A future `--no-backup` flag, or a change making the backup best-effort like
+        // `best_effort_eprintln` two lines below already does for its own message, could have
+        // deleted this safety check as a side effect with nothing failing to compile. One extra
+        // frame against the roughly thirty `auto_backup` already sends buys an invariant the
+        // call structure enforces instead of one that only holds by accident of ordering.
+        let board_profile = ops::profile(s).context("reading the board's active profile")?;
+        check_restore_profile(snap.profile, board_profile, force)?;
         // Unlike `set`, which is scoped to the keys the caller selected, `restore` overwrites
         // every key in the snapshot: an auto-backup here is the only way back if the file
         // named on the command line turns out to be the wrong one, or a stale one.
@@ -962,6 +1083,48 @@ mod tests {
             non_empty_replay_path(Ok("script.jsonl".to_string())),
             Some("script.jsonl".to_string())
         );
+    }
+
+    /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") for the
+    /// tests below, via `from_one_based` (review round 2, minor 4; the type and this constructor
+    /// moved into `wh-proto` at task 20 step 4c): `from_wire_index(n - 1)` would underflow-panic
+    /// on `pn(0)` instead of returning a clear error, and `from_wire_index(n)` would silently mean
+    /// a different profile than `pn`'s own name promises.
+    fn pn(n: u8) -> wh_proto::cmds::ProfileNumber {
+        wh_proto::cmds::ProfileNumber::from_one_based(n).unwrap()
+    }
+
+    #[test]
+    fn restore_profile_check_proceeds_on_a_match() {
+        check_restore_profile(Some(pn(2)), pn(2), false).unwrap();
+    }
+
+    /// Case 2: recorded and differing. `force` must not rescue it, so both calls below are
+    /// asserted to fail, not just the unforced one; this is the case the brief singles out as
+    /// deliberately non-overridable.
+    #[test]
+    fn restore_profile_check_refuses_a_mismatch_and_force_does_not_rescue_it() {
+        let err = check_restore_profile(Some(pn(1)), pn(2), false).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("profile 1") && msg.contains("profile 2"),
+            "error should name both profiles: {msg}"
+        );
+
+        let err_forced = check_restore_profile(Some(pn(1)), pn(2), true).unwrap_err();
+        let msg_forced = err_forced.to_string();
+        assert!(
+            msg_forced.contains("profile 1") && msg_forced.contains("profile 2"),
+            "--force must not rescue a recorded mismatch: {msg_forced}"
+        );
+    }
+
+    /// Case 3: not recorded (an older snapshot). Refused without `--force`, rescued with it,
+    /// the opposite of case 2's non-overridable refusal above.
+    #[test]
+    fn restore_profile_check_refuses_an_unrecorded_profile_but_force_rescues_it() {
+        assert!(check_restore_profile(None, pn(2), false).is_err());
+        check_restore_profile(None, pn(2), true).unwrap();
     }
 
     #[test]

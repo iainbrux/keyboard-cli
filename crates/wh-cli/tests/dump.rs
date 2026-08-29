@@ -21,6 +21,41 @@ fn reply(cmd: u8, payload: &[u8]) -> [u8; 64] {
     wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
 }
 
+/// True if `s` contains a run of at least `n` consecutive hex-digit characters anywhere in it,
+/// not just as the whole string.
+fn contains_hex_run(s: &str, n: usize) -> bool {
+    let mut run = 0usize;
+    for c in s.chars() {
+        if c.is_ascii_hexdigit() {
+            run += 1;
+            if run >= n {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+/// Every line of `stdout` that contains a 128-hex-digit run (one 64-byte frame's hex encoding),
+/// verbatim, in order: exactly what `print_frames` emits for `--dry-run` is one bare frame per
+/// line, with nothing else on it. Review round 3: a line that wraps the same frame in other text
+/// (the historical defect this whole test family exists to catch: `"dry run, no writes sent;
+/// save-to-flash frame {hex} would follow"`) is captured here too, whole line and all, rather
+/// than being invisible to a filter that only accepted a line that is *exactly* 128 hex digits.
+/// Such a line then shows up as a visible entry that cannot match anything in the expected,
+/// pure-hex list, so `assert_eq!` fails loudly instead of the frame being silently skipped. This
+/// property generalises to any stray frame text finds its way onto a printed line, not only to a
+/// reinstated SAVE frame specifically.
+fn frame_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|l| contains_hex_run(l, 128))
+        .map(str::to_string)
+        .collect()
+}
+
 /// A scratch directory unique to this test and this process, mirroring the `test_dir` helper
 /// `run.rs`'s own unit tests use. Each test that spawns `wh` gets its own `XDG_CONFIG_HOME`
 /// rather than sharing the bare system temp directory: a shared config directory is harmless
@@ -116,17 +151,32 @@ fn mode_read_lines(usage: u8, mode: u16) -> Vec<String> {
     ]
 }
 
+/// The profile-read roundtrip `ops::profile` sends, as `[out, in]` lines: `idx` is the
+/// zero-based index the board replies with (the wire's own numbering; `snapshot_from_device`
+/// converts it to the UI's one-based numbering before storing it in `Snapshot::profile`).
+fn profile_lines(idx: u8) -> Vec<String> {
+    vec![
+        out_line(&cmds::read_profile()),
+        in_line(&reply(cmds::cmd::CMD, &[0x00, 0x70, idx, 0xFF])),
+    ]
+}
+
 /// The SYNC roundtrip `ops::device_info` sends, as `[out, in]` lines: `serial` and `firmware`
-/// are padded into the reply payload at the offsets `cmds::parse_sync` reads them back from.
+/// are each written into the reply payload with the length prefix `cmds::parse_sync` reads them
+/// back through (task 19b chunk 6: both strings are length-prefixed on the wire, not fixed-width).
 /// Factored out of `build_script` so the write-path tests below can compose the same fixture
 /// shape (backup taken during `auto_backup` calls `snapshot_from_device`, which starts with
 /// this exact roundtrip) without hand-copying the payload layout a second time.
 fn sync_lines(serial: &str, firmware: &str) -> Vec<String> {
     let mut payload = vec![0u8; 60];
     let s = serial.as_bytes();
+    payload[8] = s.len() as u8;
     payload[9..9 + s.len()].copy_from_slice(s);
     let f = firmware.as_bytes();
-    payload[26..26 + f.len()].copy_from_slice(f);
+    let fw_len_pos = 9 + s.len();
+    payload[fw_len_pos] = f.len() as u8;
+    let fw_start = fw_len_pos + 1;
+    payload[fw_start..fw_start + f.len()].copy_from_slice(f);
     vec![
         out_line(&cmds::sync()),
         in_line(&reply(cmds::cmd::SYNC, &payload)),
@@ -148,14 +198,15 @@ fn global_travel_lines(travel_um: u16, press_um: u16, release_um: u16) -> Vec<St
 }
 
 /// Composes, in order, exactly the frames `snapshot_from_device` sends against the two-key
-/// board: the SYNC request and info reply, the global travel DB read and reply, the matrix's
-/// three DEFKEY roundtrips, then four KEY reads and replies per key. Built with
-/// `wh_proto::cmds` encoders, not hand-written hex, so the test breaks if an encoder changes
-/// rather than silently drifting from it.
+/// board: the SYNC request and info reply, the profile read and reply, the global travel DB
+/// read and reply, the matrix's three DEFKEY roundtrips, then four KEY reads and replies per
+/// key. Built with `wh_proto::cmds` encoders, not hand-written hex, so the test breaks if an
+/// encoder changes rather than silently drifting from it.
 fn build_script() -> Vec<String> {
     let mut lines = Vec::new();
 
     lines.extend(sync_lines("SNDUMPTEST000001", "V1.0.0.001"));
+    lines.extend(profile_lines(0)); // board reports profile index 0, i.e. UI "profile 1"
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
 
@@ -204,6 +255,9 @@ fn dump_json_via_replay() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["serial"], "SNDUMPTEST000001");
     assert_eq!(v["firmware"], "V1.0.0.001");
+    // The board replied with the wire's zero-based index 0; the JSON field carries the same
+    // one-based value ("profile 1") the human-readable dump text below shows, task 19b group B.
+    assert_eq!(v["profile"], 1);
     assert_eq!(v["global"]["travel_mm"], 0.5);
     assert_eq!(v["keys"][0]["name"], "w");
     assert_eq!(v["keys"][0]["rt"], true);
@@ -213,6 +267,141 @@ fn dump_json_via_replay() {
     assert_eq!(v["keys"][0]["mode_raw"], 0x0230);
     assert_eq!(v["keys"][1]["name"], "a");
     assert_eq!(v["keys"][1]["rt"], false);
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `with_session` announces which transport it opened, on stderr, one line (task 20, fix round 2,
+/// critical 1): a run that believes it is a replay must never be silently a hardware write, and
+/// the reverse (a run against real hardware) must never be silent either. This only exercises the
+/// replay half directly, since the native test binary this crate's integration tests run
+/// (`CARGO_BIN_EXE_wh`, built for the host, not `x86_64-pc-windows-gnu`) never takes the hardware
+/// branch at all; see `bin_wh_shim_propagates_wh_replay_and_never_touches_hardware` below for the
+/// end-to-end proof through the actual shim and the real Windows binary.
+#[test]
+fn dump_via_replay_announces_the_replay_transport_on_stderr() {
+    let path = write_script("dump-transport-announce", &build_script());
+    let config_home = scratch_config_dir("dump-transport-announce");
+
+    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("transport: replay"),
+        "unexpected stderr, missing the transport announcement: {stderr}"
+    );
+    // Kept off stdout: `dump --json`'s output must stay valid, parseable JSON on its own.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stdout).is_ok(),
+        "the transport announcement must not have leaked into stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The human-readable sibling of `dump_json_via_replay`'s `v["profile"]` assertion above: both
+/// read the exact same fixture (the board replies with wire index 0), so a fix that mixed the
+/// two numbering conventions between the JSON field and the printed text (task 19b group B's own
+/// warning) would show up as a mismatch between this test and that one, not just an internally
+/// consistent but wrong pair.
+#[test]
+fn dump_text_prints_the_one_based_profile_number() {
+    let path = write_script("dump-profile-text", &build_script());
+    let config_home = scratch_config_dir("dump-profile-text");
+
+    let out = run_wh(&["dump"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("profile 1"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh backup --to <file>` records the board's current profile in the file it writes (review
+/// round 1, finding 5): covered so far only transitively, through `dump --json`'s `profile`
+/// field and the write-path tests' shared `auto_backup` fixtures. `backup --to` is the path an
+/// operator actually uses to keep a snapshot, so it gets its own assertion, read back off the
+/// real file `backup` wrote, not off stdout.
+#[test]
+fn backup_to_writes_the_profile_into_the_file() {
+    let path = write_script("backup-profile", &build_script());
+    let config_home = scratch_config_dir("backup-profile");
+    let out_path =
+        std::env::temp_dir().join(format!("wh-backup-profile-{}.toml", std::process::id()));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = std::fs::read_to_string(&out_path).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_toml(&text).unwrap();
+    // `build_script()` scripts the board replying with wire index 0, i.e. UI profile 1.
+    assert_eq!(
+        snap.profile,
+        Some(cmds::ProfileNumber::from_wire_index(0).unwrap()),
+        "backup --to must record the board's profile in the file: {text}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(out_path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Pins that a K-001 board-function key (task 19b chunk 7: `0xFA`, `0xFB`, `0xD6`, `0xFC`,
+/// confirmed by measurement) renders by its name in `dump` output, not as bare hex. A one-key
+/// board with 'ap' (usage `0xFA`) at row 0 col 0; before chunk 7 this printed as `"0xFA"`.
+#[test]
+fn dump_prints_a_board_function_key_by_name_not_hex() {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNBOARDFUNC000001", "V1.0.0.001"));
+    lines.extend(profile_lines(0));
+    lines.extend(global_travel_lines(500, 200, 200));
+    let row_pairs = [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)];
+    for (i, &(a, b)) in row_pairs.iter().enumerate() {
+        lines.push(out_line(&cmds::read_defkey_rows(a, b)));
+        let payload = if i == 0 {
+            defkey_payload(a, b, Some(0xFA), None) // row a col0 = the 'ap' board-function key
+        } else {
+            defkey_payload(a, b, None, None)
+        };
+        lines.push(in_line(&reply(cmds::cmd::DEFKEY, &payload)));
+    }
+    lines.extend(key_settings_lines(0xFA, 0, 0x10, 0, 0));
+
+    let path = write_script("dump-board-func", &lines);
+    let config_home = scratch_config_dir("dump-board-func");
+
+    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["keys"][0]["name"], "ap");
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -252,8 +441,8 @@ fn get_rt_via_replay() {
 /// this board's matrix, must fail loudly rather than silently write nothing or, worse, write
 /// to keys the board doesn't have. This pins the specific guard at the end of `resolve_keys`
 /// (`if usages.is_empty() { bail!(...) }`): if a later change dropped that check or the
-/// universe filter stopped applying, `wh set` on top of the same `resolve_keys` would burn a
-/// flash SAVE cycle on a selector that should have refused to run at all.
+/// universe filter stopped applying, `wh set` on top of the same `resolve_keys` would send a
+/// write to the board on a selector that should have refused to run at all.
 #[test]
 fn get_on_a_group_absent_from_the_board_is_rejected() {
     let config_home = scratch_config_dir("offboard-group");
@@ -292,17 +481,65 @@ fn get_on_a_group_absent_from_the_board_is_rejected() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Review round 2, finding 3: `wh keys list` must render a group member that has no `TABLE`
+/// entry as hex, not silently drop it. This matters more after finding 1: reading a stale
+/// group's members off this listing is the operator's only recovery route once
+/// `SelectError::AmbiguousWithGroup` refuses to resolve it, so a listing that silently
+/// under-reports would send them to recreate an incomplete group. The unnamed usage has to be
+/// written into `config.toml` directly (not via `wh keys group`), since the CLI can only ever
+/// select a usage that has a name, a builtin group, or an existing stored group in the first
+/// place.
+#[test]
+fn keys_list_renders_an_unnamed_group_member_as_hex_not_dropping_it() {
+    let config_home = scratch_config_dir("keys-list-unnamed");
+    let wh_dir = config_home.join("wh");
+    std::fs::create_dir_all(&wh_dir).unwrap();
+    let unnamed = (0u8..=u8::MAX)
+        .find(|&u| wh_proto::keys::name_for_usage(u).is_none())
+        .expect("wh_proto::keys::TABLE does not occupy every u8 usage code");
+    std::fs::write(
+        wh_dir.join("config.toml"),
+        format!("[groups]\nstale = [26, {unnamed}]\n"), // 26 = 0x1A = 'w'
+    )
+    .unwrap();
+    let empty_replay = write_script("keys-list-unnamed", &[]);
+
+    let out = run_wh(&["keys", "list"], &empty_replay, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected_hex = format!("0x{unnamed:02X}");
+    assert!(
+        stdout.contains(&expected_hex),
+        "unnamed usage {expected_hex} must still be listed, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("w,{expected_hex}")),
+        "named and unnamed members should both appear, in order: {stdout}"
+    );
+
+    std::fs::remove_file(empty_replay).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 // --- write path: `set`, `backup`, `restore`, `selftest` -------------------------------------
 
 /// Exactly the frames `auto_backup` sends against the two-key board (`matrix_lines`): the full
-/// `snapshot_from_device` pipeline, sync, global travel, matrix, then one four-read
+/// `snapshot_from_device` pipeline, sync, profile, global travel, matrix, then one four-read
 /// `read_key_settings` per key on the board. The AP/press/release values here (1000um for 'w',
 /// the untouched defaults for 'a') are deliberately distinct from anything a write-path test
 /// writes or reads back afterwards, so a script that accidentally reused this phase's frames
-/// for the post-write readback could not pass by coincidence.
-fn auto_backup_lines() -> Vec<String> {
+/// for the post-write readback could not pass by coincidence. `profile_idx` (wire, zero-based) is
+/// a parameter, not fixed, so `restore`'s profile-safety tests can script the board reporting a
+/// profile that matches or differs from the snapshot being restored.
+fn auto_backup_lines(profile_idx: u8) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(sync_lines("SNWRITETEST00001", "V1.0.0.001"));
+    lines.extend(profile_lines(profile_idx));
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
     lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500)); // 'w' pre-write
@@ -311,14 +548,14 @@ fn auto_backup_lines() -> Vec<String> {
 }
 
 /// The full script for `wh set ap --keys w --set 1.2` against the two-key board: `resolve_keys`'
-/// own matrix read, the auto-backup phase, the AP write batch and SAVE, then the readback
-/// verification's `read_key_settings` for 'w'. `readback_ap` is the AP value (micrometres) the
-/// verification reads back, letting the happy-path and mismatch tests below share this builder
-/// and diverge only on that one number.
+/// own matrix read, the auto-backup phase, the AP write batch (no SAVE follows it, see task 19b
+/// chunk 4), then the readback verification's `read_key_settings` for 'w'. `readback_ap` is the
+/// AP value (micrometres) the verification reads back, letting the happy-path and mismatch tests
+/// below share this builder and diverge only on that one number.
 fn set_ap_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
-    lines.extend(auto_backup_lines());
+    lines.extend(auto_backup_lines(0));
 
     let recs = vec![KeyRecord {
         key: 0x1A,
@@ -330,12 +567,8 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
+    // No SAVE order follows the write batch: the vendor was never observed sending one (task
+    // 19b chunk 4), so `write_records` does not either.
 
     // Readback verification reads all four layouts for 'w', not just AP; MODE/press/release
     // echo back unchanged so only the AP field can drive a match or mismatch here.
@@ -343,7 +576,7 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
     lines
 }
 
-/// `set ap --keys w --set 1.2` end to end: the auto-backup phase, the write batch, SAVE, and a
+/// `set ap --keys w --set 1.2` end to end: the auto-backup phase, the write batch, and a
 /// readback that matches (1200um = 1.20mm). Exit 0, "verified" in stdout, and a real backup
 /// file on disk, not just the message claiming one.
 #[test]
@@ -410,13 +643,13 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
 #[test]
 fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     let mut lines = matrix_lines(); // resolve_keys
-    lines.extend(auto_backup_lines());
+    lines.extend(auto_backup_lines(0));
 
     // ops::rt_records' own pre-write MODE read: 0x01 (touch Global, advanced nibble 1).
     lines.extend(mode_read_lines(0x1A, 0x01));
 
     // The write batch: MODE 0x31 (touch Rt, advanced nibble 1 preserved), press/release 400um
-    // (0.40mm), then SAVE.
+    // (0.40mm). No SAVE order follows (task 19b chunk 4).
     let recs = vec![
         KeyRecord {
             key: 0x1A,
@@ -439,12 +672,8 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
+    // No SAVE order follows the write batch: the vendor was never observed sending one (task
+    // 19b chunk 4), so `write_records` does not either.
 
     // verify_rt's readback: MODE comes back 0x30, not the 0x31 that was written, with
     // press/release otherwise matching exactly.
@@ -483,12 +712,13 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 #[test]
 fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
     let mut lines = matrix_lines(); // resolve_keys
-    lines.extend(auto_backup_lines());
+    lines.extend(auto_backup_lines(0));
 
     // ops::rt_off_records' own pre-write MODE read: 0x31 (touch Rt, advanced nibble 1).
     lines.extend(mode_read_lines(0x1A, 0x31));
 
-    // The write batch: MODE 0x11 (touch Single, advanced nibble 1 preserved), then SAVE.
+    // The write batch: MODE 0x11 (touch Single, advanced nibble 1 preserved). No SAVE order
+    // follows: the vendor was never observed sending one (task 19b chunk 4).
     let recs = vec![KeyRecord {
         key: 0x1A,
         layout: layout::MODE,
@@ -499,12 +729,6 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
 
     // verify_rt_off's readback: MODE comes back 0x10, not the 0x11 that was written; press and
     // release are unrelated to this check and left at whatever the board otherwise reports.
@@ -551,6 +775,24 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
 
+    // Review round 2, finding 2: the exact frame set, not just that some frame appears (which
+    // an added, removed, or reordered frame, including a reinstated SAVE frame, would not
+    // catch). "set ap --keys w --set 1.2" previews exactly one AP record for 'w' (1200um =
+    // 1.20mm) and nothing else.
+    let expected: Vec<String> = cmds::write_key_records(&[KeyRecord {
+        key: 0x1A,
+        layout: layout::AP,
+        value: 1200,
+    }])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "dry run must print exactly the frames a real run would send, and no others: {stdout}"
+    );
+
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
@@ -585,11 +827,13 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
 
-    // Pins the exact previewed records, not just that something printed, bringing this test up
-    // to the same standard as its `--off` sibling below: a regression in `rt_records`' touch
-    // nibble choice or its high-byte/advanced-nibble preservation would otherwise only be
-    // caught on the `--off` path.
-    let expected = cmds::write_key_records(&[
+    // Review round 2, finding 2: the exact frame set, not just that each expected frame
+    // appears somewhere (which a regression that also sent a bare SAVE, or reordered/duplicated
+    // a frame, would not catch). Pins the exact previewed records too, bringing this test up to
+    // the same standard as its `--off` sibling below: a regression in `rt_records`' touch nibble
+    // choice or its high-byte/advanced-nibble preservation would otherwise only be caught on the
+    // `--off` path.
+    let expected: Vec<String> = cmds::write_key_records(&[
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
@@ -605,14 +849,15 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
             layout: layout::RT_RELEASE,
             value: 400,
         },
-    ]);
-    for frame in &expected {
-        assert!(
-            stdout.contains(&hex(frame)),
-            "expected frame {} in stdout: {stdout}",
-            hex(frame)
-        );
-    }
+    ])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "dry run must print exactly the frames a real run would send, and no others: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -650,11 +895,12 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
 
-    // Pins the exact previewed records, not just that something printed: the touch nibble
-    // must flip to Single (nibble 1, per-key actuation point) on both keys while each key's own
-    // advanced nibble and high byte survive independently, the same read-modify-write
-    // `verify_rt_off` checks on the real write path.
-    let expected = cmds::write_key_records(&[
+    // Review round 2, finding 2: the exact frame set, not just that each expected frame
+    // appears somewhere. Pins the exact previewed records too: the touch nibble must flip to
+    // Single (nibble 1, per-key actuation point) on both keys while each key's own advanced
+    // nibble and high byte survive independently, the same read-modify-write `verify_rt_off`
+    // checks on the real write path.
+    let expected: Vec<String> = cmds::write_key_records(&[
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
@@ -665,14 +911,15 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
             layout: layout::MODE,
             value: 0x0017,
         },
-    ]);
-    for frame in &expected {
-        assert!(
-            stdout.contains(&hex(frame)),
-            "expected frame {} in stdout: {stdout}",
-            hex(frame)
-        );
-    }
+    ])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "dry run must print exactly the frames a real run would send, and no others: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -713,14 +960,21 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// A snapshot's TOML text for one key, 'w', with a caller-chosen `ap_mm`, so both the
-/// out-of-range and happy-path restore tests below can share it and diverge only on that one
-/// value.
-fn restore_snapshot_toml(ap_mm: f64) -> String {
+/// A snapshot's TOML text for one key, 'w', with a caller-chosen `ap_mm` and `profile` (one-based,
+/// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
+/// and profile-safety restore tests below can all share it and diverge only on those two values.
+fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
+    // `profile` is one-based here (the caller's own convention, matching every other profile
+    // number in this file); built via `from_one_based` (review round 2, minor 4; the type and
+    // this constructor moved into `wh-proto` at task 20 step 4c), not `from_wire_index(p - 1)`,
+    // which would underflow-panic on `Some(0)` and mean a different profile than this parameter's
+    // own doc comment promises.
+    let profile = profile.map(|p| cmds::ProfileNumber::from_one_based(p).unwrap());
     let snap = wh_config::snapshot::Snapshot {
         firmware: "V1.0.0.001".into(),
         serial: "SNRESTORETEST001".into(),
         taken_at: "2026-08-28T12:00:00Z".into(),
+        profile,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: 2.0,
             press_dead_mm: 0.2,
@@ -743,9 +997,9 @@ fn restore_snapshot_toml(ap_mm: f64) -> String {
     snap.to_toml().unwrap()
 }
 
-fn write_snapshot(tag: &str, ap_mm: f64) -> std::path::PathBuf {
+fn write_snapshot(tag: &str, ap_mm: f64, profile: Option<u8>) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("wh-{tag}-{}.toml", std::process::id()));
-    std::fs::write(&path, restore_snapshot_toml(ap_mm)).unwrap();
+    std::fs::write(&path, restore_snapshot_toml(ap_mm, profile)).unwrap();
     path
 }
 
@@ -756,7 +1010,7 @@ fn write_snapshot(tag: &str, ap_mm: f64) -> std::path::PathBuf {
 #[test]
 fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
     let config_home = scratch_config_dir("restore-out-of-range");
-    let snap_path = write_snapshot("restore-oor", 99.0);
+    let snap_path = write_snapshot("restore-oor", 99.0, Some(1));
     let empty_replay = write_script("restore-oor", &[]);
 
     let out = run_wh(
@@ -783,19 +1037,14 @@ fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `restore` from a valid snapshot: the auto-backup happens before anything is overwritten
-/// (pinned by a real backup file existing on disk afterwards, not just the printed message),
-/// the global travel and per-key writes land, and the readback verifies. Exit 0, "verified" in
-/// stdout.
-#[test]
-fn restore_happy_path_backs_up_and_verifies() {
-    let config_home = scratch_config_dir("restore-happy");
-    let snap_path = write_snapshot("restore-happy", 1.2);
-
+/// The frames `ops::restore_all` sends plus `verify_restore`'s readback, for the same
+/// snapshot (`restore_snapshot_toml`'s ap_mm 1.2, mode_raw 0x0220) `restore_happy_path_backs_up_and_verifies`
+/// and the force-rescue test below both restore: global travel write first (2.0/0.2/0.1mm =
+/// 2000/200/100um), then the per-key batch for 'w' (ap, mode verbatim, rt press, rt release), no
+/// SAVE (task 19b chunk 4), then the readback that matches exactly. Shared so both tests restore
+/// the identical snapshot content and diverge only on the profile-safety fixture around it.
+fn restore_write_and_verify_lines() -> Vec<String> {
     let mut lines = Vec::new();
-    lines.extend(auto_backup_lines());
-
-    // restore_all: global travel write first (2.0/0.2/0.1mm = 2000/200/100um).
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um::from_mm(2.0, 0.0, 4.0).unwrap(),
         wh_proto::value::Um::from_mm(0.2, 0.0, 4.0).unwrap(),
@@ -804,7 +1053,6 @@ fn restore_happy_path_backs_up_and_verifies() {
     lines.push(out_line(&db_write));
     lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
 
-    // Then the per-key batch for 'w': ap, mode (verbatim), rt press, rt release.
     let recs = vec![
         KeyRecord {
             key: 0x1A,
@@ -832,15 +1080,30 @@ fn restore_happy_path_backs_up_and_verifies() {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    lines.push(out_line(&save));
-    lines.push(in_line(&reply(
-        cmds::cmd::CMD,
-        &[0x00, cmds::order::SAVE, 0x01],
-    )));
+    // No SAVE order follows the write batch: the vendor was never observed sending one (task
+    // 19b chunk 4), so `write_records` does not either.
 
     // verify_restore reads 'w' back and finds every field matching what was restored.
     lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 600));
+    lines
+}
+
+/// `restore` from a valid snapshot: the auto-backup happens before anything is overwritten
+/// (pinned by a real backup file existing on disk afterwards, not just the printed message),
+/// the board's profile (1) matches the snapshot's recorded profile (1), the global travel and
+/// per-key writes land, and the readback verifies. Exit 0, "verified" in stdout.
+#[test]
+fn restore_happy_path_backs_up_and_verifies() {
+    let config_home = scratch_config_dir("restore-happy");
+    let snap_path = write_snapshot("restore-happy", 1.2, Some(1));
+
+    // `restore` reads the board's profile as its own, independent roundtrip (review round 1,
+    // finding 1) before ever calling `auto_backup`, whose own `snapshot_from_device` pipeline
+    // reads the profile again internally; both replies report the same board profile index 0
+    // (UI profile 1), matching the snapshot.
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines());
 
     let path = write_script("restore-happy", &lines);
     let out = run_wh(
@@ -871,6 +1134,282 @@ fn restore_happy_path_backs_up_and_verifies() {
     );
 
     std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The safety check this task exists for (task 19b group B), end to end: the snapshot recorded
+/// profile 1 but the board is on profile 2. `restore` must refuse before `ops::restore_all` ever
+/// runs, not just return some error: the script ends right after the auto-backup phase, so if
+/// the global-travel write or the key batch reached the wire at all, `ReplayTransport` would
+/// reject the unscripted send and this would fail for the wrong reason instead of the right one.
+#[test]
+fn restore_refuses_when_the_boards_profile_differs_from_the_snapshots() {
+    let config_home = scratch_config_dir("restore-profile-mismatch");
+    let snap_path = write_snapshot("restore-profile-mismatch", 1.2, Some(1));
+    // restore's own direct profile read (board profile index 1 = UI profile 2) is the entire
+    // script: refusal happens right after it, before `auto_backup` is ever called.
+    let path = write_script("restore-profile-mismatch", &profile_lines(1));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--force` must not rescue a recorded mismatch (task 19b group B is explicit that this case
+/// has no override): identical fixture to the test above, `--force` added, same refusal expected.
+/// Same reasoning on why the script ends right after restore's own direct profile read.
+#[test]
+fn restore_force_does_not_rescue_a_profile_mismatch() {
+    let config_home = scratch_config_dir("restore-profile-mismatch-force");
+    let snap_path = write_snapshot("restore-profile-mismatch-force", 1.2, Some(1));
+    let path = write_script("restore-profile-mismatch-force", &profile_lines(1));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap(), "--force"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit even with --force, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The other refusal case: no recorded profile at all (an older snapshot). Refused without
+/// `--force`, before `auto_backup` or `ops::restore_all` ever run; same "script ends right after
+/// restore's own direct profile read" reasoning as the mismatch tests above.
+#[test]
+fn restore_refuses_an_unrecorded_profile_without_force() {
+    let config_home = scratch_config_dir("restore-profile-unrecorded");
+    let snap_path = write_snapshot("restore-profile-unrecorded", 1.2, None);
+    let path = write_script("restore-profile-unrecorded", &profile_lines(0));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Review round 2, minor 3: `stderr.contains("--force")` alone would pass on an unrelated
+    // clap usage dump; a distinctive fragment of the actual refusal text, matching both the
+    // board's own profile number (like the two mismatch tests' siblings above) and the
+    // "no recorded profile" phrasing unique to this case, discriminates by construction.
+    assert!(
+        stderr.contains("no recorded profile") && stderr.contains("profile 1"),
+        "unexpected stderr: {stderr}"
+    );
+    // Review round 3, important 1: `None` now covers two causes, an older pre-recording
+    // snapshot and one whose board reported an index this build does not recognise, and the
+    // message must name both rather than only the first, since an operator whose file is
+    // genuinely the second case would otherwise be told something false ("predates profile
+    // recording") and be pointed at `--force` without understanding what it actually asserts.
+    assert!(
+        stderr.contains("does not recognise"),
+        "message must also cover the unrecognised-index cause, not just predates-recording: {stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("--force"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The rescue half of the unrecorded-profile case: identical fixture to the test above,
+/// `--force` added, and this time the restore actually proceeds all the way through the write
+/// and verification, unlike the mismatch case's `--force`, which never rescues anything.
+#[test]
+fn restore_force_rescues_an_unrecorded_profile() {
+    let config_home = scratch_config_dir("restore-profile-unrecorded-force");
+    let snap_path = write_snapshot("restore-profile-unrecorded-force", 1.2, None);
+
+    // Same shape as the happy path above: restore's own direct profile read first, then the
+    // full auto-backup pipeline (which reads the profile again, internally), then the write and
+    // verify tail, all the way through since `--force` rescues the unrecorded-profile case.
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines());
+    let path = write_script("restore-profile-unrecorded-force", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap(), "--force"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `restore`'s own direct profile read is a hard refusal on a wire index the board could never
+/// actually report under the four measured profiles (review round 2, important 1 and 2): unlike
+/// `dump`/`backup`/`set`'s auto-backup, `restore` cannot compare what it cannot interpret, so it
+/// keeps aborting rather than degrading to "unknown provenance". The script is exactly restore's
+/// own direct profile read (wire index 0xFE, i.e. 254): if `restore` proceeded past it into
+/// `auto_backup`, `ReplayTransport` would reject the unscripted send.
+#[test]
+fn restore_refuses_when_the_boards_profile_index_is_out_of_range() {
+    let config_home = scratch_config_dir("restore-profile-out-of-range");
+    let snap_path = write_snapshot("restore-profile-out-of-range", 1.2, Some(1));
+    let path = write_script("restore-profile-out-of-range", &profile_lines(0xFE));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("254") && stderr.contains("4 profiles"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The `snapshot_from_device` sibling of the test above (review round 2, important 1 and 2): the
+/// same out-of-range wire index (0xFE), reached this time through `backup --to`, must not abort
+/// the command. It degrades to `profile = None` ("unknown provenance", the same case an older,
+/// pre-profile-recording snapshot already carries) with a warning on stderr naming the bad index,
+/// rather than hard-failing `dump`/`backup`/`set`'s auto-backup the way a firmware revision with
+/// more than four profiles otherwise would (a measurement bound on one board, not a protocol
+/// limit that should ever blame every other command for it).
+#[test]
+fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
+    let mut lines = sync_lines("SNOUTOFRANGE0001", "V1.0.0.001");
+    lines.extend(profile_lines(0xFE));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines());
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0));
+
+    let path = write_script("backup-out-of-range", &lines);
+    let config_home = scratch_config_dir("backup-out-of-range");
+    let out_path = std::env::temp_dir().join(format!("wh-backup-oor-{}.toml", std::process::id()));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("254") && stderr.to_lowercase().contains("unknown"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let text = std::fs::read_to_string(&out_path).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_toml(&text).unwrap();
+    assert_eq!(
+        snap.profile, None,
+        "an out-of-range index must record no profile, not a bogus one: {text}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(out_path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The distinction that justifies `DeviceError::ProfileOutOfRange` existing as its own variant,
+/// separate from `DeviceError::Decode` (task 20, fix round 1, important 5): a profile reply that
+/// fails to decode for a reason *other* than an out-of-range index, here a payload too short to
+/// hold the index at all, must still hard-fail `backup`, exactly like the pre-refactor behaviour
+/// and exactly unlike the out-of-range case the test above covers. If `ops::profile`'s two failure
+/// causes were ever collapsed back into one bucket and `snapshot_from_device` degraded on either,
+/// this would pass with `profile: None` and exit 0 instead of failing, silently turning a garbled
+/// reply into "unknown provenance" the same way an out-of-range index is meant to, alone, degrade.
+#[test]
+fn backup_hard_fails_on_a_profile_reply_too_short_to_decode() {
+    let mut lines = sync_lines("SNSHORTPROFILE01", "V1.0.0.001");
+    lines.push(out_line(&cmds::read_profile()));
+    // Two payload bytes, `[status, sub-order]`: shaped like the start of a profile reply but
+    // missing the index byte `parse_profile` needs, so it fails with `DecodeError::Short`, not
+    // `DecodeError::ProfileOutOfRange`.
+    lines.push(in_line(&reply(cmds::cmd::CMD, &[0x00, 0x70])));
+
+    let path = write_script("backup-short-profile", &lines);
+    let config_home = scratch_config_dir("backup-short-profile");
+    let out_path =
+        std::env::temp_dir().join(format!("wh-backup-short-{}.toml", std::process::id()));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "a garbled profile reply must hard-fail backup, not degrade to unknown provenance: \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("decode"),
+        "expected a decode failure naming the short payload: {stderr}"
+    );
+    assert!(
+        !out_path.exists(),
+        "backup must not write a partial snapshot file when it fails before finishing"
+    );
+
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
@@ -910,4 +1449,105 @@ fn selftest_sends_no_save_frame() {
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The regression this exists to prevent (task 20, fix round 2, critical 1): `bin/wh` execs the
+/// cross-compiled Windows binary from WSL, and WSL only forwards an environment variable across
+/// that boundary when it is named in `WSLENV`. Before this fix, `bin/wh` never set `WSLENV`, so
+/// `wh.exe` always saw an unset `WH_REPLAY` no matter what the caller exported, and silently fell
+/// back to opening the real keyboard. A review run hit exactly this running `wh restore --force`
+/// believing `WH_REPLAY` made it safe, and performed a real restore against the operator's board.
+///
+/// This runs the actual shim against the actual release Windows binary, the two things a purely
+/// Rust-level test (see `dump_via_replay_announces_the_replay_transport_on_stderr` above) cannot
+/// exercise, since `cargo test`'s own binary is built for the host, not for
+/// `x86_64-pc-windows-gnu`, and never crosses the WSL/Windows boundary this bug lived in at all.
+/// Skips cleanly, rather than failing, when the environment cannot run it: outside WSL (no
+/// `wslpath`), or before `cargo build --release --workspace --target x86_64-pc-windows-gnu` has
+/// produced `wh.exe`. When it does run, a fake fixture serial coming back on stdout instead of a
+/// hard failure or a real device's identity is itself part of the proof: replay actually worked
+/// end to end through the shim, not just up to the point of opening the transport.
+#[test]
+fn bin_wh_shim_propagates_wh_replay_and_never_touches_hardware() {
+    if std::process::Command::new("wslpath")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("no wslpath on PATH (not running under WSL), skipping");
+        return;
+    }
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let shim = repo_root.join("bin/wh");
+    let exe = repo_root.join("target/x86_64-pc-windows-gnu/release/wh.exe");
+    if !shim.exists() || !exe.exists() {
+        eprintln!(
+            "bin/wh or the release x86_64-pc-windows-gnu build is not present, skipping \
+             (run: cargo build --release --workspace --target x86_64-pc-windows-gnu)"
+        );
+        return;
+    }
+
+    let path = write_script("bin-wh-shim", &build_script());
+
+    // No `XDG_CONFIG_HOME` here, deliberately, unlike every other test in this file (task 20, fix
+    // round 3, minor 3). Setting it would be misleading isolation, not real isolation: `bin/wh`
+    // only forwards a variable across the WSL/Windows boundary when it is named in `WSLENV` (the
+    // same fact `WH_REPLAY` above depends on `bin/wh` handling), and `Store::open`'s
+    // `directories::ProjectDirs` ignores `XDG_CONFIG_HOME` on Windows even when it is present,
+    // resolving `%APPDATA%\wh\config` regardless. Setting the variable here would look like
+    // isolation while doing nothing, which is exactly the mechanism behind two incidents earlier
+    // in this task: a verification run believed a scratch config directory was in play and wrote
+    // a real key group into the operator's live config instead. This test only runs `dump --json`,
+    // a read: `Store::open` resolves a path and touches nothing on disk, so it is safe to run
+    // against the real config unisolated. A future test through this same shim that writes
+    // anything (`keys group`, a real `set`/`backup`/`restore`) needs real isolation, which means
+    // giving `Store::open` its own override, not exporting `XDG_CONFIG_HOME` and hoping.
+    let out = std::process::Command::new(&shim)
+        .args(["dump", "--json"])
+        .env("WH_REPLAY", &path)
+        .output()
+        .unwrap();
+
+    // A device that is absent or held by the web configurator is an environment condition, not a
+    // test bug, and it is not what this test exists to catch: if `WH_REPLAY` genuinely reaches
+    // `wh.exe`, `with_session` never calls `HidTransport::open` at all, so this branch is only
+    // reachable if the propagation this test guards has already regressed *and* no board happened
+    // to be free to open at the same time. That narrower case is still caught: a regression with a
+    // present, free board succeeds and opens hardware instead of replay, which the
+    // `transport: replay` assertion below still fails on. Skipping here only widens where this
+    // test can run cleanly; it does not narrow what it can catch.
+    let stderr_early = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success()
+        && (stderr_early.contains("no Wallhack keyboard found")
+            || stderr_early.contains("could not open the config interface"))
+    {
+        eprintln!("no keyboard reachable (absent, or held by the web configurator), skipping: {stderr_early}");
+        std::fs::remove_file(path).unwrap();
+        return;
+    }
+
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("transport: replay"),
+        "unexpected stderr, WH_REPLAY may not have reached wh.exe: {stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["serial"],
+        "SNDUMPTEST000001",
+        "expected the fixture's fake serial, not a real device's identity: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    std::fs::remove_file(path).unwrap();
 }

@@ -2,9 +2,12 @@
 
 This is the procedure for recording real HID traffic between the vendor web
 configurator and a Wallhack K-001 keyboard, so `cargo test -p wh-proto --test
-golden` has something real to check the codec against. Nothing in this repo
-has ever been checked against a byte the real device actually sent; this is
-how we get that.
+golden` has something real to check the codec against. It has been run once
+already, task 19's hardware session: ten scenarios, 1224 frames, zero framing
+or checksum failures, recorded in `docs/protocol-inventory.md` and
+`docs/protocol.md`. This document describes the procedure so it can be run
+again, for a firmware update, a second board, or a new scenario, not as a
+first-time exercise still to be proven out.
 
 Captures are **not** committed to this repository: `captures/` is
 gitignored. They are the operator's own device traffic and stay on their
@@ -103,9 +106,16 @@ gets a `WARNING:` callout, since it may be the report-ID-prefix behaviour
 described in step 3. A genuine hard failure (bad magic, bad checksum, or a
 declared length the framing cannot represent) fails the test, but only
 after the summary above it has already printed and been written, so one bad
-frame in one capture never hides what the other eight found.
+frame in one capture never hides what the other nine found (the ten
+scenarios below, task 19's session).
 
 ## Scenarios
+
+The ten below are what task 19's session actually captured, not a proposal still to be run; the
+original plan for this session named two scenarios, `rt-w-0.6` and `ap-w-1.2`, that were never
+captured under those names (see below for what replaced them). Reproducing this list on a future
+session, a firmware update, or a second board, does not require using exactly these names, but
+each scenario should still change exactly one thing, the whole method this procedure exists for.
 
 - `initial-load`: just connect, nothing else. What does the device volunteer
   on connect, before we change anything? This is the baseline every other
@@ -113,24 +123,39 @@ frame in one capture never hides what the other eight found.
 - `rt-on-w-0.5`: enable Rapid Trigger on W at 0.5mm. Does enabling RT for a
   single key touch only that key's layout records, or does it also rewrite
   the global mode byte?
-- `rt-w-0.6`: change W's already-enabled RT actuation to 0.6mm. Does
-  changing a value write only the RT_PRESS/RT_RELEASE layout records, or
-  something wider than that?
-- `rt-off-w`: turn Rapid Trigger back off for W. Does turning RT off restore
-  the plain actuation-point value, or leave it untouched and just flip the
-  mode nibble?
-- `ap-w-1.2`: set W's actuation point to 1.2mm, outside of RT. Does a plain
-  AP write use the same Layout_DB0 path our own AP write already assumes?
-- `profile-switch`: switch from profile 1 to profile 2 and back. Does the
-  protocol expose or select the active profile at all? The board has four
-  profiles and the vendor's own export is labelled per profile, so this
-  almost certainly matters and we do not yet model it.
 - `rt-continuous-toggle`: toggle CONTINUOUS RAPID TRIGGER only, nothing
   else. What does the mode byte's advanced nibble encode?
 - `rt-separate-toggle`: toggle SEPARATE PRESS AND RELEASE only, nothing
   else. Same question as `rt-continuous-toggle`, a different bit.
-- `remap-one-key`: remap one key, then re-read the matrix. Does addressing
-  keys by HID usage survive a remap?
+- `rt-off-w`: turn Rapid Trigger back off for W. Does turning RT off restore
+  the plain actuation-point value, or leave it untouched and just flip the
+  mode nibble? (Answered: neither, it does something worse. The vendor
+  writes touch nibble 1, not 0, when disabling RT on a key with its own
+  actuation point; a naive nibble-0 write would have discarded it. This is
+  the origin of the data-loss bug task 19b chunk 3 fixed.)
+- `profile-switch`: switch from profile 1 to profile 2 and back. Does the
+  protocol expose or select the active profile at all? Answered,
+  favourably: yes, `cmd 0x00` sub-order `0x70` both reads and selects it.
+- `ap-wasd-1.2`: set the actuation point for the whole WASD keyset to
+  1.2mm, deliberately not the single-key `ap-w-1.2` the original plan
+  named, since a multi-key write exercises the batching and per-key
+  grouping a single-key capture cannot. Does a plain AP write use the same
+  layout `0x04` path, and how does the vendor batch several keys' records
+  into one report?
+- `remap-one-key`: remap one key, then re-read its own layout `0x00`
+  record. Confirms layout `0x00` is the live key mapping, not a fixed
+  identifier: the remapped key's `0x00` value changed to match.
+- `remap-matrix-read`: re-read the DEFKEY matrix (`cmd 0x2b`) with that
+  same remap still live. Confirms the opposite for DEFKEY: it kept
+  reporting the key's original, physical usage, not the new mapping, which
+  is why `wh` can address a key by its DEFKEY-reported usage even after an
+  operator remaps it.
+- `nav-key-identify`: remap each of the four non-standard keys (`0xfa`,
+  `0xfb`, `0xd6`, `0xfc`) to a distinct, recognisable key (F2 through F5)
+  in turn and capture the write. Settles which physical key is which by
+  measurement (the write names both the usage and the label clicked)
+  rather than by counting rows in a photo, which an earlier pass got
+  wrong.
 
 ## One more thing to record yourself
 

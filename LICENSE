@@ -1,0 +1,135 @@
+PROPRIETARY LICENCE
+
+Copyright (c) 2026 Iain Brookes. All rights reserved.
+
+===============================================================================
+1. WHAT THIS LICENCE COVERS
+===============================================================================
+
+This licence covers the original work in this repository, referred to below as
+"the Covered Work". The Covered Work is the `wh` command line tool and its
+supporting material:
+
+  crates/        the Rust source of the tool
+  docs/          the documentation and the measured protocol notes
+  capture/       the traffic capture harness
+  bin/           the WSL shim
+  README.md, LICENSE, THIRD_PARTY_NOTICES.md
+  Cargo.toml, Cargo.lock, .gitignore, .cargo/config.toml, and the other build
+                 and configuration files at the repository root
+
+Iain Brookes authored the Covered Work, with one exception. Parts of
+`crates/wh-proto` (currently `frame.rs` and `cmds.rs`; check those files'
+own module documentation, which names any file that is a port) are a Rust
+port of MIT-licensed source from Sparklink Playjoy's
+`@sparklinkplayjoy/protocol-keyboard` package, vendored for reference at
+`research/proto/`. Porting code carries the licence that covers it, so the
+MIT notice on that upstream source attaches to those ported portions of
+`crates/wh-proto` too; that notice, and exactly what it covers, is in
+THIRD_PARTY_NOTICES.md. Everything else in the Covered Work, including the
+rest of `crates/wh-proto` that is original rather than ported, is Iain
+Brookes' own authorship, and Iain Brookes holds the copyright in it.
+
+This licence does NOT cover the contents of `research/`, which is third-party
+material owned by other people and licensed separately. See section 4 and
+THIRD_PARTY_NOTICES.md.
+
+This licence does NOT cover, and asserts no claim over, anything owned by
+Wallhack. See section 3.
+
+===============================================================================
+2. PERMISSIONS AND RESTRICTIONS
+===============================================================================
+
+All rights in the Covered Work are reserved.
+
+You may NOT do any of the following with the Covered Work, in whole or in
+part, in source or binary form, without prior written permission from Iain
+Brookes:
+
+  (a) copy, publish, or redistribute it;
+  (b) fork, re-fork, or mirror it;
+  (c) modify it or create derivative works from it;
+  (d) sublicense, rent, lease, sell, or otherwise commercially exploit it;
+  (e) remove or alter this licence, any copyright notice, or any attribution.
+
+Viewing the source through the hosting platform on which it is published, as
+permitted by that platform's own terms of service, is not restricted by this
+section.
+
+No trademark rights and no patent rights are granted by this licence.
+
+===============================================================================
+3. WALLHACK'S RIGHTS
+===============================================================================
+
+This is an independent, unofficial project. It is not affiliated with,
+endorsed by, sponsored by, or supported by Wallhack.
+
+All rights in the Wallhack K-001 keyboard, its firmware, its hardware design,
+its communication protocol, the Wallhack name and logo, and the web
+configurator at terminal.wallhack.com belong solely to Wallhack. Nothing in
+this repository transfers, dilutes, or asserts any claim over any of it.
+
+The Covered Work is an independently written client that communicates with the
+keyboard over the USB HID interface the device already exposes. The protocol
+notes in `docs/` describe observed device behaviour, recorded from traffic
+between a keyboard and its own vendor software on hardware owned by the author.
+They are a description of an interface, not a copy of Wallhack's software.
+
+If Wallhack objects to any part of this repository, contact the copyright
+holder and it will be addressed.
+
+===============================================================================
+4. THIRD-PARTY MATERIAL
+===============================================================================
+
+`research/` contains third-party source vendored for reference. It is NOT part
+of the Covered Work, it is NOT owned by Iain Brookes, and this licence does not
+apply to it. Each item remains under its own licence, and those licences
+continue to govern what you may do with it.
+
+Nothing in section 2 restricts any right you hold under one of those licences.
+Where a third-party licence grants you permission that section 2 would
+otherwise withhold, that permission stands, and it applies to that third-party
+material only.
+
+This is separate from, and does not weaken, section 1's note above about the
+ported portions of `crates/wh-proto`: those files are part of the Covered
+Work and section 2's restrictions apply to them in full. What follows the MIT
+source into the port is the attribution obligation, not a permission to
+redistribute the tool; see THIRD_PARTY_NOTICES.md for what that obligation
+requires and how it is satisfied here.
+
+The full list of vendored material, its origin, its licence, and the required
+notices are in THIRD_PARTY_NOTICES.md. Those notices are reproduced and
+retained deliberately, because the licences require it.
+
+===============================================================================
+5. NO WARRANTY
+===============================================================================
+
+THE COVERED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+The Covered Work writes settings to keyboard hardware over a
+reverse-engineered protocol. Using it may void the manufacturer's warranty on
+your device. Neither Iain Brookes nor Wallhack has any obligation to provide
+support, updates, or repair for any device it has been used with.
+
+===============================================================================
+6. LIMITATION OF LIABILITY
+===============================================================================
+
+IN NO EVENT SHALL IAIN BROOKES OR WALLHACK BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE COVERED WORK OR ITS USE. THIS
+INCLUDES, WITHOUT LIMITATION, DAMAGE TO OR MALFUNCTION OF ANY KEYBOARD OR
+OTHER HARDWARE, LOSS OF SETTINGS OR DATA, VOIDED WARRANTY, AND ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES.
+
+You use the Covered Work entirely at your own risk.
+
+Nothing in this licence excludes or limits liability where the law does not
+allow it to be excluded or limited.
