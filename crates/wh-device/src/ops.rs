@@ -338,11 +338,30 @@ pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, 
 /// Selects `p`, then reads the profile back to confirm. `select_profile`'s ack does not
 /// reliably prove which profile landed, so a successful send alone is not treated as success:
 /// this re-reads with `profile()` and errors if the board reports anything but `p`.
+///
+/// The ack's sub-order byte is checked first. `Session::roundtrip` matches only the command
+/// byte, which `read_profile`, `select_profile` and every other cmd `0x00` order share, so a
+/// reply to a different sub-order would otherwise pass for this one's ack.
 pub fn set_profile<T: Transport>(
     s: &mut Session<T>,
     p: cmds::ProfileNumber,
 ) -> Result<cmds::ProfileNumber, DeviceError> {
-    s.roundtrip(&cmds::select_profile(p))?;
+    let ack = s.roundtrip(&cmds::select_profile(p))?;
+    match ack.get(1) {
+        Some(&sub) if sub == cmds::order::PROFILE => {}
+        Some(&sub) => {
+            return Err(DeviceError::Decode(format!(
+                "select profile {p}: ack sub-order {sub:#04x}, expected {:#04x}",
+                cmds::order::PROFILE
+            )))
+        }
+        None => {
+            return Err(DeviceError::Decode(format!(
+                "select profile {p}: ack payload has no sub-order byte ({} bytes)",
+                ack.len()
+            )))
+        }
+    }
     let got = profile(s)?;
     if got != p {
         return Err(DeviceError::Decode(format!(
@@ -1348,6 +1367,48 @@ mod tests {
         let got = set_profile(&mut s, target).unwrap();
         assert_eq!(got.one_based(), 2);
         assert!(s.into_inner().finished());
+    }
+
+    /// `Session::roundtrip` matches only the command byte, and `captures/profile-switch.jsonl`
+    /// shows cmd `0x00` replies for sub-orders `0x50`, `0x22`, `0xbb` and others arriving on that
+    /// same byte. An ack whose sub-order is not `order::PROFILE` is therefore someone else's
+    /// reply and must be rejected, before the re-read below can paper over it.
+    #[test]
+    fn set_profile_rejects_an_ack_for_a_different_sub_order() {
+        let target = cmds::ProfileNumber::from_one_based(2).unwrap();
+        let lines = [
+            l("out", &cmds::select_profile(target)),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x50, 0x00])), // order::POLLING, not PROFILE
+            // A re-read would find the right profile anyway; the run must still fail on the ack.
+            l("out", &cmds::read_profile()),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70, 0x01, 0xFF])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let err = set_profile(&mut s, target).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            matches!(err, DeviceError::Decode(_)) && msg.contains("0x50") && msg.contains("0x70"),
+            "expected a Decode naming both sub-orders, got {err:?}"
+        );
+    }
+
+    /// An ack too short to carry a sub-order byte at all is rejected the same way, rather than
+    /// indexing past the end of the payload.
+    #[test]
+    fn set_profile_rejects_an_ack_with_no_sub_order_byte() {
+        let target = cmds::ProfileNumber::from_one_based(2).unwrap();
+        let lines = [
+            l("out", &cmds::select_profile(target)),
+            l("in", &rf(cmds::cmd::CMD, &[0x00])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let err = set_profile(&mut s, target).unwrap_err();
+        assert!(
+            matches!(err, DeviceError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 
     /// If the board reports a different profile after the select, that is a failure, not a
