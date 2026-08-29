@@ -233,14 +233,23 @@ pub struct DeviceInfo {
 /// code read the firmware from a hardcoded `payload[26..36]`, which took 10 bytes where the wire
 /// actually declares 16, truncating it.
 ///
-/// A declared length that runs past the end of `payload` is a `DecodeError`, never a panic or a
-/// silent truncation: this parses whatever the device sends back, including a device in a bad
-/// state.
+/// A declared length that runs past the end of `payload` is a `DecodeError::Shape` (the payload
+/// itself may be exactly the right size; it is the declared length that is bogus, so `Short` -
+/// which reports the payload's own length - would misdiagnose it), never a panic or a silent
+/// truncation: this parses whatever the device sends back, including a device in a bad state.
+///
+/// A cleaned serial or firmware string that comes back empty, or that contains a byte outside
+/// printable ASCII, is also a `DecodeError::Shape`, not a successful empty/garbled identity:
+/// a truncated or corrupted reply must not make `wh backup` succeed with a snapshot that has
+/// silently lost the identity of the board it came from (review round 1, chunk 6), and a
+/// misbehaving device must not be able to smuggle control bytes (e.g. an ANSI escape) into
+/// `wh dump`'s terminal output through `serial`/`firmware` (review round 1, chunk 7's sibling
+/// finding on this same function).
 pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     if payload.len() < 9 {
         return Err(DecodeError::Short(payload.len()));
     }
-    let clean = |b: &[u8]| {
+    let clean = |b: &[u8]| -> Result<String, DecodeError> {
         // Trim at the first NUL, then trim trailing 0xFF padding, then trim surrounding
         // whitespace, in that order: the wire pads a string's declared length with a NUL
         // terminator plus any remaining slack, and the payload's own tail is 0xFF-padded.
@@ -248,7 +257,18 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
         let b = &b[..nul_end];
         let ff_end = b.iter().rposition(|&c| c != 0xFF).map_or(0, |i| i + 1);
         let b = &b[..ff_end];
-        String::from_utf8_lossy(b).trim().to_string()
+        if !b.iter().all(|&c| c.is_ascii_graphic() || c == b' ') {
+            return Err(DecodeError::Shape);
+        }
+        // `b` is now known to be printable ASCII, so this can never fail.
+        let s = std::str::from_utf8(b)
+            .expect("printable ASCII is always valid UTF-8")
+            .trim()
+            .to_string();
+        if s.is_empty() {
+            return Err(DecodeError::Shape);
+        }
+        Ok(s)
     };
 
     let serial_len = payload[8] as usize;
@@ -256,8 +276,8 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     let serial_end = serial_start
         .checked_add(serial_len)
         .filter(|&end| end <= payload.len())
-        .ok_or(DecodeError::Short(payload.len()))?;
-    let serial = clean(&payload[serial_start..serial_end]);
+        .ok_or(DecodeError::Shape)?;
+    let serial = clean(&payload[serial_start..serial_end])?;
 
     if serial_end >= payload.len() {
         return Err(DecodeError::Short(payload.len()));
@@ -267,8 +287,8 @@ pub fn parse_sync(payload: &[u8]) -> Result<DeviceInfo, DecodeError> {
     let firmware_end = firmware_start
         .checked_add(firmware_len)
         .filter(|&end| end <= payload.len())
-        .ok_or(DecodeError::Short(payload.len()))?;
-    let firmware = clean(&payload[firmware_start..firmware_end]);
+        .ok_or(DecodeError::Shape)?;
+    let firmware = clean(&payload[firmware_start..firmware_end])?;
 
     Ok(DeviceInfo { serial, firmware })
 }
@@ -510,22 +530,42 @@ mod tests {
         assert_eq!(info.firmware, "App_V1.1.046000");
     }
 
+    /// Review round 1, minor 5: an overrunning length prefix is a bogus *declaration*, not a
+    /// too-short *payload* - this one is a full, real-size 60-byte SYNC reply, exactly what the
+    /// device actually sends (review round 1, important 3, on moving these off artificially
+    /// tiny payloads), with only its serial length byte corrupted. `DecodeError::Shape`, not
+    /// `Short`, is the honest diagnosis: `Short(60)` would claim the payload itself was too
+    /// small, which is false.
     #[test]
     fn parse_sync_rejects_a_serial_length_prefix_that_overruns_the_payload() {
-        let mut payload = vec![0u8; 20];
+        let mut payload = vec![0u8; 60];
         payload[8] = 0xFF; // declares a serial far longer than the payload has room for
-        assert_eq!(
-            parse_sync(&payload).unwrap_err(),
-            DecodeError::Short(payload.len())
-        );
+        assert_eq!(parse_sync(&payload).unwrap_err(), DecodeError::Shape);
     }
 
     #[test]
     fn parse_sync_rejects_a_firmware_length_prefix_that_overruns_the_payload() {
-        let mut payload = vec![0u8; 20];
+        let mut payload = vec![0u8; 60];
         payload[8] = 4; // serial: 4 bytes, well within the payload
         payload[9..13].copy_from_slice(b"1234");
         payload[13] = 0xFF; // firmware length prefix declares far more than remains
+        assert_eq!(parse_sync(&payload).unwrap_err(), DecodeError::Shape);
+    }
+
+    /// The guard between the two length-prefixed strings (`if serial_end >= payload.len()`) has
+    /// no test of its own without this one (review round 1, minor 4): a serial that declares
+    /// exactly to the end of the payload leaves no byte for the firmware's own length prefix.
+    /// This *is* a too-short payload (there is no bogus declaration here, just not enough bytes
+    /// to hold a second string at all), so `Short`, not `Shape`, is the right diagnosis, unlike
+    /// the two overrun cases above.
+    #[test]
+    fn parse_sync_rejects_a_serial_that_leaves_no_room_for_the_firmware_length_prefix() {
+        let mut payload = vec![0u8; 20];
+        payload[8] = 11; // 9 + 11 == 20 == payload.len(): no byte left for the firmware prefix
+                         // A real, non-empty serial filling every one of those 11 bytes, so this
+                         // test exercises the guard between the two strings, not the separate
+                         // empty-serial rejection above.
+        payload[9..20].copy_from_slice(b"ABCDEFGHIJK");
         assert_eq!(
             parse_sync(&payload).unwrap_err(),
             DecodeError::Short(payload.len())
@@ -534,10 +574,12 @@ mod tests {
 
     /// Proves the parse follows the declared length prefix rather than a hardcoded constant: a
     /// shorter serial (6 bytes, not 16) shifts where the firmware length prefix and firmware
-    /// string are read from, and both still come back correctly.
+    /// string are read from, and both still come back correctly. A full 60-byte payload (review
+    /// round 1, important 3): the real device's replies are always this size, so the test no
+    /// longer needs an artificially tiny one just to exercise a short serial.
     #[test]
     fn parse_sync_follows_a_shorter_declared_serial_length_not_a_constant() {
-        let mut payload = vec![0u8; 30];
+        let mut payload = vec![0u8; 60];
         payload[8] = 6; // serial length
         payload[9..15].copy_from_slice(b"ABC123");
         payload[15] = 5; // firmware length prefix, right after the 6-byte serial
@@ -545,6 +587,61 @@ mod tests {
         let info = parse_sync(&payload).unwrap();
         assert_eq!(info.serial, "ABC123");
         assert_eq!(info.firmware, "V9.9.");
+    }
+
+    /// Review round 1, important 3: lowering the length floor from 36 to 9 (chunk 6) must not
+    /// let a truncated or bad-state reply decode as a well-formed, empty identity. A zero-length
+    /// serial is a `DecodeError`, not `Ok(DeviceInfo { serial: "", .. })`: `wh backup` must never
+    /// silently write a snapshot that has lost the identity of the board it came from.
+    #[test]
+    fn parse_sync_rejects_an_empty_serial() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 0; // serial length: 0
+        payload[9] = 10; // firmware length prefix, right after the zero-length serial
+        payload[10..20].copy_from_slice(b"V1.2.3.456");
+        assert_eq!(parse_sync(&payload).unwrap_err(), DecodeError::Shape);
+    }
+
+    /// The firmware sibling of the empty-serial test above.
+    #[test]
+    fn parse_sync_rejects_an_empty_firmware() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 16;
+        payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        payload[25] = 0; // firmware length: 0
+        assert_eq!(parse_sync(&payload).unwrap_err(), DecodeError::Shape);
+    }
+
+    /// Review round 1, minor 6: the brief's premise that the current code already rejected
+    /// non-ASCII/non-printable bytes was false; this implements that rejection. A serial
+    /// carrying a BEL and an ANSI escape sequence (`\x07\x1b[31m...`) must be a `DecodeError`,
+    /// not a successfully parsed string: `wh dump`'s non-JSON path writes `serial` straight to
+    /// the terminal, so a misbehaving device must not be able to smuggle control bytes into an
+    /// operator's terminal through it.
+    #[test]
+    fn parse_sync_rejects_control_bytes_in_the_serial() {
+        let mut payload = vec![0u8; 60];
+        let serial = b"SN\x07\x1b[31mEVIL\"";
+        payload[8] = serial.len() as u8;
+        payload[9..9 + serial.len()].copy_from_slice(serial);
+        let fw_len_pos = 9 + serial.len();
+        payload[fw_len_pos] = 10;
+        payload[fw_len_pos + 1..fw_len_pos + 11].copy_from_slice(b"V1.2.3.456");
+        assert_eq!(parse_sync(&payload).unwrap_err(), DecodeError::Shape);
+    }
+
+    /// The firmware sibling: raw bytes outside printable ASCII (not just invalid UTF-8, which
+    /// `from_utf8_lossy` would have silently replaced rather than rejected) must also be
+    /// refused.
+    #[test]
+    fn parse_sync_rejects_non_ascii_bytes_in_the_firmware() {
+        let mut payload = vec![0u8; 60];
+        payload[8] = 16;
+        payload[9..25].copy_from_slice(b"SN0123456789ABCD");
+        let firmware = [0x80, 0x81, 0x82, b'V', b'1'];
+        payload[25] = firmware.len() as u8;
+        payload[26..26 + firmware.len()].copy_from_slice(&firmware);
+        assert_eq!(parse_sync(&payload).unwrap_err(), DecodeError::Shape);
     }
 
     #[test]
