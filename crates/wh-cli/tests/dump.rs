@@ -1187,6 +1187,7 @@ fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
         serial: "SNRESTORETEST001".into(),
         taken_at: "2026-08-28T12:00:00Z".into(),
         profile,
+        origin: None,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: 2.0,
             press_dead_mm: 0.2,
@@ -1835,4 +1836,142 @@ fn bin_wh_shim_propagates_wh_replay_and_never_touches_hardware() {
     );
 
     std::fs::remove_file(path).unwrap();
+}
+
+/// A minimal, valid backup snapshot with a caller-chosen origin, for `wh backups list` tests
+/// that don't need a full key set, just a file that parses.
+fn sample_backup_snapshot(origin: &str) -> wh_config::snapshot::Snapshot {
+    wh_config::snapshot::Snapshot {
+        firmware: "V1.0.0.001".into(),
+        serial: "SNBACKUPLIST0001".into(),
+        taken_at: "2026-08-28T12:00:00Z".into(),
+        profile: Some(cmds::ProfileNumber::from_one_based(1).unwrap()),
+        origin: Some(origin.into()),
+        global: wh_config::snapshot::GlobalToml {
+            travel_mm: 2.0,
+            press_dead_mm: 0.2,
+            release_dead_mm: 0.2,
+        },
+        keys: vec![],
+    }
+}
+
+/// A corrupt backup file sitting between two good ones must not hide either: `wh backups list`
+/// warns on stderr about the corrupt one and still prints both good ones. A corrupt file at the
+/// end would pass even with an implementation that aborted the whole listing on the first
+/// parse failure, so it has to sit in the middle.
+#[test]
+fn backups_list_skips_a_corrupt_file_between_two_good_ones() {
+    let config_home = scratch_config_dir("backups-list-corrupt");
+    let backups = config_home.join("wh").join("backups");
+    std::fs::create_dir_all(&backups).unwrap();
+
+    let mut older = sample_backup_snapshot("auto: set rt");
+    older.taken_at = "2026-08-28T10:00:00Z".into();
+    std::fs::write(
+        backups.join("1756000000.000000000.json"),
+        older.to_json().unwrap(),
+    )
+    .unwrap();
+
+    // Corrupt: a valid extension and non-empty, but not parseable as JSON at all.
+    std::fs::write(
+        backups.join("1756000005.000000000.json"),
+        "{ this is not valid json",
+    )
+    .unwrap();
+
+    let mut newer = sample_backup_snapshot("manual");
+    newer.taken_at = "2026-08-28T11:00:00Z".into();
+    std::fs::write(
+        backups.join("1756000010.000000000.json"),
+        newer.to_json().unwrap(),
+    )
+    .unwrap();
+
+    let empty_replay = write_script("backups-list-corrupt", &[]);
+    let out = run_wh(&["backups", "list"], &empty_replay, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("2026-08-28T10:00:00Z") && stdout.contains("auto: set rt"),
+        "older good backup missing from the listing: {stdout}"
+    );
+    assert!(
+        stdout.contains("2026-08-28T11:00:00Z") && stdout.contains("manual"),
+        "newer good backup missing from the listing: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1756000005.000000000.json"),
+        "the corrupt file must be named in a warning: {stderr}"
+    );
+
+    std::fs::remove_file(empty_replay).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh restore --last` must name what it picked before restoring, on stderr: the flag keeps
+/// meaning "the newest snapshot, whatever took it", so the fix is visibility, not a new flag.
+/// The chosen file's path and its recorded origin must both appear.
+#[test]
+fn restore_last_prints_the_picked_snapshot_and_its_origin() {
+    let config_home = scratch_config_dir("restore-last-origin");
+    let backups = config_home.join("wh").join("backups");
+    std::fs::create_dir_all(&backups).unwrap();
+
+    let snap = wh_config::snapshot::Snapshot {
+        firmware: "V1.0.0.001".into(),
+        serial: "SNRESTORETEST001".into(),
+        taken_at: "2026-08-28T12:00:00Z".into(),
+        profile: Some(cmds::ProfileNumber::from_one_based(1).unwrap()),
+        origin: Some("manual".into()),
+        global: wh_config::snapshot::GlobalToml {
+            travel_mm: 2.0,
+            press_dead_mm: 0.2,
+            release_dead_mm: 0.1,
+        },
+        keys: vec![wh_config::snapshot::KeyToml {
+            name: "w".into(),
+            usage: 0x1A,
+            ap_mm: 1.2,
+            rt: false,
+            rt_press_mm: 0.5,
+            rt_release_mm: 0.6,
+            mode_raw: 0x0220,
+            ap_keyset: 0,
+            rt_keyset: 0,
+        }],
+    };
+    std::fs::write(
+        backups.join("1756000000.000000000.json"),
+        snap.to_json().unwrap(),
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines());
+    let path = write_script("restore-last-origin", &lines);
+
+    let out = run_wh(&["restore", "--last"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1756000000.000000000.json") && stderr.contains("origin: manual"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
 }

@@ -1,6 +1,6 @@
 //! Command dispatch. Every command in the `wh` tree, read and write alike, runs through here.
 
-use crate::cli::{Cli, Cmd, KeysWhat, SetWhat};
+use crate::cli::{BackupsWhat, Cli, Cmd, KeysWhat, SetWhat};
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -19,6 +19,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
+        Cmd::Backups { what } => backups(what, &store),
         Cmd::Dump { table } => dump(table),
         Cmd::Get { what } => get(what, &store),
         Cmd::Set { what } => set(what, &store),
@@ -144,6 +145,9 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         serial: info.serial,
         taken_at: httpdate_now()?,
         profile,
+        // Set by the caller once it knows why this snapshot was taken (`backup` or
+        // `auto_backup`); `dump` never assigns one, since it saves nothing to disk.
+        origin: None,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
@@ -371,6 +375,54 @@ fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
     Ok(())
 }
 
+fn backups(what: BackupsWhat, store: &Store) -> Result<()> {
+    match what {
+        BackupsWhat::List => list_backups(store),
+    }
+}
+
+/// Lists every stored backup, oldest first. Each backup is parsed on its own, and a file that
+/// fails to parse prints a warning naming it, on stderr, rather than aborting the whole listing:
+/// one corrupt file must not hide every other backup that still reads fine.
+fn list_backups(store: &Store) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for path in store.list_backups()? {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                best_effort_eprintln(&format!(
+                    "warning: could not read backup {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        match wh_config::snapshot::Snapshot::from_file_text(&path, &text) {
+            Ok(snap) => {
+                let origin = snap.origin.as_deref().unwrap_or("unknown");
+                let profile = snap
+                    .profile
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".into());
+                writeln!(
+                    out,
+                    "{}  {origin}  profile {profile}  {}",
+                    snap.taken_at,
+                    path.display()
+                )?;
+            }
+            Err(e) => {
+                best_effort_eprintln(&format!(
+                    "warning: could not parse backup {}: {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reports whether `name` (already lowercased) would resolve back to the group stored under it
 /// if later typed as a bare `--keys` token.
 ///
@@ -421,12 +473,14 @@ fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
-/// Takes and saves an auto-backup. `restore` reads the board's profile through its own
-/// separate `ops::profile` call rather than off this function's returned snapshot, so a
-/// future `--no-backup` flag or a best-effort backup here cannot silently drop the profile
-/// safety check.
-fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
-    let snap = snapshot_from_device(s)?;
+/// Takes and saves an auto-backup, recording `command` as the snapshot's origin (e.g. `set rt`,
+/// `restore`) so `wh backups list` can name what triggered it. `restore` reads the board's
+/// profile through its own separate `ops::profile` call rather than off this function's returned
+/// snapshot, so a future `--no-backup` flag or a best-effort backup here cannot silently drop the
+/// profile safety check.
+fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store, command: &str) -> Result<()> {
+    let mut snap = snapshot_from_device(s)?;
+    snap.origin = Some(format!("auto: {command}"));
     let path = store.save_backup(&snap.to_json()?)?;
     best_effort_eprintln(&format!("(backed up to {})", path.display()));
     Ok(())
@@ -642,7 +696,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             let records = ops::rt_off_records(s, &usages)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
-                        auto_backup(s, store)?;
+                        auto_backup(s, store, "set rt")?;
                         let records = ops::set_rt_off(s, &usages)?;
                         verify_rt_off(&mut out, s, &records)
                     }
@@ -651,7 +705,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             let records = ops::rt_records(s, &usages, press, release)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
-                        auto_backup(s, store)?;
+                        auto_backup(s, store, "set rt")?;
                         let records = ops::set_rt(s, &usages, press, release)?;
                         verify_rt(&mut out, s, press, release, &records)
                     }
@@ -668,7 +722,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     let records = ops::ap_records(s, &usages, depth)?;
                     return print_frames(&mut out, &cmds::write_key_records(&records));
                 }
-                auto_backup(s, store)?;
+                auto_backup(s, store, "set ap")?;
                 let records = ops::set_ap(s, &usages, depth)?;
                 verify_ap(&mut out, s, depth, &records)
             })
@@ -707,7 +761,8 @@ fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     with_session(|s| {
-        let snap = snapshot_from_device(s)?;
+        let mut snap = snapshot_from_device(s)?;
+        snap.origin = Some("manual".into());
         let text = snap.to_json()?;
         match to {
             Some(p) => {
@@ -884,6 +939,16 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     };
     let snap = wh_config::snapshot::Snapshot::from_file_text(&path, &text)
         .with_context(|| format!("parsing snapshot {}", path.display()))?;
+    // `--last` means "the most recent snapshot, whatever took it", auto or manual alike: it does
+    // not change meaning here, only visibility does. Naming what was picked, and its origin, is
+    // the whole fix for a real session where that surprised an operator expecting a manual backup.
+    if last {
+        best_effort_eprintln(&format!(
+            "--last picked {} (origin: {})",
+            path.display(),
+            snap.origin.as_deref().unwrap_or("unknown")
+        ));
+    }
     // Every value is validated and the write records built before a session ever opens, so a
     // bad snapshot is refused before a single frame is sent.
     let global = snap_to_global(&snap)?;
@@ -901,7 +966,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.
-        auto_backup(s, store)?;
+        auto_backup(s, store, "restore")?;
         ops::restore_all(s, &global, &records)?;
         // Printed only after verification passes, so stdout never claims success on a run
         // where stderr reports a mismatch.

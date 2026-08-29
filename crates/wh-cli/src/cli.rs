@@ -55,6 +55,11 @@ pub enum Cmd {
         #[command(subcommand)]
         what: KeysWhat,
     },
+    /// Manage stored backups
+    Backups {
+        #[command(subcommand)]
+        what: BackupsWhat,
+    },
     /// Read or select the active profile
     Profile {
         /// Profile to select, 1 to 4. Omit to read the current one.
@@ -123,6 +128,12 @@ pub enum KeysWhat {
     List,
     /// Define a user group: wh keys group fps "w,a,s,d,space"
     Group { name: String, selector: String },
+}
+
+#[derive(Subcommand)]
+pub enum BackupsWhat {
+    /// List stored backups, oldest first
+    List,
 }
 
 #[cfg(test)]

@@ -22,6 +22,10 @@ pub struct Snapshot {
         skip_serializing_if = "Option::is_none"
     )]
     pub profile: Option<ProfileNumber>,
+    /// What took this snapshot: `manual` for `wh backup`, or `auto: <command>` for the backup
+    /// every write takes first. `None` means a snapshot from before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     pub global: GlobalToml,
     pub keys: Vec<KeyToml>,
 }
@@ -95,6 +99,7 @@ mod tests {
             serial: "SN1".into(),
             taken_at: "2026-08-28T12:00:00Z".into(),
             profile: Some(ProfileNumber::from_wire_index(0).unwrap()),
+            origin: None,
             global: GlobalToml {
                 travel_mm: 2.0,
                 press_dead_mm: 0.2,
@@ -208,6 +213,20 @@ mode_raw = 32
 "#;
         let snap = Snapshot::from_toml(text).unwrap();
         assert_eq!(snap.profile, None);
+    }
+
+    /// Origin distinguishes a deliberate `wh backup` from the automatic one every write takes
+    /// first. A snapshot without the field still loads.
+    #[test]
+    fn snapshot_origin_round_trips_and_defaults_to_none() {
+        let mut snap = sample();
+        snap.origin = Some("auto: set rt".into());
+        let back = Snapshot::from_json(&snap.to_json().unwrap()).unwrap();
+        assert_eq!(back.origin.as_deref(), Some("auto: set rt"));
+
+        let without = r#"{"firmware":"V1","serial":"S","taken_at":"t",
+            "global":{"travel_mm":2.0,"press_dead_mm":0.2,"release_dead_mm":0.2},"keys":[]}"#;
+        assert_eq!(Snapshot::from_json(without).unwrap().origin, None);
     }
 
     /// A snapshot JSON body with neither `ap_keyset` nor `rt_keyset` must still deserialise:
