@@ -8,19 +8,7 @@ measured from 1224 frames of real device traffic.
 
 ## Phase 1
 
-- [ ] **Final whole-branch review** of every commit on `phase-1`.
-- [ ] **Merge `phase-1` into `main`.**
-
-## In flight
-
-- [ ] **Task 20: `docs/protocol.md`, `README.md`, rename `order::CONFIG` to `PROFILE`, move
-  `ProfileNumber` into `wh-proto`, and sweep em dashes from the tracked plan, spec and research
-  docs.** Under review; not done until review closes. Findings addressed so far, across two fix
-  rounds: `--force`'s two refusals documented correctly, broken README examples fixed and every
-  example re-run against the built binary, the mode-nibble write guidance corrected, `WH_REPLAY`
-  fixed to actually reach the Windows binary through `bin/wh` (it silently did not, and a review
-  run performed a real write believing it was a replay), and the licence corrected to disclose the
-  ported portions of `wh-proto`.
+Complete. See the Done section.
 
 ## Backlog, not scheduled
 
@@ -54,6 +42,30 @@ measured from 1224 frames of real device traffic.
   `cmd 0x00` sub-order `0x70`, argument `0xFF` to read, a zero-based index to select. Reading is
   already implemented; only the command surface and the select encoder are missing.
 
+### Seven residual documentation inaccuracies
+
+Parked at the final whole-branch review with rulings rather than reopening a fix wave on the last
+gate. Every underlying protocol claim is true; these are wrong pointers and over-broad scopes.
+
+- [ ] `crates/wh-device/src/ops.rs` says nibble `0` is "something `wh` does not write". `restore`
+  does write it, 58 times on this board, because it writes `mode_raw` verbatim.
+  `docs/protocol.md` is correctly scoped to turning rapid trigger off; the paraphrase dropped the
+  scope.
+- [ ] `capture/README.md` credits a re-read to `remap-one-key`. That capture has four frames and no
+  re-read; the re-read is in `remap-matrix-read`.
+- [ ] Three stale references in the tracked plan sit outside the superseded banner's stated scope:
+  `rt-w-0.6` and `ap-w-1.2` in the embedded capture README block, and three `write_and_save` mentions
+  relying on a blanket note far above them.
+- [ ] The plan's new "AP is layout `0x04` alone" annotation is right as an answer to that step's
+  question, but reads as a claim about what an AP change writes, which the vendor capture contradicts.
+- [ ] `crates/wh-config/src/snapshot.rs` says hand-editing a snapshot's `rt` field changes what
+  dump-style tooling prints. `wh dump` reads the live device, never a snapshot file, so it changes
+  nothing any command prints.
+- [ ] The Task 20 report justifies its hidpkg conclusion by saying that directory holds only a
+  tarball and a `package.json`. It holds a tracked `dist/{cjs,esm}` tree of compiled JavaScript. The
+  conclusion is correct and was verified another way, but **do not reuse that reasoning in a
+  licensing decision.**
+
 ### Protocol gaps
 
 - [ ] **Commands `0x18` and `0x2c`.** `0x2c` is almost certainly SOCD: it queries by key and replies
@@ -79,6 +91,10 @@ measured from 1224 frames of real device traffic.
   from its length prefix, and name the four board-function keys.~~
 - [x] ~~Task 19b group B: record the active profile in snapshots and refuse a profile-mismatched
   restore.~~
+- [x] ~~Task 20: the protocol document, the README, the licence and third-party notices, two
+  refactors, and the em dash sweep. Four fix rounds.~~
+- [x] ~~Final whole-branch review of all 41 commits, one fix wave, one scoped re-review. Approved.~~
+- [x] ~~Merge `phase-1` into `main`.~~
 - [x] ~~Read path verified against the real board: serial, all 68 keys, `get`, `backup`, `selftest`,
   and a dry-run frame whose records match the vendor's byte for byte.~~
 - [x] ~~Identify layouts `0x00` and `0x01` as the base and FN mapping layers.~~
