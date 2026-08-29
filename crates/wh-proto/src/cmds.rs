@@ -194,7 +194,7 @@ impl Mode {
 pub mod order {
     pub const PROTOCOL_VERSION: u8 = 0x01;
     // ORDER_TYPE_SAVING_PARAMETER. Kept as protocol vocabulary, but never sent by `wh-device`:
-    // across 1224 captured frames covering nine scenarios and five complete write sequences
+    // across 1224 captured frames covering ten scenarios and five complete write sequences
     // (task 19b), the vendor web configurator never sends this order. Do not wire it back into
     // a write path without first measuring what it actually does on this firmware.
     pub const SAVE: u8 = 0x02;
@@ -836,8 +836,8 @@ mod tests {
     /// no test of its own without this one (review round 1, minor 4): a serial that declares
     /// exactly to the end of the payload leaves no byte for the firmware's own length prefix.
     /// This *is* a too-short payload (there is no bogus declaration here, just not enough bytes
-    /// to hold a second string at all), so `Short`, not `Shape`, is the right diagnosis, unlike
-    /// the two overrun cases above.
+    /// to hold a second string at all), so `Short`, not `Identity`, is the right diagnosis,
+    /// unlike the two overrun cases above.
     #[test]
     fn parse_sync_rejects_a_serial_that_leaves_no_room_for_the_firmware_length_prefix() {
         let mut payload = vec![0u8; 20];

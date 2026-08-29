@@ -21,7 +21,7 @@
 //! A single malformed line (bad JSON, a missing "hex" field, a bad hex
 //! character, a report that is not 64 bytes) does not abort the run either:
 //! it is recorded as a failure with its file:line and the run continues, so
-//! one bad line in one of nine capture files does not hide the other eight.
+//! one bad line in one of ten capture files does not hide the other nine.
 //! The summary is printed unconditionally, and written to a file under
 //! `CARGO_TARGET_TMPDIR` (see fix round 2: it used to live under
 //! `captures/`, which is committed data; the summary is derived, regenerated
@@ -385,7 +385,7 @@ fn scan_dir(dir: &Path) -> Option<Summary> {
 /// Sums a `(Origin, K) -> usize` map down to a plain `K -> usize` aggregate,
 /// so the summary can show a total per command byte or failure code first,
 /// with the per-scenario/direction attribution underneath it, rather than
-/// replacing one with the other. With nine capture files, one command byte
+/// replacing one with the other. With ten capture files, one command byte
 /// appearing in several of them would otherwise print with no total
 /// anywhere.
 fn aggregate<K: Ord + Copy>(map: &BTreeMap<(Origin, K), usize>) -> BTreeMap<K, usize> {
