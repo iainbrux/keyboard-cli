@@ -1,10 +1,9 @@
 //! Interactive key picker for `--pick`.
 //!
 //! The selection logic (cursor movement, toggling, select-all/clear-all, finishing an
-//! accepted selection, and building the final usage list) is a pure function of state and a
-//! key code, so it lives in [`PickerState`] and is unit tested without a TTY. The terminal
-//! shell around it, `pick` below, is kept as thin as possible: it owns the
-//! `ratatui`/`crossterm` calls and nothing else.
+//! accepted selection) is a pure function of state and a key code, so it lives in
+//! [`PickerState`] and is unit tested without a TTY. `pick` below just owns the
+//! `ratatui`/`crossterm` calls.
 
 use anyhow::{bail, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -15,7 +14,7 @@ use std::io::IsTerminal;
 
 /// How far `PageUp`/`PageDown` move the cursor in one press. A full board's key list is
 /// taller than a typical terminal window, so single-step `Up`/`Down` alone would take dozens
-/// of presses to cross it; this is the friction PageUp/PageDown/Home/End exist to remove.
+/// of presses to cross it.
 const PAGE: usize = 10;
 
 /// What a single key code should do to a live picker session.
@@ -40,8 +39,7 @@ struct PickerState {
 }
 
 impl PickerState {
-    /// Builds picker state for a non-empty universe. Returns `None` for an empty universe,
-    /// which the caller must reject before ever constructing a state or a `ListState`: an
+    /// Builds picker state for a non-empty universe. Returns `None` for an empty one: an
     /// empty list has no valid cursor position, and `Down`'s `(i + 1).min(len - 1)` would
     /// underflow on `len == 0`.
     fn new(universe: &[u8]) -> Option<Self> {
@@ -58,9 +56,8 @@ impl PickerState {
     }
 
     /// Applies one key code to the state, mutating it in place, and reports what the caller
-    /// should do next. Keys this picker does not use (letters other than `a`, function keys,
-    /// etc.) fall through to `Outcome::Continue` with no effect, the same as an unrecognised
-    /// key on any modal prompt.
+    /// should do next. Keys this picker does not use fall through to `Outcome::Continue`
+    /// with no effect.
     fn apply(&mut self, code: KeyCode) -> Outcome {
         let last = self.usages.len() - 1;
         match code {
@@ -94,9 +91,8 @@ impl PickerState {
             }
             KeyCode::Char('a') => {
                 // Asymmetric by design: `a` selects everything unless everything is already
-                // selected, in which case it clears everything. A plain toggle-each-bit would
-                // instead flip a mixed selection to its exact complement, which is not what a
-                // user pressing "select all" on a partial selection wants.
+                // selected, in which case it clears everything, rather than flipping a mixed
+                // selection to its exact complement.
                 let all_selected = self.selected.iter().all(|&s| s);
                 self.selected.iter_mut().for_each(|s| *s = !all_selected);
                 Outcome::Continue
@@ -119,15 +115,10 @@ impl PickerState {
 
     /// Finalizes an accepted selection, refusing an empty one.
     ///
-    /// Kept in the tested core rather than as a bare `if picked.is_empty()` in the terminal
-    /// shell: a mutant that deletes the refusal fails a test here directly, whereas the same
-    /// mutant living only in `pick` below would survive every test in this module, since
-    /// nothing here can drive `pick` end to end without a real terminal. The concrete
-    /// regression this guards: `wh set ap --pick --set 1.5`, the user presses Enter having
-    /// toggled nothing, and without this check `pick` would return `Ok(vec![])`, `set ap`
-    /// would iterate zero keys, and the command would exit 0 claiming success while writing
-    /// nothing. `resolve_keys` enforces the same non-empty contract explicitly for the
-    /// `--keys` branch (see `run.rs`), so callers are entitled to assume it holds here too.
+    /// Lives here rather than as a bare check in the terminal shell so it is covered by unit
+    /// tests, not only by a real terminal session. Without it, pressing Enter with nothing
+    /// toggled would let `set ap --pick` iterate zero keys and exit 0 claiming success while
+    /// writing nothing. `resolve_keys` enforces the same non-empty contract for `--keys`.
     fn finish(&self) -> Result<Vec<u8>> {
         let picked = self.picked();
         if picked.is_empty() {
@@ -137,33 +128,22 @@ impl PickerState {
     }
 }
 
-/// Whether a key event represents a live keystroke that should be acted on, as opposed to a
-/// report that a key went up. `Press` is the only per-keystroke event Windows's crossterm
-/// backend ever produces; `Repeat` is what a Kitty-protocol terminal may send in its place
-/// while a key is held. Both count. `Release`, which Windows always sends in addition to
-/// `Press` for every physical keypress, must not: matching on `code` alone would otherwise
-/// handle each physical keypress twice, most visibly as space toggling a key on and straight
-/// back off.
+/// Whether a key event is a live keystroke to act on, not a key-up report. `Press` and
+/// `Repeat` (held key, Kitty protocol) count; `Release` must not, since Windows sends it
+/// alongside `Press` for every keypress, and matching on `code` alone would handle each
+/// press twice, most visibly as space toggling a key on and straight back off.
 fn is_actionable_press(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
-/// Refuses `--pick` when stdout is not an interactive terminal, given the terminal check's
-/// result rather than performing it: `pick` below is the only caller and passes the real
-/// `std::io::stdout().is_terminal()` in a one-line, untested wrapper, so this pure function
-/// is what a test can actually drive. No test may call `is_terminal()` itself and expect a
-/// stable answer, since the test binary's own stdout is a real tty whenever a developer runs
-/// `cargo test` at an interactive shell, not only when it is redirected: a test that called
-/// `pick()` end to end under that condition would pass the guard, enter raw mode and the
-/// alternate screen, and hang in `event::read()` waiting for a keystroke that never comes,
-/// taking over the developer's terminal in the process. `refuse_if_not_terminal` exists so
-/// that scenario is tested with a plain `false`, never with a real terminal.
+/// Refuses `--pick` when stdout is not an interactive terminal. Takes the terminal check's
+/// result rather than calling `is_terminal()` itself, so a test can drive it with a plain
+/// `false` instead of running `pick()` end to end, which would enter raw mode and hang in
+/// `event::read()` waiting for a keystroke.
 ///
-/// `wh get ap --pick > keys.txt` is a natural thing to try with a command whose output is
-/// otherwise scriptable. Without this check, the alternate-screen sequences and the rendered
-/// list go straight into the redirected file, the user's terminal stays blank while raw mode
-/// silently consumes their keystrokes, and they have no way to know why. Refusing up front
-/// turns that confusing hang into one sentence.
+/// Without this check, `wh get ap --pick > keys.txt` sends the alternate-screen and list
+/// output straight into the file while raw mode silently eats the user's keystrokes, with no
+/// indication why.
 fn refuse_if_not_terminal(is_tty: bool) -> Result<()> {
     if !is_tty {
         bail!(
@@ -176,23 +156,19 @@ fn refuse_if_not_terminal(is_tty: bool) -> Result<()> {
 
 /// Prompts the user to pick keys interactively from `universe` and returns their usages.
 ///
-/// `universe` is the board's real key list, read live by the caller immediately before this
-/// runs (see `resolve_keys` in `run.rs`), not the static key table: a picker offering a key
-/// the attached board does not have would let the user select something no write can reach.
+/// `universe` is the board's real key list, read live by the caller (see `resolve_keys` in
+/// `run.rs`), not the static key table: offering a key the attached board does not have
+/// would let the user select something no write can reach.
 pub fn pick(universe: &[u8]) -> Result<Vec<u8>> {
     refuse_if_not_terminal(std::io::stdout().is_terminal())?;
     let Some(mut state) = PickerState::new(universe) else {
         bail!("this board reports no keys to pick from");
     };
 
-    // `try_init`, not the panicking `init`: this branch has a standing rule against panic
-    // paths in non-test code, and a console-less launch (a detached exe, a service) is a
-    // realistic way to hit this, not a hypothetical one. `try_init` can still fail partway
-    // through (raw mode enabled but the alternate screen never entered, or the reverse),
-    // leaving no `DefaultTerminal` yet to hand to `ratatui::restore()` the way the loop
-    // below does; calling the free function anyway is safe, since each of its two steps
-    // (disable raw mode, leave the alternate screen) is a harmless no-op if the
-    // corresponding step here was never reached.
+    // `try_init`, not the panicking `init`: a console-less launch (a detached exe, a
+    // service) can hit this. `try_init` can fail partway through (raw mode enabled but the
+    // alternate screen never entered, or the reverse); calling `ratatui::restore()` anyway
+    // is safe, since each of its steps is a no-op if never reached.
     let mut terminal = match ratatui::try_init() {
         Ok(t) => t,
         Err(e) => {
@@ -201,12 +177,9 @@ pub fn pick(universe: &[u8]) -> Result<Vec<u8>> {
                 .context("failed to start the interactive picker; is a terminal attached?");
         }
     };
-    // The loop's outcome is captured here and the terminal is restored unconditionally
-    // below, on every path, success or failure alike: `terminal.draw(...)?` and
-    // `event::read()?` inside the loop both return early on error, which would otherwise
-    // skip `ratatui::restore()` and leave the user's shell in raw mode on the alternate
-    // screen. `ratatui::try_init()`'s panic hook covers a panic, but an early `?` return is
-    // not a panic and never trips that hook.
+    // The result is captured, not returned directly, so `ratatui::restore()` below always
+    // runs even when the loop's `?`s return early. Otherwise the shell would be left in raw
+    // mode on the alternate screen.
     let result = run_loop(&mut terminal, &mut state);
     ratatui::restore();
 
@@ -421,11 +394,8 @@ mod tests {
 
     #[test]
     fn refuse_if_not_terminal_rejects_a_non_terminal_stdout() {
-        // A plain `false`, not a real terminal: `pick()` itself is never called from a
-        // test, since it owns raw mode and the alternate screen, and calling it under a
-        // real tty (which a developer's own `cargo test` run has, whether or not stdout
-        // happens to be redirected) would enter both and then block in `event::read()`
-        // waiting for a keystroke that never comes.
+        // A plain `false`, not a real terminal: calling `pick()` itself under a test's own
+        // tty would enter raw mode and block in `event::read()` waiting for a keystroke.
         let err = refuse_if_not_terminal(false).unwrap_err();
         assert!(
             err.to_string().to_lowercase().contains("terminal"),

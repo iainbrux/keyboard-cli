@@ -15,14 +15,9 @@ pub enum SelectError {
     Unknown(String, String),
     #[error("'{0}' is not a key on this device")]
     NotOnDevice(String),
-    /// Review round 2, finding 1: the previous wording ("rename the group") does not name a
-    /// route that actually works, since creating a new group under a different name still
-    /// resolves the *selector text* used to define it, and typing the ambiguous name into that
-    /// selector hits this same refusal. There is also no group-delete subcommand (deliberately,
-    /// per the coordinator's ruling: that is new CLI surface, out of scope for a corrections
-    /// task), so the stale entry cannot be removed either. The message instead points at the one
-    /// route that does work: read the group's members off `wh keys list`, then recreate it under
-    /// a new name by listing those members explicitly rather than by name.
+    /// There is no route to rename or delete a stale stored group under an ambiguous name, so
+    /// the message points at the one that works: read the group's members via `wh keys list`,
+    /// then recreate it under a different name using an explicit list of those keys.
     #[error(
         "'{0}' is both a key or builtin group name and a stored group; run `wh keys list` to see \
          what '{0}' contains, then recreate it under a different name using an explicit list of \
@@ -102,15 +97,11 @@ impl Selector {
                 Item::Range(a, b) => (*a..=*b).filter(in_universe).collect(),
                 Item::Name(n) => {
                     if let Some(u) = usage_for_name(n) {
-                        // A name that resolves as a key AND names a stored user group is
-                        // ambiguous, not a case where the key silently wins: a group saved
-                        // before this name became a key (e.g. task 19b added "ap"/"rt"/"play"/
-                        // "light" as board-function key names) would otherwise be silently
-                        // repointed at a single board key the next time the selector runs,
-                        // with no warning and exit 0. Refuse rather than resolve either way.
-                        // Key names still win over every name that is *not* also a stored
-                        // group; only this collision is rejected. The builtin-group sibling of
-                        // this same check lives just below (review round 2, finding 4).
+                        // A name that is both a key and a stored user group is ambiguous, not a
+                        // case where the key silently wins: a group saved before this name
+                        // became a key (e.g. "ap"/"rt"/"play"/"light") would otherwise be
+                        // silently repointed at a single board key, with no warning and exit 0.
+                        // Key names still win over every other name; only this collision errors.
                         if user_groups.contains_key(n) {
                             return Err(SelectError::AmbiguousWithGroup(n.clone()));
                         }
@@ -129,12 +120,10 @@ impl Selector {
                             vec![u]
                         }
                     } else if let Some(g) = builtin_group(n) {
-                        // Review round 2, finding 4: the same collision as above, just against a
-                        // builtin group name ("wasd", "arrows", "mods") instead of a key name.
-                        // `group()` already refuses to *create* a user group under one of these
-                        // names, so this is only reachable by hand-editing `config.toml`, but the
-                        // same mistake must fail the same way once it is there, not silently
-                        // shadow the stored group.
+                        // The same collision as above, against a builtin group name instead of a
+                        // key name. `group()` already refuses to create a user group under a
+                        // builtin name, so this is only reachable by hand-editing `config.toml`,
+                        // but it must fail the same way, not silently shadow the stored group.
                         if user_groups.contains_key(n) {
                             return Err(SelectError::AmbiguousWithGroup(n.clone()));
                         }
@@ -289,13 +278,9 @@ mod tests {
         assert_eq!(err, SelectError::NotOnDevice("w".to_string()));
     }
 
-    /// The regression this fix exists for (review round 1, chunk 7): a user group named "rt"
-    /// saved before task 19b added "rt" as a board-function key name. Reproduces the reviewer's
-    /// exact measurement: `groups = {"rt": [w,a,s,d]}`, `universe` includes both wasd and the new
-    /// board-function usages. A tool that writes to hardware must refuse this selector rather
-    /// than silently resolve it as either reading (the key, dropping wasd; or the group, ignoring
-    /// the key), since either choice writes somewhere other than what an old, still-valid group
-    /// definition asked for.
+    /// A user group named "rt" saved before "rt" became a board-function key name. A tool that
+    /// writes to hardware must refuse this selector rather than silently pick key or group:
+    /// either choice writes somewhere other than what the old group definition asked for.
     #[test]
     fn a_name_that_is_both_a_key_and_a_stored_group_is_refused_not_silently_resolved() {
         let mut groups = HashMap::new();
@@ -326,12 +311,10 @@ mod tests {
         assert_eq!(sel.resolve(&universe, &groups).unwrap(), vec![0xFB]);
     }
 
-    /// Review round 2, finding 1: the error message must prescribe a route that actually works.
-    /// The old wording ("rename the group") does not, because creating a replacement group still
-    /// goes through `Selector::resolve` against the *same* ambiguous name; this asserts the new
-    /// message instead points at `wh keys list` (to read the stale group's members) and at
-    /// recreating the group under a new name from an explicit key list, not by re-using the
-    /// ambiguous name in a selector.
+    /// The message must prescribe a route that actually works: recreating a group under the
+    /// same name still goes through `Selector::resolve` against that same ambiguous name.
+    /// Asserts it points at `wh keys list` and at recreating under a different name from an
+    /// explicit key list.
     #[test]
     fn ambiguous_with_group_message_prescribes_a_route_that_actually_works() {
         let mut groups = HashMap::new();
@@ -347,18 +330,17 @@ mod tests {
             msg.contains("different name"),
             "message should say to recreate under a different name: {msg}"
         );
-        // The old wording told the operator to "rename the group", which does not work: it
-        // must not appear any more, so a reader does not try it and hit the same refusal again.
+        // "rename the group" does not work here and must not appear, or a reader will try it
+        // and hit the same refusal again.
         assert!(
             !msg.contains("rename the group"),
             "message must not repeat the non-working remediation: {msg}"
         );
     }
 
-    /// Review round 2, finding 4: the same ambiguity as above, but against a *builtin* group
-    /// name ("wasd") instead of a key name. Only reachable via a hand-edited `config.toml` (
-    /// `group()` already refuses to create a user group under a builtin name), but the same
-    /// mistake must fail the same way, not silently let the builtin group shadow the stored one.
+    /// The same ambiguity as above, against a builtin group name ("wasd") instead of a key
+    /// name. Only reachable via a hand-edited `config.toml`, but must fail the same way, not
+    /// silently let the builtin group shadow the stored one.
     #[test]
     fn a_builtin_group_name_that_is_also_a_stored_group_is_refused() {
         let mut groups = HashMap::new();

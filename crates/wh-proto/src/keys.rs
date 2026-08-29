@@ -101,9 +101,8 @@ pub const TABLE: &[(&str, u8)] = &[
     ("kpdot", 0x63),
     ("iso", 0x64),
     ("menu", 0x65),
-    // K-001 board function, not a USB HID keyboard usage: confirmed by measurement (task 19b
-    // chunk 7, the operator remapped this key to F4 in the vendor UI and the matrix read back
-    // that remap).
+    // K-001 board function, not a USB HID keyboard usage: confirmed by remapping this key to
+    // F4 in the vendor UI and reading the matrix back.
     ("play", 0xD6),
     ("lctrl", 0xE0),
     ("lshift", 0xE1),
@@ -113,12 +112,10 @@ pub const TABLE: &[(&str, u8)] = &[
     ("rshift", 0xE5),
     ("ralt", 0xE6),
     ("rgui", 0xE7),
-    // K-001 board functions, not USB HID keyboard usages: confirmed by measurement (task 19b
-    // chunk 7, the operator remapped each to a distinct function key in the vendor UI and the
-    // matrix read back each remap). `0x01` is probably FN from its position in the enumeration,
-    // but it was deliberately never measured, since confirming it means remapping FN away, and
-    // FN is how you reach the layer that would let you undo that; it is deliberately not in
-    // this table.
+    // K-001 board functions, not USB HID keyboard usages: confirmed by remapping each to a
+    // distinct function key in the vendor UI and reading the matrix back. `0x01` is probably
+    // FN, but deliberately unmeasured: confirming it means remapping FN away, and FN is the
+    // layer that would undo that. Left out of this table.
     ("ap", 0xFA),
     ("rt", 0xFB),
     ("light", 0xFC),
@@ -195,11 +192,9 @@ mod tests {
         assert_eq!(name_for_usage(0x2C), Some("space"));
     }
 
-    /// The four K-001 board-function keys added in task 19b chunk 7, confirmed by measurement:
-    /// each name resolves to its usage and round-trips back to the same name, and none of the
-    /// four names collided with an existing entry (a collision would have shadowed the old
-    /// name silently instead of erroring, so this checks the resolved usage matches the one the
-    /// brief measured, not just that the name resolves to something).
+    /// The four K-001 board-function keys, confirmed by measurement: each name resolves to its
+    /// usage and round-trips back, and none collided with an existing entry (a collision would
+    /// have shadowed the old name silently instead of erroring).
     #[test]
     fn board_function_keys_round_trip() {
         for (name, usage) in [

@@ -148,10 +148,8 @@ mod tests {
         );
     }
 
-    /// Whole-branch review, minor 3: `--press`/`--release` only mean anything as an override on
-    /// top of a `--set` base, so combining either with `--off` used to parse successfully and
-    /// silently discard the value, since only `--set` itself conflicted with `--off`. Both must
-    /// refuse to parse, the same as `--set --off` does above.
+    /// `--press`/`--release` only mean anything as an override on top of `--set`, so each must
+    /// refuse to parse alongside `--off`, the same as `--set --off` does above.
     #[test]
     fn press_and_off_conflict() {
         assert!(

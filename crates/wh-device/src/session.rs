@@ -3,10 +3,9 @@ use std::time::{Duration, Instant};
 use wh_proto::frame::{parse, FrameError, REPLY_BIT};
 
 pub const READ_TIMEOUT: Duration = Duration::from_millis(250);
-/// Wall-clock budget for one roundtrip. The keyboard emits unsolicited input
-/// reports continuously while the user types, so the read budget must be
-/// time-based rather than attempt-based: a fixed attempt count could be
-/// exhausted by ordinary typing and surface as a false Timeout.
+/// Wall-clock budget for one roundtrip. Time-based rather than attempt-based, since the
+/// keyboard emits unsolicited input reports while the user types and a fixed attempt count
+/// could be exhausted by ordinary typing and surface as a false Timeout.
 pub const TOTAL_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Secondary, generous runaway guard on top of the wall-clock deadline.
 pub const MAX_READS: usize = 256;
@@ -38,10 +37,8 @@ impl<T: Transport> Session<T> {
                 Err(e) => return Err(e),
             };
             match parse(&report) {
-                // The device always sets the high bit on the reply's command
-                // byte (see `REPLY_BIT`'s doc comment for the measured
-                // evidence); it never echoes the request's cmd byte
-                // unmodified.
+                // The device sets the high bit on the reply's cmd byte (see `REPLY_BIT`),
+                // never echoing the request's cmd byte unmodified.
                 Ok(reply) if reply.cmd == req[2] | REPLY_BIT => return Ok(reply.payload.to_vec()),
                 Err(FrameError::DeviceFail(code)) => {
                     return Err(DeviceError::Frame(FrameError::DeviceFail(code)))
@@ -52,10 +49,9 @@ impl<T: Transport> Session<T> {
         Err(DeviceError::Timeout)
     }
 
-    /// Send frames one at a time, one matched reply each. If a frame fails,
-    /// the frames before it already reached the device: report that partial
-    /// progress instead of discarding it, since the caller (the CLI's write
-    /// path) needs to know whether to tell the user to restore from backup.
+    /// Send frames one at a time, one matched reply each. On failure, reports how many
+    /// frames already reached the device so the caller can tell the user whether to
+    /// restore from backup.
     pub fn roundtrip_many(&mut self, reqs: &[[u8; 64]]) -> Result<Vec<Vec<u8>>, DeviceError> {
         let total = reqs.len();
         let mut out = Vec::with_capacity(total);
@@ -81,9 +77,8 @@ mod tests {
     use super::*;
     use crate::replay::{hex, ReplayTransport};
 
-    /// Builds a reply frame the way the real device sends it: with the high
-    /// bit set on the command byte (see `wh_proto::frame::REPLY_BIT`), so
-    /// fixtures built through this helper are faithful to the wire.
+    /// Builds a reply frame with the high bit set on the command byte, matching how the
+    /// real device sends it (`wh_proto::frame::REPLY_BIT`).
     fn reply_frame(cmd: u8, payload: &[u8]) -> [u8; 64] {
         wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
     }
@@ -130,11 +125,9 @@ mod tests {
 
     #[test]
     fn reads_exhausted_returns_timeout() {
-        // Enough parseable-but-unrelated reports to exhaust the MAX_READS
-        // attempt cap without ever waiting out the wall-clock deadline
-        // (ReplayTransport's recv ignores the timeout it's given and
-        // returns instantly, so this must trip the attempt bound, not
-        // the real 1500ms deadline).
+        // Enough unrelated reports to exhaust MAX_READS. ReplayTransport's recv ignores
+        // the timeout it's given and returns instantly, so this trips the attempt bound,
+        // not the 1500ms wall-clock deadline.
         let req = wh_proto::cmds::read_global_travel();
         let noise = reply_frame(0x12, &[0x01]);
         let mut lines = vec![format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(&req))];
@@ -169,9 +162,8 @@ mod tests {
         assert_eq!(replies[1], vec![0x07]);
     }
 
-    /// Transport double that returns `Timeout` a fixed number of times before
-    /// handing back a valid reply, to prove a read timeout no longer aborts
-    /// the whole roundtrip.
+    /// Returns `Timeout` a fixed number of times before a valid reply, to prove a read
+    /// timeout doesn't abort the whole roundtrip.
     struct FlakyTransport {
         timeouts_remaining: usize,
         reply: [u8; 64],
