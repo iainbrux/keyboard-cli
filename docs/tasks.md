@@ -48,6 +48,19 @@ rather than as settings it recognises.
   and left four keysets in place, so the board no longer matched the snapshot it had just been
   restored from. CLI surface agreed: `wh keyset list|create|set|delete`, and `wh set ap` on a key
   already in a keyset splits it into a new keyset automatically, telling the user it did so.
+- [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
+  Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
+  `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
+  the MODE record and stops, so a key turned off through `wh` keeps whatever membership it held and
+  the configurator still lists it in a keyset. That file's read sweep does not cover `0xFE`, so
+  whether `W` was in a keyset beforehand is unmeasured; what is measured is that the write is sent
+  unconditionally. Implement by routing `ops::set_rt_off` through `keyset::plan` with
+  `TouchChange::Off` and `membership: Some(0)` rather than by hand.
+
+  Related, from the same review: on a board with the global rapid trigger switch on, every key
+  outside a keyset sits at nibble `2`, so `wh set rt --keys all --off` now writes all 68 keys where
+  it previously wrote none. That is vendor-consistent, but it means this gap is reached far more
+  often than it was.
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
