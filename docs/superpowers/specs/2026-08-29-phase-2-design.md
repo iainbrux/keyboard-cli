@@ -45,11 +45,11 @@ is a real inconsistency in the record, not a cosmetic one.
 frames:
 
 ```
-write records by layout:  0x00:515  0x04:19  0x08:38  0x14:19  0x15:19  0x16:19  0x17:19  0xfe:2
-read  records by layout:  ... 0xfe:195  0xff:195
+write records by layout:  0x00:565  0x04:19  0x08:38  0x14:19  0x15:19  0x16:19  0x17:19  0xfe:2
+read  records by layout:  ... 0x19:350  0xfe:210  0xff:210
 ```
 
-`0xFF` is read 195 times and written zero times. The claim rests entirely on read correlation: it
+`0xFF` is read 210 times and written zero times. The claim rests entirely on read correlation: it
 reads `1` for w, a, s, d and `2` for esc, matching the two keysets the configurator displayed.
 `captures/ap-wasd-1.2.jsonl` only changes the value of an existing keyset, so it writes no `0xFF`.
 
@@ -74,15 +74,33 @@ This matters because forcing nibble 1 would silently disable rapid trigger on su
 Measured from `captures/profile-switch.jsonl`:
 
 ```
-out cmd=0x00 len=4 payload=7001      select profile 2
-in  cmd=0x80 len=4 payload=0070      ack
-out cmd=0x00 len=4 payload=7000      select profile 1
-in  cmd=0x80 len=4 payload=0070      ack
+out  5c 04 00 94 | 70 01 ff ff      select profile 2 (wire index 1)
+in   5c 04 80 .. | 00 70 01 ff      ack, echoing the index
+out  5c 04 00 94 | 70 00 ff ff      select profile 1
+in   5c 04 80 .. | 00 70 00 ff      ack
 ```
 
-The select payload is exactly `[0x70, wire_index]`, two bytes. `cmds::cmd_order` pads to
-`[0x70, arg, 0xFF, 0xFF]`, so reusing it would send a frame the vendor never sends. The select needs
-its own encoder. The ack carries no index, so a select must be confirmed by re-reading.
+The select payload is `[0x70, wire_index, 0xFF, 0xFF]`, four bytes, which is exactly what
+`cmds::cmd_order(order::PROFILE, &[wire_index])` already produces. No new encoder is needed.
+
+The ack echoes the selected index at `payload[2]`, the same position `parse_profile` reads. A select
+should still be confirmed by re-reading rather than by trusting the ack: the ack is the board
+reporting what it was told, and a re-read is independent confirmation. That is defensive rather than
+required.
+
+**Correction, 2026-08-29.** An earlier version of this section claimed the select payload was two
+bytes, `[0x70, wire_index]`, that `cmd_order` would send a frame the vendor never sends, and that the
+ack carried no index. All three were wrong, and the cause was a decoding bug rather than a protocol
+subtlety: the analysis script sliced payloads as `bytes[4 : 4+len-2]` when the frame's length byte
+counts the payload itself, so every payload read that day lost its final two bytes. The error was
+caught by an implementer who decoded the capture independently and refused to build against the
+claim.
+
+Two things follow. Every other capture-derived claim in this document was re-verified with the
+corrected slice: the layout write and read counts below are the corrected ones, and the conclusions
+they support are unchanged. And the general lesson is that a measurement is only as trustworthy as
+the decoder that produced it, so a claim should be pinned against something already known-good, here
+the `read_profile_matches_the_measured_frame` test, which encodes the real frame byte for byte.
 
 ## The no-drift invariant
 
