@@ -359,6 +359,50 @@ The board really is that fast; this is presentation.
 modal spinner would be a different thing from a one-shot CLI flourish. Decide when the TUI exists
 rather than now.
 
+## Post 1.0, not necessary
+
+Parked deliberately. Neither of these is needed for the tool to do its job, and both should wait
+until after a 1.0 release. Recorded because the constraints behind them are measured facts that are
+annoying to rediscover.
+
+### `wh serve`, a daemon that owns the device
+
+**The problem it solves, and it exists today.** The vendor HID collection takes one process at a
+time. `crates/wh-device/src/hid.rs` already returns `DeviceError::Busy` for it, with the comment
+"most likely held exclusively by the web configurator". So having the vendor website open in a
+browser tab stops `wh` working right now.
+
+**Why it matters more later than now.** Three planned features all want the device at once: the TUI,
+the spy, and anything else long-running. Today they would fight each other. A daemon that owns the
+HID handle and multiplexes over a local socket is the only design where they coexist.
+
+**The second thing it unlocks.** The hardware path is Windows-only: `crates/wh-device/src/lib.rs`
+gates the `hid` module behind `#[cfg(windows)]` and `Cargo.toml` gates `hidapi` the same way. A
+daemon splits that cleanly, since the device stays on Windows while a client can live anywhere.
+
+**Deliberately not now.** Nothing today needs it, and a daemon is a large surface: lifecycle,
+socket permissions, protocol versioning, and a new way to leave a process holding the board.
+
+### A PostgreSQL foreign data wrapper
+
+**The idea.** Expose the board as SQL tables, so `SELECT name, ap_mm FROM wh.keys WHERE rt` works.
+Read-only. Writing to hardware from a SQL prompt, with no dry run and no backup, is not something to
+build casually.
+
+**Blocked on `wh serve`, for two reasons.** `pgrx`, the Rust framework for Postgres extensions,
+targets Linux and macOS rather than Windows, while our HID path is Windows-only. The extension
+cannot run where the device is, and the device code cannot compile where the extension runs. Talking
+to a daemon instead of the hardware resolves both. It also resolves the exclusivity problem above,
+since a Postgres backend holding the board open would lock out every other tool.
+
+**A constraint worth respecting if it is ever built.** The spec's no-drift invariant says `wh` caches
+no device state. An FDW is a caching-shaped thing, so the honest design is no cache at all: every
+scan re-reads, at roughly 400 HID roundtrips per full table scan. That is fine for 68 rows and keeps
+the invariant intact.
+
+**Honest assessment.** A good demo, weak on necessity. `wh dump --json | jq` already covers most of
+what anyone would actually query, works today, and needs neither a daemon nor an extension.
+
 ## Protocol gaps
 
 These are known unknowns from the hardware session, listed so nobody re-derives them.
