@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum StoreError {
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    /// Reading only: groups are written as `config.json`, and `toml` stays a dependency solely
+    /// to read a `config.toml` written before that change.
     #[error("config parse: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("config encode: {0}")]
-    TomlEncode(#[from] toml::ser::Error),
     #[error("config JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("no backups found")]
