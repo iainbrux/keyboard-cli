@@ -1,6 +1,7 @@
 //! The user-facing TOML snapshot of a board's settings.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use wh_proto::cmds::ProfileNumber;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -15,7 +16,11 @@ pub struct Snapshot {
     /// Missing entirely from a snapshot's TOML deserializes to `None`, so old backups still
     /// parse. Goes through `crate::profile`'s bridge functions since `wh-proto` carries no
     /// serde dependency.
-    #[serde(default, with = "crate::profile")]
+    #[serde(
+        default,
+        with = "crate::profile",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub profile: Option<ProfileNumber>,
     pub global: GlobalToml,
     pub keys: Vec<KeyToml>,
@@ -44,18 +49,131 @@ pub struct KeyToml {
     pub mode_raw: u16,
 }
 
+/// Which parser a snapshot file needs. JSON is what `wh backup` writes; TOML is read so backups
+/// taken before the format change still restore.
+#[derive(Debug, thiserror::Error)]
+pub enum ParseError {
+    #[error("JSON parse: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("TOML parse: {0}")]
+    Toml(#[from] toml::de::Error),
+}
+
 impl Snapshot {
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+    /// Retained only so the workspace builds until Task 3 moves the callers. Task 3 deletes it.
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }
+    pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
+    }
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(s)
+    }
+    /// Parses by file extension: `.toml` for a pre-JSON backup, JSON for anything else.
+    pub fn from_file_text(path: &Path, text: &str) -> Result<Self, ParseError> {
+        if path.extension().is_some_and(|e| e == "toml") {
+            Ok(Self::from_toml(text)?)
+        } else {
+            Ok(Self::from_json(text)?)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample() -> Snapshot {
+        Snapshot {
+            firmware: "V1.2.3".into(),
+            serial: "SN1".into(),
+            taken_at: "2026-08-28T12:00:00Z".into(),
+            profile: Some(ProfileNumber::from_wire_index(0).unwrap()),
+            global: GlobalToml {
+                travel_mm: 2.0,
+                press_dead_mm: 0.2,
+                release_dead_mm: 0.2,
+            },
+            keys: vec![KeyToml {
+                name: "w".into(),
+                usage: 0x1A,
+                ap_mm: 1.2,
+                rt: true,
+                rt_press_mm: 0.5,
+                rt_release_mm: 0.5,
+                mode_raw: 0x20,
+            }],
+        }
+    }
+
+    #[test]
+    fn snapshot_json_round_trips() {
+        let snap = sample();
+        let back = Snapshot::from_json(&snap.to_json().unwrap()).unwrap();
+        assert_eq!(back, snap);
+    }
+
+    /// A `None` profile is omitted from the JSON rather than written as `null`, so a snapshot with
+    /// unknown provenance reads the same way it did as TOML.
+    #[test]
+    fn snapshot_json_omits_an_absent_profile() {
+        let mut snap = sample();
+        snap.profile = None;
+        let text = snap.to_json().unwrap();
+        assert!(!text.contains("profile"), "profile must be absent: {text}");
+        assert_eq!(Snapshot::from_json(&text).unwrap().profile, None);
+    }
+
+    /// A Phase 1 backup is TOML. `from_file_text` must pick the parser from the extension so those
+    /// files still restore after the format change.
+    #[test]
+    fn from_file_text_reads_a_toml_backup_by_extension() {
+        let toml_text = r#"
+firmware = "V1.2.3"
+serial = "SN1"
+taken_at = "2026-08-28T12:00:00Z"
+
+[global]
+travel_mm = 2.0
+press_dead_mm = 0.2
+release_dead_mm = 0.2
+
+[[keys]]
+name = "w"
+usage = 26
+ap_mm = 1.2
+rt = true
+rt_press_mm = 0.5
+rt_release_mm = 0.5
+mode_raw = 32
+"#;
+        let snap =
+            Snapshot::from_file_text(Path::new("00000000000000000001.000000000.toml"), toml_text)
+                .unwrap();
+        assert_eq!(snap.serial, "SN1");
+        assert_eq!(snap.keys.len(), 1);
+    }
+
+    #[test]
+    fn from_file_text_reads_a_json_backup_by_extension() {
+        let snap = sample();
+        let text = snap.to_json().unwrap();
+        let back =
+            Snapshot::from_file_text(Path::new("00000000000000000001.000000000.json"), &text)
+                .unwrap();
+        assert_eq!(back, snap);
+    }
+
+    /// An extension we do not recognise is treated as JSON rather than guessed at, and a TOML body
+    /// under such a name fails loudly instead of silently producing a wrong snapshot.
+    #[test]
+    fn from_file_text_defaults_to_json_for_an_unknown_extension() {
+        assert!(Snapshot::from_file_text(Path::new("snap.bak"), "firmware = \"x\"").is_err());
+    }
 
     #[test]
     fn snapshot_toml_roundtrip() {
