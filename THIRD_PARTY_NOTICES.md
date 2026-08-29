@@ -2,7 +2,7 @@
 
 This repository vendors third-party source under `research/` for reference while porting the
 keyboard protocol to Rust. **None of the vendored copies under `research/` are covered by the
-repository's LICENCE**, none of it is owned by Iain Brookes, and each item stays under its own
+repository's own licence**, none of it belongs to this project, and each item stays under its own
 licence.
 
 **This does not mean nothing in `crates/` is ported.** `crates/wh-proto/src/frame.rs` and
@@ -14,8 +14,7 @@ reference; nothing in `crates/wh-proto` is ported from it, and no file's module 
 otherwise. Porting code carries the licence that covers it: the Sparklink MIT notice reproduced
 below, under "research/proto and research/hidpkg", attaches to `frame.rs` and `cmds.rs` in
 `crates/wh-proto` because of `research/proto` specifically, as well as to the vendored copies under
-`research/` (both packages). `LICENSE` section 1 says the same thing; this is the fuller statement
-the licence points at.
+`research/` (both packages). `NOTICE` says the same thing more briefly; this is the fuller statement it points at.
 
 These notices are reproduced because the licences require it. Do not remove them.
 

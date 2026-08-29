@@ -1,0 +1,41 @@
+wh, a command line tool for the Wallhack K-001 hall effect keyboard
+
+Copyright 2026 brux
+
+Originally developed by brux (https://brux.gg/, @brux on Discord).
+Source: https://github.com/iainbrux/keyboard-cli
+
+If you redistribute this work or a derivative of it, Apache License 2.0
+section 4(d) requires you to carry this notice with it. Please keep the
+attribution and the source link above intact, so people can find where the
+work came from.
+
+--------------------------------------------------------------------------
+Wallhack
+
+The Wallhack K-001 keyboard, its firmware, its hardware design, its
+communication protocol, the Wallhack name and logo, and the web configurator
+at https://terminal.wallhack.com/ are the work of Wallhack and belong solely
+to Wallhack.
+
+This project is independent and unofficial. It is not affiliated with,
+endorsed by, sponsored by, or supported by Wallhack. It is an independently
+written client that communicates with the keyboard over the USB HID interface
+the device already exposes. The protocol notes in docs/ describe observed
+device behaviour, recorded from traffic between a keyboard and its own vendor
+software on hardware owned by the author. They describe an interface; they are
+not a copy of anyone's software.
+
+--------------------------------------------------------------------------
+Third-party material
+
+Parts of crates/wh-proto are a port of MIT licensed Sparklink Playjoy source.
+Reference material vendored under research/ is third-party work under its own
+MIT and ISC licences. Neither is owned by this project, and both keep their own
+terms. See THIRD_PARTY_NOTICES.md.
+
+The crates.io dependencies compiled into a released binary are listed with
+their full licence texts in THIRD_PARTY_LICENSES.md. If you distribute a
+binary of this project, those obligations pass to you as well: in particular
+this project elects HIDAPI's BSD style licence rather than its GPL option, and
+option-ext is MPL-2.0, whose source must remain obtainable by recipients.
