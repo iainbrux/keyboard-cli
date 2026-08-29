@@ -32,24 +32,33 @@ pub struct Keyset {
     pub members: Vec<u8>,
 }
 
-/// Each key's raw membership value for one layout, in `usages` order.
+/// Every key's membership for one layout, and which layout that is. The two layouts have
+/// separate counters (`docs/keysets.md`), so keeping `kind` alongside the entries stops a
+/// caller from feeding actuation point membership into a rapid trigger allocation by accident.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Membership {
+    pub kind: Kind,
+    pub entries: Vec<(u8, u16)>,
+}
+
+/// Reads every key in `usages` for one layout, `0xFF` or `0xFE` depending on `kind`.
 pub fn read_membership<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     kind: Kind,
-) -> Result<Vec<(u8, u16)>, DeviceError> {
-    let mut out = Vec::with_capacity(usages.len());
+) -> Result<Membership, DeviceError> {
+    let mut entries = Vec::with_capacity(usages.len());
     for &u in usages {
         let v = ops::read_layout_value(s, u, kind.layout())?;
-        out.push((u, v));
+        entries.push((u, v));
     }
-    Ok(out)
+    Ok(Membership { kind, entries })
 }
 
 /// The keysets present, ascending by index. Membership `0` means "in no keyset" and is excluded.
-pub fn group(membership: &[(u8, u16)]) -> Vec<Keyset> {
+pub fn group(m: &Membership) -> Vec<Keyset> {
     let mut keysets: Vec<Keyset> = Vec::new();
-    for &(usage, index) in membership {
+    for &(usage, index) in &m.entries {
         if index == 0 {
             continue;
         }
@@ -66,28 +75,32 @@ pub fn group(membership: &[(u8, u16)]) -> Vec<Keyset> {
 }
 
 /// The next index to allocate: the highest live membership value plus one, or `1` when no key
-/// holds any. Errors rather than wrapping if the highest is already `u16::MAX`.
-pub fn next_index(membership: &[(u8, u16)]) -> Result<u16, DeviceError> {
-    let max = membership.iter().map(|&(_, v)| v).filter(|&v| v != 0).max();
+/// holds any. `u16::MAX` is a valid *output* (reached when the highest live value is
+/// `u16::MAX - 1`); only allocating *past* it, when `u16::MAX` is already live, errors instead of
+/// wrapping to `0`.
+pub fn next_index(m: &Membership) -> Result<u16, DeviceError> {
+    let max = m.entries.iter().map(|&(_, v)| v).filter(|&v| v != 0).max();
     match max {
         None => Ok(1),
-        Some(u16::MAX) => Err(DeviceError::Decode(
-            "keyset index already at u16::MAX, cannot allocate another".to_string(),
-        )),
-        Some(m) => Ok(m + 1),
+        Some(u16::MAX) => Err(DeviceError::KeysetIndexExhausted),
+        Some(v) => Ok(v + 1),
     }
 }
 
-/// What an operation does to a key's touch nibble.
+/// What an operation does to a key's touch nibble. Internal representation only: a `Change` is
+/// built through its own constructors, which pick the right variant for the kind of operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TouchChange {
+enum TouchChange {
     /// Leave it exactly as read.
     Keep,
     /// `Global` (0) becomes `Single` (1); every other nibble is left alone.
     PromoteGlobalToSingle,
     /// `Rt` (3), except a key already `RtContinuous` (4) stays `RtContinuous`.
     RapidTrigger,
-    /// `Single` (1), whatever the key held.
+    /// Turns rapid trigger off: `RtGlobal` (2), `Rt` (3) and `RtContinuous` (4) become `Single`.
+    /// Every other nibble, including `Global` and any `Unknown`, is left exactly as read. This
+    /// agrees with `ops::rt_off_records`, both built from the same measured nibble-2-to-1 and
+    /// nibble-3-to-1 transitions.
     Off,
 }
 
@@ -102,17 +115,78 @@ fn apply_touch(current: TouchMode, change: TouchChange) -> TouchMode {
             TouchMode::RtContinuous => TouchMode::RtContinuous,
             _ => TouchMode::Rt,
         },
-        TouchChange::Off => TouchMode::Single,
+        TouchChange::Off => match current {
+            TouchMode::RtGlobal | TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
+            other => other,
+        },
     }
 }
 
-/// One operation's targets. `None` means "keep the key's current value".
+/// One operation's targets, and which kind of keyset it belongs to. Fields are private: the only
+/// way to build one is through the constructors below, so a rapid trigger change can never be
+/// paired with `Kind::Ap` (or the reverse), which would otherwise compile and silently write the
+/// wrong layout for membership.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Change {
-    pub touch: TouchChange,
-    pub ap: Option<Um>,
-    /// Rapid trigger press and release, always set together, as every capture does.
-    pub rt: Option<(Um, Um)>,
+    kind: Kind,
+    touch: TouchChange,
+    ap: Option<Um>,
+    rt: Option<(Um, Um)>,
+}
+
+impl Change {
+    /// An actuation point operation: set every member's `0x04` to `value`. MODE is not owned by
+    /// this operation, so it rewrites at whatever the key already reads; chain
+    /// `promoting_global` if a `Global` key should be promoted to `Single` first.
+    pub fn ap(value: Um) -> Self {
+        Change {
+            kind: Kind::Ap,
+            touch: TouchChange::Keep,
+            ap: Some(value),
+            rt: None,
+        }
+    }
+
+    /// A rapid trigger operation: turn it on at `press`/`release`. Touch becomes `Rt`, unless
+    /// the key is already `RtContinuous`, which is preserved.
+    pub fn rt_on(press: Um, release: Um) -> Self {
+        Change {
+            kind: Kind::Rt,
+            touch: TouchChange::RapidTrigger,
+            ap: None,
+            rt: Some((press, release)),
+        }
+    }
+
+    /// A rapid trigger operation: turn it off, resetting the sensitivities to `press`/`release`
+    /// (the board's global, per the measured delete template).
+    pub fn rt_off(press: Um, release: Um) -> Self {
+        Change {
+            kind: Kind::Rt,
+            touch: TouchChange::Off,
+            ap: None,
+            rt: Some((press, release)),
+        }
+    }
+
+    /// Membership only, changing no value. Used by a create over keys already at the target.
+    pub fn membership_only(kind: Kind) -> Self {
+        Change {
+            kind,
+            touch: TouchChange::Keep,
+            ap: None,
+            rt: None,
+        }
+    }
+
+    /// Promotes `Global` to `Single`, meant to chain onto `Change::ap`, for a key that still
+    /// follows global travel. Unmeasured whether the vendor does this on a fresh actuation point
+    /// keyset; kept as the non-destructive default rather than leaving a key silently detached
+    /// from global travel with no record of the promotion.
+    pub fn promoting_global(mut self) -> Self {
+        self.touch = TouchChange::PromoteGlobalToSingle;
+        self
+    }
 }
 
 /// The records one operation writes, plus what was on the board before it.
@@ -141,12 +215,14 @@ impl WritePlan {
 }
 
 /// Reads every key in `usages`, applies `change`, and builds the plan. Sends only reads, so a
-/// caller can dry run. `membership` is `Some(index)` to write that index to every key in
-/// `usages` (`0` clears), or `None` for an operation that does not touch membership.
+/// caller can dry run. `membership` is `Some(index)` to write that index, to the layout
+/// `change`'s own kind picks, to every key in `usages` (`0` clears); `None` leaves membership
+/// untouched.
 ///
-/// `kind` says which layout, `0xFF` or `0xFE`, membership targets: the brief's signature for
-/// `plan` omitted it, but `Change` carries no such field and the two layouts are otherwise
-/// indistinguishable here, so this deviates by adding it. Flagged for review.
+/// Reads all six of `read_key_settings`'s layouts per key, though only four feed
+/// `value_records`: the other two land in `before`'s `ap_keyset`/`rt_keyset`, so a caller can
+/// verify membership as well as values afterwards. `plan` runs over the selected keys rather
+/// than the whole board, so this is two extra reads per selected key, not per key on the board.
 ///
 /// Per key, MODE, AP, RT_PRESS and RT_RELEASE are read, the target computed, and either all four
 /// are written or none, matching the vendor's own all-or-nothing template.
@@ -159,7 +235,6 @@ pub fn plan<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     change: &Change,
-    kind: Kind,
     membership: Option<u16>,
 ) -> Result<WritePlan, DeviceError> {
     let mut value_records = Vec::new();
@@ -220,7 +295,7 @@ pub fn plan<T: Transport>(
             .iter()
             .map(|&u| KeyRecord {
                 key: u,
-                layout: kind.layout(),
+                layout: change.kind.layout(),
                 value: index,
             })
             .collect(),
@@ -243,31 +318,78 @@ pub fn apply<T: Transport>(s: &mut Session<T>, plan: &WritePlan) -> Result<(), D
     Ok(())
 }
 
-/// The board's global actuation point: what a key in no actuation point keyset holds in layout
-/// `0x04`. `None` when every key is in a keyset, so no key can report it.
-pub fn global_ap<T: Transport>(
-    s: &mut Session<T>,
-    membership: &[(u8, u16)],
-) -> Result<Option<Um>, DeviceError> {
-    let Some(&(usage, _)) = membership.iter().find(|&&(_, v)| v == 0) else {
-        return Ok(None);
-    };
-    let value = ops::read_layout_value(s, usage, layout::AP)?;
-    Ok(Some(Um(value)))
+/// A value read from the keys that are in no keyset, and how well they agree.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Global<T> {
+    /// Every key outside a keyset holds the same value.
+    Agreed(T),
+    /// They do not. Each distinct value with the number of keys holding it, descending by count,
+    /// so a caller can name the odd ones out; `wh-device` does not pick a winner itself.
+    Split(Vec<(T, usize)>),
+    /// No key is outside a keyset, so nothing can report it.
+    NoneOutsideAKeyset,
 }
 
-/// The global rapid trigger sensitivity, read the same way from `0x14`/`0x15` of a key in no
-/// rapid trigger keyset. `None` when every key is in one.
+/// Counts occurrences of each distinct value, preserving first-seen order among ties, and
+/// classifies the result: empty, one distinct value, or several.
+fn summarize<T: PartialEq>(values: Vec<T>) -> Global<T> {
+    if values.is_empty() {
+        return Global::NoneOutsideAKeyset;
+    }
+    let mut counts: Vec<(T, usize)> = Vec::new();
+    for v in values {
+        match counts.iter_mut().find(|(existing, _)| *existing == v) {
+            Some((_, c)) => *c += 1,
+            None => counts.push((v, 1)),
+        }
+    }
+    if counts.len() == 1 {
+        let (v, _) = counts.into_iter().next().expect("just checked len == 1");
+        return Global::Agreed(v);
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    Global::Split(counts)
+}
+
+/// The board's actuation point outside any keyset: layout `0x04` read from every key `m` holds
+/// no membership for.
+///
+/// The vendor's own method for finding this is unmeasured: it reads `0x04` from five fixed keys
+/// (`0x29`, `0xfa`, `0x31`, `0x28`, `0x52`) at the head of every capture, one of which was in a
+/// keyset and read a different value, and what it does with the disagreement could not be
+/// determined. Reading every unkeyset key and reporting agreement or its absence is the honest
+/// alternative rather than guessing which of the five the vendor trusts.
+pub fn global_ap<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+) -> Result<Global<Um>, DeviceError> {
+    let mut values = Vec::new();
+    for &(usage, membership) in &m.entries {
+        if membership != 0 {
+            continue;
+        }
+        values.push(Um(ops::read_layout_value(s, usage, layout::AP)?));
+    }
+    Ok(summarize(values))
+}
+
+/// The global rapid trigger sensitivity, read the same way from `0x14`/`0x15` of every key `m`
+/// holds no rapid trigger membership for. See `global_ap` for the same honest limit: the
+/// vendor's own method is unmeasured.
 pub fn global_rt<T: Transport>(
     s: &mut Session<T>,
-    membership: &[(u8, u16)],
-) -> Result<Option<(Um, Um)>, DeviceError> {
-    let Some(&(usage, _)) = membership.iter().find(|&&(_, v)| v == 0) else {
-        return Ok(None);
-    };
-    let press = ops::read_layout_value(s, usage, layout::RT_PRESS)?;
-    let release = ops::read_layout_value(s, usage, layout::RT_RELEASE)?;
-    Ok(Some((Um(press), Um(release))))
+    m: &Membership,
+) -> Result<Global<(Um, Um)>, DeviceError> {
+    let mut values = Vec::new();
+    for &(usage, membership) in &m.entries {
+        if membership != 0 {
+            continue;
+        }
+        let press = ops::read_layout_value(s, usage, layout::RT_PRESS)?;
+        let release = ops::read_layout_value(s, usage, layout::RT_RELEASE)?;
+        values.push((Um(press), Um(release)));
+    }
+    Ok(summarize(values))
 }
 
 #[cfg(test)]
@@ -324,39 +446,58 @@ mod tests {
         lines
     }
 
+    fn membership(kind: Kind, entries: &[(u8, u16)]) -> Membership {
+        Membership {
+            kind,
+            entries: entries.to_vec(),
+        }
+    }
+
     // -- next_index --
 
     #[test]
     fn next_index_with_no_members_is_one() {
-        let membership = vec![(0x04u8, 0u16), (0x05, 0)];
-        assert_eq!(next_index(&membership).unwrap(), 1);
+        let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0)]);
+        assert_eq!(next_index(&m).unwrap(), 1);
     }
 
     #[test]
     fn next_index_is_max_plus_one() {
-        let membership = vec![(0x04u8, 1u16), (0x05, 2)];
-        assert_eq!(next_index(&membership).unwrap(), 3);
+        let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 2)]);
+        assert_eq!(next_index(&m).unwrap(), 3);
     }
 
     #[test]
     fn next_index_skips_a_freed_gap_rather_than_filling_it() {
-        let membership = vec![(0x04u8, 1u16), (0x05, 2), (0x06, 4)];
-        assert_eq!(next_index(&membership).unwrap(), 5);
+        let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 2), (0x06, 4)]);
+        assert_eq!(next_index(&m).unwrap(), 5);
     }
 
     #[test]
-    fn next_index_errors_rather_than_wrapping_at_u16_max() {
-        let membership = vec![(0x04u8, u16::MAX)];
-        let err = next_index(&membership).unwrap_err();
-        assert!(matches!(err, DeviceError::Decode(_)), "got {err:?}");
+    fn next_index_reaches_u16_max_as_a_valid_output() {
+        let m = membership(Kind::Ap, &[(0x04, u16::MAX - 1)]);
+        assert_eq!(next_index(&m).unwrap(), u16::MAX);
+    }
+
+    #[test]
+    fn next_index_errors_when_u16_max_is_already_live() {
+        let m = membership(Kind::Ap, &[(0x04, u16::MAX)]);
+        let err = next_index(&m).unwrap_err();
+        assert!(
+            matches!(err, DeviceError::KeysetIndexExhausted),
+            "got {err:?}"
+        );
     }
 
     // -- group --
 
     #[test]
     fn group_is_ascending_by_index_and_excludes_zero() {
-        let membership = vec![(0x04u8, 2u16), (0x05, 0), (0x06, 1), (0x07, 2), (0x08, 1)];
-        let got = group(&membership);
+        let m = membership(
+            Kind::Ap,
+            &[(0x04, 2), (0x05, 0), (0x06, 1), (0x07, 2), (0x08, 1)],
+        );
+        let got = group(&m);
         assert_eq!(
             got,
             vec![
@@ -374,8 +515,8 @@ mod tests {
 
     #[test]
     fn group_preserves_member_order_within_a_keyset() {
-        let membership = vec![(0x10u8, 3u16), (0x05, 3), (0x08, 3)];
-        let got = group(&membership);
+        let m = membership(Kind::Ap, &[(0x10, 3), (0x05, 3), (0x08, 3)]);
+        let got = group(&m);
         assert_eq!(got[0].members, vec![0x10, 0x05, 0x08]);
     }
 
@@ -388,63 +529,78 @@ mod tests {
         lines.extend(read_reply(0x05, layout::KEYSET_RT, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let got = read_membership(&mut s, &[0x04, 0x05], Kind::Rt).unwrap();
-        assert_eq!(got, vec![(0x04, 1), (0x05, 0)]);
+        assert_eq!(got.kind, Kind::Rt);
+        assert_eq!(got.entries, vec![(0x04, 1), (0x05, 0)]);
         assert!(s.into_inner().finished());
     }
 
     // -- global_ap / global_rt --
 
     #[test]
-    fn global_ap_returns_none_when_every_key_is_in_a_keyset() {
-        let membership = vec![(0x04u8, 1u16), (0x05, 2)];
+    fn global_ap_reports_none_outside_a_keyset_when_every_key_is_in_one() {
+        let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 2)]);
         let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
-        assert_eq!(global_ap(&mut s, &membership).unwrap(), None);
+        assert_eq!(global_ap(&mut s, &m).unwrap(), Global::NoneOutsideAKeyset);
         assert!(s.into_inner().finished());
     }
 
     #[test]
-    fn global_rt_returns_none_when_every_key_is_in_a_keyset() {
-        let membership = vec![(0x04u8, 1u16), (0x05, 1)];
+    fn global_rt_reports_none_outside_a_keyset_when_every_key_is_in_one() {
+        let m = membership(Kind::Rt, &[(0x04, 1), (0x05, 1)]);
         let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
-        assert_eq!(global_rt(&mut s, &membership).unwrap(), None);
+        assert_eq!(global_rt(&mut s, &m).unwrap(), Global::NoneOutsideAKeyset);
         assert!(s.into_inner().finished());
     }
 
     #[test]
-    fn global_ap_reads_the_first_unkeyset_key() {
-        let membership = vec![(0x04u8, 1u16), (0x05, 0)];
-        let lines = read_reply(0x05, layout::AP, 2000);
+    fn global_ap_agrees_when_every_unkeyset_key_reads_the_same_value() {
+        let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 0), (0x06, 0)]);
+        let mut lines = read_reply(0x05, layout::AP, 2000);
+        lines.extend(read_reply(0x06, layout::AP, 2000));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        assert_eq!(global_ap(&mut s, &membership).unwrap(), Some(Um(2000)));
+        assert_eq!(global_ap(&mut s, &m).unwrap(), Global::Agreed(Um(2000)));
         assert!(s.into_inner().finished());
     }
 
+    /// The regression the reviewer found: `global_ap` reading only the first unkeyset key would
+    /// have reported `W`'s own private travel as though it were the board's global, after an
+    /// ordinary `wh set ap --keys w --set 1.0` gave `W` a value no other key shares.
     #[test]
-    fn global_rt_reads_the_first_unkeyset_key() {
-        let membership = vec![(0x04u8, 1u16), (0x05, 0)];
-        let mut lines = read_reply(0x05, layout::RT_PRESS, 100);
-        lines.extend(read_reply(0x05, layout::RT_RELEASE, 150));
+    fn global_ap_splits_when_unkeyset_keys_disagree() {
+        let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0), (0x06, 0)]);
+        let mut lines = read_reply(0x04, layout::AP, 1000); // W, changed alone
+        lines.extend(read_reply(0x05, layout::AP, 2000));
+        lines.extend(read_reply(0x06, layout::AP, 2000));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         assert_eq!(
-            global_rt(&mut s, &membership).unwrap(),
-            Some((Um(100), Um(150)))
+            global_ap(&mut s, &m).unwrap(),
+            Global::Split(vec![(Um(2000), 2), (Um(1000), 1)])
         );
         assert!(s.into_inner().finished());
     }
 
-    // -- plan: the skip rule --
+    #[test]
+    fn global_rt_agrees_when_every_unkeyset_key_reads_the_same_value() {
+        let m = membership(Kind::Rt, &[(0x04, 1), (0x05, 0)]);
+        let mut lines = read_reply(0x05, layout::RT_PRESS, 100);
+        lines.extend(read_reply(0x05, layout::RT_RELEASE, 150));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        assert_eq!(
+            global_rt(&mut s, &m).unwrap(),
+            Global::Agreed((Um(100), Um(150)))
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    // -- plan: the skip rule, one test per OR-term --
 
     #[test]
-    fn plan_skips_value_records_for_a_key_already_at_target_but_still_writes_membership() {
-        // MODE 0x18 (Single, advanced 8), already at the target AP/RT: nothing to write.
+    fn plan_skip_rule_skips_a_key_already_at_every_target_but_still_writes_membership() {
+        // MODE 0x18 (Single, advanced 8), already at the target AP: nothing to write.
         let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let change = Change {
-            touch: TouchChange::Keep,
-            ap: Some(Um(2000)),
-            rt: None,
-        };
-        let plan = plan(&mut s, &[0x1A], &change, Kind::Ap, Some(3)).unwrap();
+        let change = Change::ap(Um(2000));
+        let plan = plan(&mut s, &[0x1A], &change, Some(3)).unwrap();
         assert_eq!(plan.value_records, vec![]);
         assert_eq!(
             plan.membership_records,
@@ -458,16 +614,12 @@ mod tests {
     }
 
     #[test]
-    fn plan_writes_all_four_value_records_when_exactly_one_differs() {
+    fn plan_skip_rule_pins_the_ap_term() {
         // Only AP differs (2000 read, target 2500); MODE/RT stay as read but still ride along.
         let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let change = Change {
-            touch: TouchChange::Keep,
-            ap: Some(Um(2500)),
-            rt: None,
-        };
-        let plan = plan(&mut s, &[0x1A], &change, Kind::Ap, None).unwrap();
+        let change = Change::ap(Um(2500));
+        let plan = plan(&mut s, &[0x1A], &change, None).unwrap();
         assert_eq!(
             plan.value_records,
             vec![
@@ -497,7 +649,141 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    // -- plan: TouchChange variants --
+    /// Real scenario from `captures/ks-steal-rt.jsonl`: key `,` (`0x36`) needed only a MODE
+    /// change (already at the target sensitivity) and still got the full template.
+    #[test]
+    fn plan_skip_rule_pins_the_mode_term() {
+        // touch Global(0), so RapidTrigger's own rule changes it to Rt(3); sensitivities already
+        // match the target, so only the MODE term can be driving the write.
+        let lines = settings_script(0x36, 2000, 0x00, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_on(Um(100), Um(150));
+        let plan = plan(&mut s, &[0x36], &change, None).unwrap();
+        assert_eq!(
+            plan.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x36,
+                    layout: layout::MODE,
+                    value: 0x30
+                },
+                KeyRecord {
+                    key: 0x36,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x36,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x36,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// Real scenario from `captures/ks-steal-rt.jsonl`: key `N` (`0x11`) needed only a
+    /// sensitivity change (already at the target MODE) and still got the full template.
+    #[test]
+    fn plan_skip_rule_pins_the_rt_press_term() {
+        // touch already Rt(3), so RapidTrigger's rule leaves MODE unchanged; release already
+        // matches the target, so only the press term can be driving the write.
+        let lines = settings_script(0x11, 2000, 0x30, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_on(Um(200), Um(150));
+        let plan = plan(&mut s, &[0x11], &change, None).unwrap();
+        assert_eq!(
+            plan.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::MODE,
+                    value: 0x30
+                },
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::RT_PRESS,
+                    value: 200
+                },
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn plan_skip_rule_pins_the_rt_release_term() {
+        // Mirror of the press-term test above: press already matches the target, so only the
+        // release term can be driving the write.
+        let lines = settings_script(0x11, 2000, 0x30, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_on(Um(100), Um(200));
+        let plan = plan(&mut s, &[0x11], &change, None).unwrap();
+        assert_eq!(
+            plan.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::MODE,
+                    value: 0x30
+                },
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x11,
+                    layout: layout::RT_RELEASE,
+                    value: 200
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// Nothing in `plan`'s tests above supplies a rapid trigger membership index: every one that
+    /// does uses `Change::ap`. Pins that `Change::rt_on`/`rt_off`'s own kind sends membership to
+    /// `0xFE`, not `0xFF`.
+    #[test]
+    fn plan_writes_rapid_trigger_membership_to_the_rt_layout() {
+        // Already at every target: no value records, membership only.
+        let lines = settings_script(0x1A, 2000, 0x30, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_on(Um(100), Um(150));
+        let plan = plan(&mut s, &[0x1A], &change, Some(2)).unwrap();
+        assert_eq!(plan.value_records, vec![]);
+        assert_eq!(
+            plan.membership_records,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_RT,
+                value: 2
+            }]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    // -- apply_touch, the internal touch-nibble rule --
 
     #[test]
     fn touch_change_keep_leaves_the_nibble_exactly_as_read() {
@@ -544,10 +830,12 @@ mod tests {
         );
     }
 
+    /// `Off` now means "turn rapid trigger off", not "force Single unconditionally": it must
+    /// leave `Global` and any `Unknown` nibble exactly as read, matching `ops::rt_off_records`.
     #[test]
-    fn touch_change_off_sets_single_unconditionally_including_from_rt_continuous() {
+    fn touch_change_off_turns_off_rapid_trigger_but_leaves_other_nibbles_alone() {
         assert_eq!(
-            apply_touch(TouchMode::RtContinuous, TouchChange::Off),
+            apply_touch(TouchMode::RtGlobal, TouchChange::Off),
             TouchMode::Single
         );
         assert_eq!(
@@ -555,36 +843,250 @@ mod tests {
             TouchMode::Single
         );
         assert_eq!(
-            apply_touch(TouchMode::Global, TouchChange::Off),
+            apply_touch(TouchMode::RtContinuous, TouchChange::Off),
             TouchMode::Single
+        );
+        assert_eq!(
+            apply_touch(TouchMode::Global, TouchChange::Off),
+            TouchMode::Global
+        );
+        assert_eq!(
+            apply_touch(TouchMode::Unknown(5), TouchChange::Off),
+            TouchMode::Unknown(5)
         );
     }
 
+    // -- plan: advanced nibble and high byte survive every touch change --
+    //
+    // Each case forces a MODE record to be emitted (either the touch nibble itself changes, or
+    // AP changes alongside an unchanged MODE) and asserts the whole four-record vector, so a
+    // variant that wrongly emits nothing, or corrupts the high byte only where touch is
+    // unchanged, fails rather than passing silently.
+
     #[test]
-    fn plan_preserves_the_advanced_nibble_and_high_byte_across_every_touch_change() {
-        // MODE 0x0237: touch Rt(3), advanced 7, high byte 0x02.
-        for change in [
-            TouchChange::Keep,
-            TouchChange::PromoteGlobalToSingle,
-            TouchChange::RapidTrigger,
-            TouchChange::Off,
-        ] {
-            let lines = settings_script(0x1A, 2000, 0x0237, 100, 150, 0, 0);
-            let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-            let c = Change {
-                touch: change,
-                ap: None,
-                rt: None,
-            };
-            let p = plan(&mut s, &[0x1A], &c, Kind::Ap, None).unwrap();
-            assert!(s.into_inner().finished());
-            if let Some(rec) = p.value_records.iter().find(|r| r.layout == layout::MODE) {
-                assert_eq!(
-                    rec.value & 0xFF0F,
-                    0x0207,
-                    "{change:?}: advanced nibble and high byte must survive"
-                );
-            }
+    fn plan_keep_preserves_advanced_nibble_and_high_byte_when_ap_changes() {
+        // touch Rt(3), advanced 7, high 0x02: 0x0237. Keep never touches MODE, so this also
+        // proves MODE rides along unchanged when only AP differs.
+        let lines = settings_script(0x1A, 2000, 0x0237, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::ap(Um(2500));
+        let p = plan(&mut s, &[0x1A], &change, None).unwrap();
+        assert_eq!(
+            p.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x0237
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 2500
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn plan_promoting_global_preserves_advanced_nibble_and_high_byte() {
+        // touch Global(0), advanced 7, high 0x02: 0x0207. Promotion changes only the nibble.
+        let lines = settings_script(0x1A, 2000, 0x0207, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::ap(Um(2000)).promoting_global();
+        let p = plan(&mut s, &[0x1A], &change, None).unwrap();
+        assert_eq!(
+            p.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x0217
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn plan_rt_on_preserves_advanced_nibble_and_high_byte() {
+        // touch Global(0), advanced 7, high 0x02: 0x0207. RapidTrigger changes only the nibble.
+        let lines = settings_script(0x1A, 2000, 0x0207, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_on(Um(100), Um(150));
+        let p = plan(&mut s, &[0x1A], &change, None).unwrap();
+        assert_eq!(
+            p.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x0237
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn plan_rt_off_preserves_advanced_nibble_and_high_byte() {
+        // touch Rt(3), advanced 7, high 0x02: 0x0237. Off's own rule changes only the nibble.
+        let lines = settings_script(0x1A, 2000, 0x0237, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_off(Um(100), Um(150));
+        let p = plan(&mut s, &[0x1A], &change, None).unwrap();
+        assert_eq!(
+            p.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x0217
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    // -- plan: before --
+
+    /// `before` is what lets a caller verify every selected key, including ones the skip rule
+    /// gave no value records to. Two keys: `0x04` changes, `0x05` is already at the target and
+    /// gets none, but both must still appear in `before`, verbatim and in `usages` order.
+    #[test]
+    fn plan_before_covers_every_key_including_ones_the_skip_rule_gave_no_records() {
+        let mut lines = settings_script(0x04, 2000, 0x18, 100, 150, 0, 0);
+        lines.extend(settings_script(0x05, 2500, 0x18, 100, 150, 2, 1));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::ap(Um(2500));
+        let p = plan(&mut s, &[0x04, 0x05], &change, None).unwrap();
+        assert!(s.into_inner().finished());
+
+        assert_eq!(
+            p.before,
+            vec![
+                KeySettings {
+                    usage: 0x04,
+                    ap: Um(2000),
+                    mode: Mode::from_value(0x18),
+                    rt_press: Um(100),
+                    rt_release: Um(150),
+                    ap_keyset: 0,
+                    rt_keyset: 0,
+                },
+                KeySettings {
+                    usage: 0x05,
+                    ap: Um(2500),
+                    mode: Mode::from_value(0x18),
+                    rt_press: Um(100),
+                    rt_release: Um(150),
+                    ap_keyset: 2,
+                    rt_keyset: 1,
+                },
+            ]
+        );
+        // 0x05 was already at the target: confirms `before` covers it despite no value record.
+        assert!(p.value_records.iter().all(|r| r.key == 0x04));
+        assert!(!p.value_records.is_empty());
+    }
+
+    // -- plan: MODE and AP never split across a report boundary --
+
+    /// Measured elsewhere that AP and RT_PRESS *do* split across a report boundary; this pins
+    /// only that MODE and AP, the pair the vendor is never observed sending un-paired, do not.
+    #[test]
+    fn plan_never_splits_a_keys_mode_and_ap_across_a_report_boundary() {
+        // 20 keys, 4 records each once every key differs: 80 records over 14-record reports
+        // crosses several boundaries (at 14, 28, 42, 56, 70).
+        let usages: Vec<u8> = (0x04u8..0x18).collect();
+        assert_eq!(usages.len(), 20);
+        let mut lines = Vec::new();
+        for &u in &usages {
+            lines.extend(settings_script(u, 1000, 0x18, 100, 150, 0, 0));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::ap(Um(9999));
+        let p = plan(&mut s, &usages, &change, None).unwrap();
+        assert!(s.into_inner().finished());
+        assert_eq!(
+            p.value_records.len(),
+            usages.len() * 4,
+            "every key must differ (ap 1000 -> 9999) and get all four records"
+        );
+
+        let frame_of = |i: usize| i / cmds::MAX_RECORDS_PER_REPORT;
+        for &u in &usages {
+            let mode_i = p
+                .value_records
+                .iter()
+                .position(|r| r.key == u && r.layout == layout::MODE)
+                .unwrap();
+            let ap_i = p
+                .value_records
+                .iter()
+                .position(|r| r.key == u && r.layout == layout::AP)
+                .unwrap();
+            assert_eq!(
+                frame_of(mode_i),
+                frame_of(ap_i),
+                "key {u:#04x}: MODE and AP landed in different frames"
+            );
         }
     }
 

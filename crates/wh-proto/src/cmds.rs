@@ -79,7 +79,8 @@ pub mod layout {
     pub const RT_PRESS: u8 = 0x14; // Layout_RTP
     pub const RT_RELEASE: u8 = 0x15; // Layout_RTR
     /// Actuation point keyset index. Read as 1 for w,a,s,d and 2 for esc, matching the two
-    /// keysets the vendor UI showed. Never observed being written, so do not write it.
+    /// keysets the vendor UI showed. Host-written: `docs/keysets.md` measures the vendor writing
+    /// it, and `wh_device::keyset` writes it too, one record per frame, always last.
     pub const KEYSET_AP: u8 = 0xFF;
     /// Rapid trigger keyset membership. Written 1 on create (`captures/rt-on-w-0.5.jsonl`) and
     /// 0 on delete (`captures/rt-off-w.jsonl`).
