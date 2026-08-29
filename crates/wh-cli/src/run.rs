@@ -354,6 +354,9 @@ fn check_group_name_usable(name: &str) -> Result<()> {
     {
         bail!("'{name}' is already a key or builtin group name");
     }
+    if looks_like_hex_form(name) {
+        bail!("'{name}' looks like a hex usage code (e.g. `0x01`); pick a different name");
+    }
     if !group_name_is_reachable(name) {
         bail!(
             "'{name}' cannot be used as a group name: the selector grammar would not read it \
@@ -362,6 +365,14 @@ fn check_group_name_usable(name: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether `name` has the `0x01`-style shape the selector grammar reads back as a single
+/// usage code, matching `Selector::parse`'s own hex prefix check.
+fn looks_like_hex_form(name: &str) -> bool {
+    name.strip_prefix("0x")
+        .or_else(|| name.strip_prefix("0X"))
+        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
@@ -1112,6 +1123,38 @@ mod tests {
         let store = Store::at(dir.clone());
         let err = keys(group_cmd("wasd,all", "w,a"), &store).unwrap_err();
         assert!(!err.to_string().is_empty());
+        assert!(store.groups().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name that reads back as a hex usage code (e.g. `0x01`) would be unreachable as a
+    /// group: the selector grammar would resolve it against that literal usage, never the
+    /// stored group. `group` must refuse it, the same class as a key-name collision.
+    #[test]
+    fn hex_shaped_group_name_is_rejected() {
+        let dir = test_dir("hex-shaped");
+        let store = Store::at(dir.clone());
+        let err = keys(group_cmd("0x01", "w,a"), &store).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("0x01"),
+            "unexpected error: {err}"
+        );
+        assert!(store.groups().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `0x00` is the one hex-shaped name the reachability probe alone would let through by
+    /// coincidence, since its sentinel universe happens to include usage `0x00`: the explicit
+    /// hex-shape guard is what actually closes this, not the generic reachability check.
+    #[test]
+    fn hex_shaped_group_name_zero_is_rejected() {
+        let dir = test_dir("hex-shaped-zero");
+        let store = Store::at(dir.clone());
+        let err = keys(group_cmd("0x00", "w,a"), &store).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("0x00"),
+            "unexpected error: {err}"
+        );
         assert!(store.groups().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
