@@ -82,7 +82,7 @@ fn read_layout_value<T: Transport>(
 /// Write `records` in batches. A no-op selection (empty `records`) returns immediately without
 /// writing anything.
 ///
-/// No SAVE order follows the batch: across 1224 captured frames covering nine scenarios and
+/// No SAVE order follows the batch: across 1224 captured frames covering ten scenarios and
 /// five complete write sequences, the vendor web configurator never sends one (`cmds::order::SAVE`'s
 /// own comment in `wh-proto`). Either the board persists automatically, or order `0x02` means
 /// something else on this firmware, or it is unimplemented; that is unmeasured, so this function
@@ -161,7 +161,14 @@ pub fn rt_records<T: Transport>(
 /// Only touches keys that actually have RT on (`TouchMode::Rt` or `RtContinuous`): those get
 /// rewritten to `TouchMode::Single` (nibble 1, per-key actuation point), never to `Global`
 /// (nibble 0). A key already in `Global`, `Single`, or an `Unknown` state is left exactly as
-/// read; a key with no RT to turn off has nothing for `set rt --off` to do to its mode.
+/// read; a key with no RT to turn off has nothing for `set rt --off` to do to its mode, and gets
+/// no record at all (whole-branch review): the recomputed value equals what was just read, and a
+/// key with nothing to change gets nothing written, rather than a MODE record whose value is
+/// identical to the one already on the board. This matters at scale: `wh set rt --keys all --off`
+/// against a board with only a handful of RT keys used to write one record per selected key
+/// regardless, most of them a no-op; the returned `Vec` (and so `set_rt_off`'s write, and
+/// `verify_rt_off`'s readback and its reported count) now reflects only the keys that actually
+/// change.
 ///
 /// Measured on the real device (`captures/rt-off-w.jsonl`, task 19b chunk 3): turning RT off
 /// wrote MODE nibble 1, not 0. Nibble 0 means "follow the global travel setting" instead of this
@@ -197,11 +204,22 @@ pub fn rt_off_records<T: Transport>(
             advanced: cur_mode.advanced,
             high: cur_mode.high,
         };
-        records.push(KeyRecord {
-            key: u,
-            layout: layout::MODE,
-            value: mode.value(),
-        });
+        let new_value = mode.value();
+        // Skip the record entirely when nothing would change (review, whole-branch pass): a key
+        // that was not `Rt`/`RtContinuous` recomputes to the exact value it was just read as, and
+        // sending it anyway means writing a MODE value nobody has ever observed the vendor send
+        // in this situation, nibble 0 (`Global`) included, which `docs/protocol.md` documents as
+        // something `wh` does not write. The vendor was never once observed writing nibble 0
+        // across 1224 captured frames; sending it unconditionally here, on every non-RT key of
+        // every `wh set rt --keys all --off`, contradicted that. Same reasoning as not sending
+        // SAVE: do not write a byte the vendor was never observed writing.
+        if new_value != cur_value {
+            records.push(KeyRecord {
+                key: u,
+                layout: layout::MODE,
+                value: new_value,
+            });
+        }
     }
     Ok(records)
 }
@@ -223,10 +241,12 @@ pub fn set_rt<T: Transport>(
 }
 
 /// Disable RT (touch mode -> Single, per-key actuation point), preserving the advanced
-/// nibble. Returns the exact
-/// records that were written (one MODE record per key, in `usages` order), the same reason
+/// nibble. Returns the exact records that were written, in `usages` order, the same reason
 /// `set_rt` returns its records: a caller verifying the write needs to compare against what
-/// was actually sent, advanced nibble and high byte included, not just the touch mode.
+/// was actually sent, advanced nibble and high byte included, not just the touch mode. Not
+/// necessarily one record per key in `usages`: a key with nothing to change (see
+/// `rt_off_records`) contributes no record at all, so the caller's own reporting reflects how
+/// many keys actually changed, not how many were selected.
 pub fn set_rt_off<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -680,10 +700,13 @@ mod tests {
 
     /// Chunk 3's own regression test: on a key with a per-key actuation point (touch mode
     /// already `Single`, i.e. not even RT-enabled from this call's perspective), turning "RT
-    /// off" again must leave it at `Single`, not coerce it to `Global`. `captures/rt-off-w.jsonl`
-    /// shows the vendor itself writing nibble 1, not 0, in this exact transition; matching that
-    /// observed behaviour is the reason, not a measured effect of nibble 0, which stays
-    /// unmeasured (see `rt_off_records`' own doc comment).
+    /// off" again must leave it at `Single`, not coerce it to `Global`. Since whole-branch
+    /// review, "leave it at `Single`" means no record at all, not a record that echoes the value
+    /// already on the board (see `rt_off_records`' own doc comment): this key's recomputed MODE
+    /// value equals what was just read, so nothing is written. A regression that coerced the key
+    /// to `Global` instead would still produce a record, with the wrong value, so this still
+    /// catches that: it distinguishes "correctly left as `Single`, nothing to write" from
+    /// "wrongly rewritten to `Global`, something (wrong) to write".
     #[test]
     fn rt_off_records_leaves_an_already_single_key_at_single_not_global() {
         let lines = [
@@ -698,26 +721,30 @@ mod tests {
         let recs = rt_off_records(&mut s, &[0x1A]).unwrap();
         assert_eq!(
             recs,
-            vec![KeyRecord {
-                key: 0x1A,
-                layout: layout::MODE,
-                value: 0x18,
-            }],
-            "touch mode must stay Single (nibble 1), not fall back to Global (nibble 0)"
+            vec![],
+            "an already-Single key has nothing to change, so rt_off_records must not write it \
+             back, and must especially not coerce it to Global (nibble 0)"
         );
         assert!(s.into_inner().finished());
     }
 
-    /// The regression this fix round exists for: replaying every one of the 68 real per-key
-    /// MODE values read from the device in `captures/initial-load.jsonl` (extracted with
-    /// `layout == 0x08` from the KEY-reply frames in that capture; every one is a key that has
-    /// never had RT on) through `rt_off_records`, exactly what `wh set rt --keys all --off`
-    /// sends. The first cut of this function detached all 58 nibble-0 keys among these from the
-    /// global travel setting by rewriting their MODE to nibble 1 unconditionally; the fix must
-    /// leave every one of these 68 values completely unchanged, since none of them is
-    /// `Rt`/`RtContinuous`. The one key at nibble 1 already (`0x0010`, 10 of the 68) staying at
-    /// nibble 1 is not itself proof of the fix (a no-op happens to look identical either way);
-    /// the 58 nibble-0 keys staying at nibble 0 is.
+    /// Two regressions this test guards, from two different fix rounds, both against the same
+    /// real fixture: every one of the 68 real per-key MODE values read from the device in
+    /// `captures/initial-load.jsonl` (extracted with `layout == 0x08` from the KEY-reply frames
+    /// in that capture; every one is a key that has never had RT on, confirmed by the assertion
+    /// above), replayed through `rt_off_records`, exactly what `wh set rt --keys all --off`
+    /// sends.
+    ///
+    /// The first cut of this function detached all 58 nibble-0 keys among these from the global
+    /// travel setting by rewriting their MODE to nibble 1 unconditionally; task 19b chunk 3 fixed
+    /// that by restricting the rewrite to keys that were actually `Rt`/`RtContinuous`. A later
+    /// whole-branch review found the second half of the same shape still present: this function
+    /// went on to push a record for every one of these 68 keys anyway, carrying their own
+    /// unchanged value right back at them, 58 of them nibble 0, the exact value
+    /// `docs/protocol.md` documents as one `wh` never writes. Since no key here has anything to
+    /// change, the correct output is not "68 records, each equal to what was read" but no
+    /// records at all: nothing for `set_rt_off` to write, and nothing for `verify_rt_off` to
+    /// read back and report as changed.
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
         // (key, MODE value), verbatim from captures/initial-load.jsonl.
@@ -819,15 +846,13 @@ mod tests {
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let recs = rt_off_records(&mut s, &usages).unwrap();
 
-        assert_eq!(recs.len(), 68);
-        for (rec, &(k, v)) in recs.iter().zip(REAL_MODES.iter()) {
-            assert_eq!(rec.key, k);
-            assert_eq!(
-                rec.value, v,
-                "key {k:#04x}: MODE must be left exactly as read ({v:#06x}), not rewritten \
-                 to Single, since it never had RT on"
-            );
-        }
+        assert_eq!(
+            recs,
+            vec![],
+            "none of these 68 real keys has RT on, so none has anything to change: \
+             rt_off_records must write no records at all for this whole-board --off, not 68 \
+             records that each echo the value already on the board (58 of them nibble 0)"
+        );
         assert!(s.into_inner().finished());
     }
 

@@ -540,9 +540,11 @@ fn verify_rt<T: Transport>(
 }
 
 /// The `verify_rt_off` sibling of `verify_rt` above, same reasoning: `records` (built by
-/// `ops::rt_off_records`, one MODE record per key) is the sole source of both the key list and
-/// the wanted MODE value, so there is nothing for a separate `usages` parameter to disagree
-/// with.
+/// `ops::rt_off_records`) is the sole source of both the key list and the wanted MODE value, so
+/// there is nothing for a separate `usages` parameter to disagree with. `records` no longer means
+/// one entry per selected key (whole-branch review): `rt_off_records` skips a key with nothing to
+/// change, so `report_verification`'s reported count here reflects how many keys were actually
+/// changed, not how many `--keys` selected.
 fn verify_rt_off<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -599,7 +601,10 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 RtAction::Off
             } else {
                 let base = set.ok_or_else(|| {
-                    anyhow::anyhow!("--set, --press/--release, or --off required")
+                    anyhow::anyhow!(
+                        "--set is required unless --off is given; --press and --release only \
+                         override a --set base and cannot be used alone"
+                    )
                 })?;
                 RtAction::On {
                     press: mm(press.unwrap_or(base))?,
