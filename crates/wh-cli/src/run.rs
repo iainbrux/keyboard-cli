@@ -74,11 +74,13 @@ pub(crate) fn key_label(usage: u8) -> String {
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
-    // Zero-based, the wire's own numbering; converted to the UI's one-based numbering below,
-    // right where it is stored, so every consumer of `Snapshot::profile` (the restore safety
-    // check, `dump`'s text and JSON output alike) sees the same one-based convention rather than
-    // each having to convert it independently.
-    let profile = ops::profile(s)?;
+    // `ProfileNumber::from_wire_index` is where the wire's zero-based index becomes the UI's
+    // one-based number, and also where an index the board could never actually report (e.g. a
+    // misbehaving device echoing 0xFF, the very byte `read_profile` sends as its own argument) is
+    // rejected outright: such a device's snapshot provenance is not something to trust at all, so
+    // the whole backup fails rather than silently recording a bogus profile.
+    let profile = wh_config::profile::ProfileNumber::from_wire_index(ops::profile(s)?)
+        .context("reading the board's active profile")?;
     let global = ops::global_travel(s)?;
     let matrix = ops::read_matrix(s)?;
     let mut keys = Vec::new();
@@ -98,11 +100,7 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         firmware: info.firmware,
         serial: info.serial,
         taken_at: httpdate_now()?,
-        // One-based UI numbering (index 0 on the wire is "profile 1" here): see
-        // `Snapshot::profile`'s own doc comment. `saturating_add` rather than a bare `+ 1`: the
-        // board only ever reports 0..=3 (four profiles, measured), but a misbehaving device
-        // sending 0xFF must not panic this conversion.
-        profile: Some(profile.saturating_add(1)),
+        profile: Some(profile),
         global: wh_config::snapshot::GlobalToml {
             travel_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
@@ -169,15 +167,14 @@ fn dump(json: bool) -> Result<()> {
             writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
-            // One-based UI numbering: see `Snapshot::profile`'s doc comment. Always `Some` here,
-            // never the "provenance unknown" `None` a loaded-from-file snapshot can carry: this
-            // is a live read from the device that just answered every other line of this dump.
-            writeln!(
-                out,
-                "profile {}",
-                snap.profile
-                    .expect("a live dump always reads the board's current profile")
-            )?;
+            // `snapshot_from_device` always fills `profile` in from a live read, never the
+            // "provenance unknown" `None` a loaded-from-file snapshot can carry, but that
+            // invariant lives in a different function from this one (review round 1, finding 4):
+            // an ordinary error here, not a `.expect` panic mid-output, if it were ever wrong.
+            let profile = snap
+                .profile
+                .ok_or_else(|| anyhow::anyhow!("internal error: a live dump has no profile"))?;
+            writeln!(out, "profile {profile}")?;
             writeln!(
                 out,
                 "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
@@ -396,19 +393,17 @@ fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
-/// Takes and saves an auto-backup, returning the snapshot it just took: `restore` uses this to
-/// learn the board's current profile (task 19b group B's safety check) without a second device
-/// roundtrip for it, since `snapshot_from_device` already reads it. Every other caller (`set`'s
-/// two write branches) already discards the `()` this used to return, and discarding a
-/// `Snapshot` instead compiles identically, so this change touches no other call site.
-fn auto_backup<T: Transport>(
-    s: &mut Session<T>,
-    store: &Store,
-) -> Result<wh_config::snapshot::Snapshot> {
+/// Takes and saves an auto-backup. `restore` used to read the board's current profile off this
+/// function's own returned snapshot (review round 1, finding 1): that coupling was invisible, a
+/// future `--no-backup` flag or a best-effort backup (the `best_effort_eprintln` pattern two
+/// lines above) could delete the profile safety check as a side effect with nothing failing to
+/// compile. `restore` now calls `ops::profile` directly and independently instead, so this
+/// function is back to returning only whether the backup itself succeeded.
+fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     let snap = snapshot_from_device(s)?;
     let path = store.save_backup(&snap.to_toml()?)?;
     best_effort_eprintln(&format!("(backed up to {})", path.display()));
-    Ok(snap)
+    Ok(())
 }
 
 /// Prints the exact reports `--dry-run` would otherwise send to `out`, and nothing else: a real
@@ -777,8 +772,10 @@ fn verify_restore<T: Transport>(
 /// beyond global travel and per-key settings, so restoring a snapshot taken on one profile while
 /// the board sits on another silently overwrites the wrong profile, and `restore`'s own readback
 /// verification cannot catch it, since it reads back exactly what it just wrote. `snap_profile`
-/// is what the snapshot being restored recorded (`Snapshot::profile`'s own one-based convention);
-/// `board_profile` is the board's current profile, in the same one-based convention.
+/// is what the snapshot being restored recorded; `board_profile` is the board's current profile.
+/// Both are `ProfileNumber`, not a bare `u8` (review round 1, finding 2): the wire's own
+/// zero-based index and this one-based number are different things, and the natural, wrong call
+/// `check_restore_profile(snap.profile, ops::profile(s)?, force)` must not be able to compile.
 ///
 /// Three cases, deliberately not collapsed into one flag:
 /// - recorded and matching: proceed.
@@ -788,7 +785,11 @@ fn verify_restore<T: Transport>(
 ///   the more dangerous mistake, through.
 /// - not recorded (an older snapshot): refuse, but `force` rescues it, since the caller is
 ///   asserting something this snapshot itself cannot vouch for, not overriding a known mismatch.
-fn check_restore_profile(snap_profile: Option<u8>, board_profile: u8, force: bool) -> Result<()> {
+fn check_restore_profile(
+    snap_profile: Option<wh_config::profile::ProfileNumber>,
+    board_profile: wh_config::profile::ProfileNumber,
+    force: bool,
+) -> Result<()> {
     match snap_profile {
         Some(p) if p == board_profile => Ok(()),
         Some(p) => bail!(
@@ -828,19 +829,21 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     with_session(|s| {
+        // Read independently of `auto_backup` below, deliberately (review round 1, finding 1):
+        // this used to come from `auto_backup`'s own returned snapshot, a coupling invisible at
+        // the call site, since `auto_backup`'s job is to save a backup, not to report the
+        // profile. A future `--no-backup` flag, or a change making the backup best-effort like
+        // `best_effort_eprintln` two lines below already does for its own message, could have
+        // deleted this safety check as a side effect with nothing failing to compile. One extra
+        // frame against the roughly thirty `auto_backup` already sends buys an invariant the
+        // call structure enforces instead of one that only holds by accident of ordering.
+        let board_profile = wh_config::profile::ProfileNumber::from_wire_index(ops::profile(s)?)
+            .context("reading the board's active profile")?;
+        check_restore_profile(snap.profile, board_profile, force)?;
         // Unlike `set`, which is scoped to the keys the caller selected, `restore` overwrites
         // every key in the snapshot: an auto-backup here is the only way back if the file
-        // named on the command line turns out to be the wrong one, or a stale one. It also
-        // hands back the board's own current profile, so the safety check below needs no
-        // separate device roundtrip for it.
-        let current = auto_backup(s, store)?;
-        check_restore_profile(
-            snap.profile,
-            current
-                .profile
-                .expect("auto_backup's snapshot always reads a live profile from the device"),
-            force,
-        )?;
+        // named on the command line turns out to be the wrong one, or a stale one.
+        auto_backup(s, store)?;
         ops::restore_all(s, &global, &records)?;
         // Printed only after verification passes: on a mismatch, `verify_restore` bails and
         // this line is never reached, so stdout never claims success while stderr reports a
@@ -1034,9 +1037,16 @@ mod tests {
         );
     }
 
+    /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") for the
+    /// tests below, going through `from_wire_index` since that is the type's only public
+    /// constructor from a plain integer.
+    fn pn(n: u8) -> wh_config::profile::ProfileNumber {
+        wh_config::profile::ProfileNumber::from_wire_index(n - 1).unwrap()
+    }
+
     #[test]
     fn restore_profile_check_proceeds_on_a_match() {
-        check_restore_profile(Some(2), 2, false).unwrap();
+        check_restore_profile(Some(pn(2)), pn(2), false).unwrap();
     }
 
     /// Case 2: recorded and differing. `force` must not rescue it, so both calls below are
@@ -1044,14 +1054,14 @@ mod tests {
     /// deliberately non-overridable.
     #[test]
     fn restore_profile_check_refuses_a_mismatch_and_force_does_not_rescue_it() {
-        let err = check_restore_profile(Some(1), 2, false).unwrap_err();
+        let err = check_restore_profile(Some(pn(1)), pn(2), false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("profile 1") && msg.contains("profile 2"),
             "error should name both profiles: {msg}"
         );
 
-        let err_forced = check_restore_profile(Some(1), 2, true).unwrap_err();
+        let err_forced = check_restore_profile(Some(pn(1)), pn(2), true).unwrap_err();
         let msg_forced = err_forced.to_string();
         assert!(
             msg_forced.contains("profile 1") && msg_forced.contains("profile 2"),
@@ -1063,8 +1073,8 @@ mod tests {
     /// the opposite of case 2's non-overridable refusal above.
     #[test]
     fn restore_profile_check_refuses_an_unrecorded_profile_but_force_rescues_it() {
-        assert!(check_restore_profile(None, 2, false).is_err());
-        check_restore_profile(None, 2, true).unwrap();
+        assert!(check_restore_profile(None, pn(2), false).is_err());
+        check_restore_profile(None, pn(2), true).unwrap();
     }
 
     #[test]

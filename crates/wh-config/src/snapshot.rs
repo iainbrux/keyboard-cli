@@ -1,5 +1,6 @@
 //! The user-facing TOML snapshot of a board's settings.
 
+use crate::profile::ProfileNumber;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -7,15 +8,16 @@ pub struct Snapshot {
     pub firmware: String,
     pub serial: String,
     pub taken_at: String, // RFC3339, informational
-    /// The board's active profile at the moment this snapshot was taken, in the UI's one-based
-    /// numbering (wire index 0 is profile 1, never the zero-based wire value directly; see
-    /// `wh_proto::cmds::parse_profile` for the wire's own convention). `None` means this
-    /// snapshot predates profile recording, so its provenance is unknown, not that the board
-    /// has no active profile (every board always has one; task 19b group B). Absent entirely
-    /// from a snapshot's TOML deserializes to `None` (serde's own behaviour for a missing
-    /// `Option` field), so backups taken before this field existed still parse.
+    /// The board's active profile at the moment this snapshot was taken. `ProfileNumber` (not a
+    /// bare `u8`) so the UI's one-based numbering can never be mixed up with the wire's own
+    /// zero-based index at a call site (task 19b group B, review round 1 finding 2); see
+    /// `ProfileNumber`'s own doc comment. `None` means this snapshot predates profile recording,
+    /// so its provenance is unknown, not that the board has no active profile (every board
+    /// always has one). Absent entirely from a snapshot's TOML deserializes to `None` (serde's
+    /// own behaviour for a missing `Option` field), so backups taken before this field existed
+    /// still parse.
     #[serde(default)]
-    pub profile: Option<u8>,
+    pub profile: Option<ProfileNumber>,
     pub global: GlobalToml,
     pub keys: Vec<KeyToml>,
 }
@@ -58,7 +60,7 @@ mod tests {
             firmware: "V1.2.3".into(),
             serial: "SN1".into(),
             taken_at: "2026-08-28T12:00:00Z".into(),
-            profile: Some(1),
+            profile: Some(ProfileNumber::from_wire_index(0).unwrap()),
             global: GlobalToml {
                 travel_mm: 2.0,
                 press_dead_mm: 0.2,

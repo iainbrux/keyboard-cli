@@ -296,6 +296,44 @@ fn dump_text_prints_the_one_based_profile_number() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `wh backup --to <file>` records the board's current profile in the file it writes (review
+/// round 1, finding 5): covered so far only transitively, through `dump --json`'s `profile`
+/// field and the write-path tests' shared `auto_backup` fixtures. `backup --to` is the path an
+/// operator actually uses to keep a snapshot, so it gets its own assertion, read back off the
+/// real file `backup` wrote, not off stdout.
+#[test]
+fn backup_to_writes_the_profile_into_the_file() {
+    let path = write_script("backup-profile", &build_script());
+    let config_home = scratch_config_dir("backup-profile");
+    let out_path =
+        std::env::temp_dir().join(format!("wh-backup-profile-{}.toml", std::process::id()));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = std::fs::read_to_string(&out_path).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_toml(&text).unwrap();
+    // `build_script()` scripts the board replying with wire index 0, i.e. UI profile 1.
+    assert_eq!(
+        snap.profile,
+        Some(wh_config::profile::ProfileNumber::from_wire_index(0).unwrap()),
+        "backup --to must record the board's profile in the file: {text}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(out_path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// Pins that a K-001 board-function key (task 19b chunk 7: `0xFA`, `0xFB`, `0xD6`, `0xFC`,
 /// confirmed by measurement) renders by its name in `dump` output, not as bare hex. A one-key
 /// board with 'ap' (usage `0xFA`) at row 0 col 0; before chunk 7 this printed as `"0xFA"`.
@@ -891,6 +929,11 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
 /// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
 fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
+    // `profile` is one-based here (the caller's own convention, matching every other profile
+    // number in this file); `ProfileNumber::from_wire_index` is the type's only public
+    // constructor from a plain integer, so it is built from `profile - 1`.
+    let profile =
+        profile.map(|p| wh_config::profile::ProfileNumber::from_wire_index(p - 1).unwrap());
     let snap = wh_config::snapshot::Snapshot {
         firmware: "V1.0.0.001".into(),
         serial: "SNRESTORETEST001".into(),
@@ -1018,8 +1061,12 @@ fn restore_happy_path_backs_up_and_verifies() {
     let config_home = scratch_config_dir("restore-happy");
     let snap_path = write_snapshot("restore-happy", 1.2, Some(1));
 
-    let mut lines = Vec::new();
-    lines.extend(auto_backup_lines(0)); // board profile index 0 = UI profile 1, matches the snapshot
+    // `restore` reads the board's profile as its own, independent roundtrip (review round 1,
+    // finding 1) before ever calling `auto_backup`, whose own `snapshot_from_device` pipeline
+    // reads the profile again internally; both replies report the same board profile index 0
+    // (UI profile 1), matching the snapshot.
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines());
 
     let path = write_script("restore-happy", &lines);
@@ -1064,7 +1111,9 @@ fn restore_happy_path_backs_up_and_verifies() {
 fn restore_refuses_when_the_boards_profile_differs_from_the_snapshots() {
     let config_home = scratch_config_dir("restore-profile-mismatch");
     let snap_path = write_snapshot("restore-profile-mismatch", 1.2, Some(1));
-    let path = write_script("restore-profile-mismatch", &auto_backup_lines(1)); // board profile index 1 = UI profile 2
+    // restore's own direct profile read (board profile index 1 = UI profile 2) is the entire
+    // script: refusal happens right after it, before `auto_backup` is ever called.
+    let path = write_script("restore-profile-mismatch", &profile_lines(1));
 
     let out = run_wh(
         &["restore", snap_path.to_str().unwrap()],
@@ -1089,15 +1138,12 @@ fn restore_refuses_when_the_boards_profile_differs_from_the_snapshots() {
 
 /// `--force` must not rescue a recorded mismatch (task 19b group B is explicit that this case
 /// has no override): identical fixture to the test above, `--force` added, same refusal expected.
-/// Same reasoning on why the script ends after the auto-backup phase.
+/// Same reasoning on why the script ends right after restore's own direct profile read.
 #[test]
 fn restore_force_does_not_rescue_a_profile_mismatch() {
     let config_home = scratch_config_dir("restore-profile-mismatch-force");
     let snap_path = write_snapshot("restore-profile-mismatch-force", 1.2, Some(1));
-    let path = write_script(
-        "restore-profile-mismatch-force",
-        &auto_backup_lines(1), // board profile index 1 = UI profile 2
-    );
+    let path = write_script("restore-profile-mismatch-force", &profile_lines(1));
 
     let out = run_wh(
         &["restore", snap_path.to_str().unwrap(), "--force"],
@@ -1121,13 +1167,13 @@ fn restore_force_does_not_rescue_a_profile_mismatch() {
 }
 
 /// The other refusal case: no recorded profile at all (an older snapshot). Refused without
-/// `--force`, before `ops::restore_all` ever runs; same "script ends after the auto-backup
-/// phase" reasoning as the mismatch tests above.
+/// `--force`, before `auto_backup` or `ops::restore_all` ever run; same "script ends right after
+/// restore's own direct profile read" reasoning as the mismatch tests above.
 #[test]
 fn restore_refuses_an_unrecorded_profile_without_force() {
     let config_home = scratch_config_dir("restore-profile-unrecorded");
     let snap_path = write_snapshot("restore-profile-unrecorded", 1.2, None);
-    let path = write_script("restore-profile-unrecorded", &auto_backup_lines(0));
+    let path = write_script("restore-profile-unrecorded", &profile_lines(0));
 
     let out = run_wh(
         &["restore", snap_path.to_str().unwrap()],
@@ -1158,7 +1204,10 @@ fn restore_force_rescues_an_unrecorded_profile() {
     let config_home = scratch_config_dir("restore-profile-unrecorded-force");
     let snap_path = write_snapshot("restore-profile-unrecorded-force", 1.2, None);
 
-    let mut lines = Vec::new();
+    // Same shape as the happy path above: restore's own direct profile read first, then the
+    // full auto-backup pipeline (which reads the profile again, internally), then the write and
+    // verify tail, all the way through since `--force` rescues the unrecorded-profile case.
+    let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines());
     let path = write_script("restore-profile-unrecorded-force", &lines);
