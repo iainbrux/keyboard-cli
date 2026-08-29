@@ -16,6 +16,17 @@ pub enum DeviceError {
     Io(String),
     #[error("could not decode reply: {0}")]
     Decode(String),
+    /// The board's own profile-read reply parsed fine as a profile reply, but named a profile
+    /// index the board's four measured profiles could never produce (`wh_proto::cmds::
+    /// DecodeError::ProfileOutOfRange`, from `ops::profile`). Kept distinct from `Decode` above,
+    /// which covers a reply that does not look like a profile reply at all: callers that want to
+    /// treat "a genuinely garbled reply" and "a validly-shaped reply naming an impossible
+    /// profile" differently, degrading only for the latter, need this distinction to survive past
+    /// `ops::profile`'s own return type.
+    #[error(
+        "board reported profile index {0}, but the board only has 4 profiles (wire index 0..=3)"
+    )]
+    ProfileOutOfRange(u8),
     // `source` is deliberately not interpolated into the message below: thiserror already
     // wires a field named exactly `source` into `std::error::Error::source()`, and `main.rs`
     // prints the full chain via anyhow's `{e:#}`, which walks that same `source()` chain. This

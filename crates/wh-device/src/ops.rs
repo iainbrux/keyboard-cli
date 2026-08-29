@@ -264,13 +264,21 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
     cmds::parse_global_travel(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
 }
 
-/// The board's currently active profile, zero-based (the wire's own numbering; see
-/// `wh_proto::cmds::parse_profile`). Read only, task 19b group B: profile *select* is documented
-/// in the brief but deliberately not implemented, since nothing in Phase 1 needs to change the
-/// active profile.
-pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<u8, DeviceError> {
+/// The board's currently active profile, already validated (see `wh_proto::cmds::ProfileNumber`
+/// and `parse_profile`, the seam where the wire's own zero-based index becomes this type). Read
+/// only, task 19b group B: profile *select* is documented in the brief but deliberately not
+/// implemented, since nothing in Phase 1 needs to change the active profile.
+///
+/// A reply naming an index the board's four measured profiles could never produce surfaces as
+/// `DeviceError::ProfileOutOfRange`, kept distinct from `DeviceError::Decode` (a reply that does
+/// not look like a profile reply at all), so a caller that wants to degrade gracefully on the
+/// former while still hard-failing on the latter can match on the specific variant.
+pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, DeviceError> {
     let payload = s.roundtrip(&cmds::read_profile())?;
-    cmds::parse_profile(&payload).map_err(|e| DeviceError::Decode(e.to_string()))
+    cmds::parse_profile(&payload).map_err(|e| match e {
+        cmds::DecodeError::ProfileOutOfRange(idx) => DeviceError::ProfileOutOfRange(idx),
+        other => DeviceError::Decode(other.to_string()),
+    })
 }
 
 /// Write a whole snapshot back to the board: global travel first, then every per-key record
@@ -1073,7 +1081,7 @@ mod tests {
         ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        assert_eq!(profile(&mut s).unwrap(), 1);
+        assert_eq!(profile(&mut s).unwrap().wire_index(), 1);
         assert!(s.into_inner().finished());
     }
 
@@ -1086,6 +1094,25 @@ mod tests {
         assert!(
             matches!(err, DeviceError::Decode(_)),
             "expected Decode, got {err:?}"
+        );
+    }
+
+    /// A reply that parses fine as a profile reply, but names an index the board's four measured
+    /// profiles could never produce, must surface as `ProfileOutOfRange`, not `Decode`: this is
+    /// what lets a caller distinguish "the reply was garbled" from "the reply named an impossible
+    /// profile" and degrade only for the latter (review, task 20 step 4c).
+    #[test]
+    fn profile_maps_an_out_of_range_index_to_profile_out_of_range_not_decode() {
+        let lines = [
+            l("out", &cmds::read_profile()),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70, 0xFE, 0xFF])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let err = profile(&mut s).unwrap_err();
+        assert!(
+            matches!(err, DeviceError::ProfileOutOfRange(0xFE)),
+            "expected ProfileOutOfRange(0xFE), got {err:?}"
         );
     }
 

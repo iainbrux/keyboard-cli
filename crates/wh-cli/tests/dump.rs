@@ -325,7 +325,7 @@ fn backup_to_writes_the_profile_into_the_file() {
     // `build_script()` scripts the board replying with wire index 0, i.e. UI profile 1.
     assert_eq!(
         snap.profile,
-        Some(wh_config::profile::ProfileNumber::from_wire_index(0).unwrap()),
+        Some(cmds::ProfileNumber::from_wire_index(0).unwrap()),
         "backup --to must record the board's profile in the file: {text}"
     );
 
@@ -930,10 +930,11 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
 fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
     // `profile` is one-based here (the caller's own convention, matching every other profile
-    // number in this file); built via `from_ui_number` (review round 2, minor 4, renamed in
-    // review round 3, important 2), not `from_wire_index(p - 1)`, which would underflow-panic on
-    // `Some(0)` and mean a different profile than this parameter's own doc comment promises.
-    let profile = profile.map(|p| wh_config::profile::ProfileNumber::from_ui_number(p).unwrap());
+    // number in this file); built via `from_one_based` (review round 2, minor 4; the type and
+    // this constructor moved into `wh-proto` at task 20 step 4c), not `from_wire_index(p - 1)`,
+    // which would underflow-panic on `Some(0)` and mean a different profile than this parameter's
+    // own doc comment promises.
+    let profile = profile.map(|p| cmds::ProfileNumber::from_one_based(p).unwrap());
     let snap = wh_config::snapshot::Snapshot {
         firmware: "V1.0.0.001".into(),
         serial: "SNRESTORETEST001".into(),

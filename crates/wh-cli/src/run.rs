@@ -74,28 +74,30 @@ pub(crate) fn key_label(usage: u8) -> String {
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
-    // `ProfileNumber::from_wire_index` is where the wire's zero-based index becomes the UI's
-    // one-based number. An index the board could never actually report under the four measured
-    // profiles (review round 2, important 2: `MAX_WIRE_INDEX` is measured from one board on one
-    // firmware, so a future firmware shipping more profiles must not hard-fail every command that
-    // goes through this function) degrades to `None`, "provenance unknown", the same case an
-    // older pre-profile-recording snapshot already carries, rather than aborting `dump`, `backup`,
-    // and `set`'s auto-backup outright. `restore` is different: it reads the board's profile
-    // through its own separate call, not this one, and keeps its hard refusal, since it cannot
-    // compare what it cannot interpret.
-    let wire_idx = ops::profile(s)?;
-    let profile = match wh_config::profile::ProfileNumber::from_wire_index(wire_idx) {
+    // `ops::profile` already returns a validated `ProfileNumber`: an index the board could never
+    // actually report under the four measured profiles surfaces as `DeviceError::ProfileOutOfRange`
+    // (review round 2, important 2: this is a measurement bound from one board on one firmware, so
+    // a future firmware shipping more profiles must not hard-fail every command that goes through
+    // this function), which degrades to `None`, "provenance unknown", the same case an older
+    // pre-profile-recording snapshot already carries, rather than aborting `dump`, `backup`, and
+    // `set`'s auto-backup outright. Any other failure (a garbled reply, a transport error) still
+    // propagates via `?` below, unchanged from before this function existed. `restore` is
+    // different: it reads the board's profile through its own separate call, not this one, and
+    // keeps its hard refusal on every failure, since it cannot compare what it cannot interpret.
+    let profile = match ops::profile(s) {
         Ok(p) => Some(p),
-        Err(e) => {
+        Err(wh_device::transport::DeviceError::ProfileOutOfRange(idx)) => {
             // Caller-agnostic (review round 3, minor 3): this function backs `dump`, which
             // records no snapshot at all, as well as `backup` and every write command's
             // auto-backup, which do. The message must be true for all three, so it describes
             // this read's own profile as unrecorded rather than claiming a snapshot exists.
             best_effort_eprintln(&format!(
-                "warning: {e}; this read's profile is unrecorded (unknown provenance)"
+                "warning: board reported profile index {idx}, but the board only has 4 profiles \
+                 (wire index 0..=3); this read's profile is unrecorded (unknown provenance)"
             ));
             None
         }
+        Err(e) => return Err(e.into()),
     };
     let global = ops::global_travel(s)?;
     let matrix = ops::read_matrix(s)?;
@@ -790,9 +792,13 @@ fn verify_restore<T: Transport>(
 /// the board sits on another silently overwrites the wrong profile, and `restore`'s own readback
 /// verification cannot catch it, since it reads back exactly what it just wrote. `snap_profile`
 /// is what the snapshot being restored recorded; `board_profile` is the board's current profile.
-/// Both are `ProfileNumber`, not a bare `u8` (review round 1, finding 2): the wire's own
-/// zero-based index and this one-based number are different things, and the natural, wrong call
-/// `check_restore_profile(snap.profile, ops::profile(s)?, force)` must not be able to compile.
+/// Both are `wh_proto::cmds::ProfileNumber`, not a bare `u8` (review round 1, finding 2): the
+/// wire's own zero-based index and the UI's one-based number are different things. Since task 20
+/// step 4c, `ops::profile` itself returns an already-validated `ProfileNumber`, so the call at
+/// `restore`'s own call site below is simply `ops::profile(s)?`, with no conversion in sight to
+/// get wrong: the natural, wrong call the review round found, `check_restore_profile(snap.profile,
+/// ops::profile(s)?, force)`, is now also the only call that compiles, because there is no second
+/// constructor to reach for at that call site any more.
 ///
 /// Three cases, deliberately not collapsed into one flag:
 /// - recorded and matching: proceed.
@@ -807,8 +813,8 @@ fn verify_restore<T: Transport>(
 ///   since neither can be compared against the board's current profile, but they are not the
 ///   same claim, and the refusal message below has to say so rather than naming only the first.
 fn check_restore_profile(
-    snap_profile: Option<wh_config::profile::ProfileNumber>,
-    board_profile: wh_config::profile::ProfileNumber,
+    snap_profile: Option<wh_proto::cmds::ProfileNumber>,
+    board_profile: wh_proto::cmds::ProfileNumber,
     force: bool,
 ) -> Result<()> {
     match snap_profile {
@@ -861,8 +867,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // deleted this safety check as a side effect with nothing failing to compile. One extra
         // frame against the roughly thirty `auto_backup` already sends buys an invariant the
         // call structure enforces instead of one that only holds by accident of ordering.
-        let board_profile = wh_config::profile::ProfileNumber::from_wire_index(ops::profile(s)?)
-            .context("reading the board's active profile")?;
+        let board_profile = ops::profile(s).context("reading the board's active profile")?;
         check_restore_profile(snap.profile, board_profile, force)?;
         // Unlike `set`, which is scoped to the keys the caller selected, `restore` overwrites
         // every key in the snapshot: an auto-backup here is the only way back if the file
@@ -1062,12 +1067,12 @@ mod tests {
     }
 
     /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") for the
-    /// tests below, via `from_ui_number` (review round 2, minor 4, renamed in review round 3,
-    /// important 2): `from_wire_index(n - 1)` would underflow-panic on `pn(0)` instead of
-    /// returning a clear error, and `from_wire_index(n)` would silently mean a different
-    /// profile than `pn`'s own name promises.
-    fn pn(n: u8) -> wh_config::profile::ProfileNumber {
-        wh_config::profile::ProfileNumber::from_ui_number(n).unwrap()
+    /// tests below, via `from_one_based` (review round 2, minor 4; the type and this constructor
+    /// moved into `wh-proto` at task 20 step 4c): `from_wire_index(n - 1)` would underflow-panic
+    /// on `pn(0)` instead of returning a clear error, and `from_wire_index(n)` would silently mean
+    /// a different profile than `pn`'s own name promises.
+    fn pn(n: u8) -> wh_proto::cmds::ProfileNumber {
+        wh_proto::cmds::ProfileNumber::from_one_based(n).unwrap()
     }
 
     #[test]

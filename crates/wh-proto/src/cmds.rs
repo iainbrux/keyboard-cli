@@ -27,6 +27,21 @@ pub enum DecodeError {
     /// every other `DecodeError::Shape` call site in this module is unchanged.
     #[error("SYNC reply: {0}")]
     Identity(&'static str),
+    /// The wire's own zero-based profile index (`ProfileNumber::from_wire_index`) is past the
+    /// board's four measured profiles. Kept distinct from `Shape`, which means the reply itself
+    /// does not look like a profile reply at all: this means the reply parsed fine as a profile
+    /// reply, but the index inside it is one the board could never actually report, e.g. a
+    /// misbehaving device echoing its own request byte `0xFF` back. Callers that want to treat
+    /// "the reply was garbled" and "the reply named an impossible profile" differently (see
+    /// `wh_device::ops::profile`) rely on this variant staying separate from `Short` and `Shape`.
+    #[error("profile index {0} is out of range: the board has 4 profiles (wire index 0..=3)")]
+    ProfileOutOfRange(u8),
+    /// A one-based profile number (`ProfileNumber::from_one_based`) outside `1..=4`. Distinct
+    /// from `ProfileOutOfRange` above because the two constructors are validating different
+    /// conventions (a live wire index versus a stored one-based number), and the error should
+    /// name which one, not report a wire index that was never on the wire.
+    #[error("profile {0} is out of range: the board has 4 profiles, numbered 1..=4")]
+    ProfileNumberOutOfRange(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -187,7 +202,7 @@ pub mod order {
     pub const PRECISION: u8 = 0x25;
     pub const KEYBOARD_NAME: u8 = 0x26;
     pub const POLLING: u8 = 0x50;
-    pub const CONFIG: u8 = 0x70;
+    pub const PROFILE: u8 = 0x70;
 }
 
 /// `h_args` is caller-supplied and unbounded, unlike the other encoders in
@@ -221,26 +236,105 @@ pub fn parse_precision(payload: &[u8]) -> Result<Precision, DecodeError> {
     })
 }
 
-/// Read the board's active profile: cmd 0x00, sub-order `order::CONFIG` (0x70), arg 0xFF.
+/// The board's own bound: the K-001 has four profiles, wire index `0..=3` (task 19b group B,
+/// measured).
+const MAX_WIRE_INDEX: u8 = 3;
+
+/// A validated profile index. Wire-index-native: internally this holds the same zero-based index
+/// the board itself uses (`0..=3` for the four measured profiles), because `parse_profile` below
+/// is the seam where a wire byte becomes a program value, and it already rejects a reply to the
+/// wrong sub-order three lines away; rejecting a wire index the board could never actually report
+/// is the same class of check.
+///
+/// Two constructors exist, for two different conventions, and they are not interchangeable
+/// despite both taking a bare `u8`:
+///
+/// - [`from_wire_index`](Self::from_wire_index) takes the wire's own zero-based index, exactly
+///   what a live `parse_profile` reply carries. This is the only constructor `parse_profile`
+///   itself calls, so a value read straight off the wire is validated in the one place it becomes
+///   a `ProfileNumber`, before a caller ever sees a bare index.
+/// - [`from_one_based`](Self::from_one_based) takes a plain one-based number (`1..=4`), for a
+///   caller that already has one in hand: a snapshot's TOML field (stored one-based, since that
+///   is the number a human reads and types), or a test building "profile 2" directly. It exists
+///   so those callers never have to fake a wire index by subtracting 1 by hand, which underflows
+///   on the boundary value 0.
+///
+/// **What this type does not protect against.** Both constructors take a bare `u8`, so nothing
+/// stops a caller who already holds a `ProfileNumber` from pulling the wire index back out via
+/// [`wire_index`](Self::wire_index) and feeding it to `from_one_based`, or vice versa, and getting
+/// a different profile out the other side silently. What this type does close is the specific,
+/// measured case where that mistake used to matter most: a live wire read (`ops::profile`, in
+/// `wh-device`) now returns an already-validated `ProfileNumber` directly, so a call site that
+/// consumes a live read never has a bare wire-index `u8` in hand to pass to the wrong constructor
+/// in the first place. A caller that goes out of its way to unwrap one convention and rebuild the
+/// other is still possible; a caller that just reads the board's profile and uses it is not
+/// exposed to the mistake at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProfileNumber(u8);
+
+impl ProfileNumber {
+    /// Converts the wire's own zero-based index. Rejects anything past the board's four measured
+    /// profiles instead of accepting it: a device reporting an index like `0xFE` or `0xFF` is not
+    /// one whose profile provenance should be trusted at all.
+    pub fn from_wire_index(idx: u8) -> Result<Self, DecodeError> {
+        if idx > MAX_WIRE_INDEX {
+            return Err(DecodeError::ProfileOutOfRange(idx));
+        }
+        Ok(Self(idx))
+    }
+
+    /// Converts a plain one-based number (`1..=4`) directly, rejecting `0` and anything past the
+    /// board's four measured profiles. See the type's own doc comment for why this exists
+    /// alongside `from_wire_index` rather than making every caller do `from_wire_index(n - 1)`.
+    pub fn from_one_based(n: u8) -> Result<Self, DecodeError> {
+        if n == 0 || n > MAX_WIRE_INDEX + 1 {
+            return Err(DecodeError::ProfileNumberOutOfRange(n));
+        }
+        Ok(Self(n - 1))
+    }
+
+    /// The wire's own zero-based index, for a caller that needs to send it back (a future
+    /// profile-select encoder) rather than display it.
+    pub fn wire_index(self) -> u8 {
+        self.0
+    }
+
+    /// The one-based number, for storing into a TOML snapshot or any other UI-facing text.
+    /// `Display` (below) covers every other use, printing the same number.
+    pub fn one_based(self) -> u8 {
+        self.0 + 1
+    }
+}
+
+impl std::fmt::Display for ProfileNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.one_based())
+    }
+}
+
+/// Read the board's active profile: cmd 0x00, sub-order `order::PROFILE` (0x70), arg 0xFF.
 /// `cmd_order` already lays out `[order_id, ...h_args, 0xFF, 0xFF]`, so passing `0xFF` as the
 /// single `h_args` byte produces exactly the measured `[0x70, 0xFF, 0xFF, 0xFF]` payload (task
 /// 19b group B).
 pub fn read_profile() -> [u8; REPORT_LEN] {
-    cmd_order(order::CONFIG, &[0xFF]).expect("4 bytes")
+    cmd_order(order::PROFILE, &[0xFF]).expect("4 bytes")
 }
 
 /// Reply payload `[status, sub-order, index, 0xff]` for the profile read above. Returns the
-/// zero-based profile index at `payload[2]`. Rejects a payload too short to contain it, and
-/// rejects a reply whose `payload[1]` is not `order::CONFIG`: a reply to a different sub-order
-/// landing here must not be misread as a plausible but wrong profile index.
-pub fn parse_profile(payload: &[u8]) -> Result<u8, DecodeError> {
+/// wire's own zero-based profile index at `payload[2]`, already validated: this is the sole
+/// place a wire byte becomes a `ProfileNumber` (see that type's own doc comment), so a caller
+/// holding a `ProfileNumber` never has to trust an unchecked index again. Rejects a payload too
+/// short to contain the index, rejects a reply whose `payload[1]` is not `order::PROFILE` (a
+/// reply to a different sub-order landing here must not be misread as a plausible but wrong
+/// profile index), and rejects an index the board's four measured profiles could never produce.
+pub fn parse_profile(payload: &[u8]) -> Result<ProfileNumber, DecodeError> {
     if payload.len() < 3 {
         return Err(DecodeError::Short(payload.len()));
     }
-    if payload[1] != order::CONFIG {
+    if payload[1] != order::PROFILE {
         return Err(DecodeError::Shape);
     }
-    Ok(payload[2])
+    ProfileNumber::from_wire_index(payload[2])
 }
 
 pub fn sync() -> [u8; REPORT_LEN] {
@@ -533,7 +627,7 @@ mod tests {
         assert_eq!(f[1], 3);
         assert_eq!(&f[4..7], &[0x02, 0xFF, 0xFF]);
 
-        let f2 = cmd_order(order::CONFIG, &[0x01]).unwrap();
+        let f2 = cmd_order(order::PROFILE, &[0x01]).unwrap();
         assert_eq!(&f2[4..8], &[0x70, 0x01, 0xFF, 0xFF]);
     }
 
@@ -568,8 +662,18 @@ mod tests {
 
     #[test]
     fn parse_profile_reads_the_zero_based_index_from_the_real_replies() {
-        assert_eq!(parse_profile(&[0x00, 0x70, 0x00, 0xFF]).unwrap(), 0);
-        assert_eq!(parse_profile(&[0x00, 0x70, 0x01, 0xFF]).unwrap(), 1);
+        assert_eq!(
+            parse_profile(&[0x00, 0x70, 0x00, 0xFF])
+                .unwrap()
+                .wire_index(),
+            0
+        );
+        assert_eq!(
+            parse_profile(&[0x00, 0x70, 0x01, 0xFF])
+                .unwrap()
+                .wire_index(),
+            1
+        );
     }
 
     #[test]
@@ -582,12 +686,81 @@ mod tests {
 
     #[test]
     fn parse_profile_rejects_a_reply_to_a_different_sub_order() {
-        // payload[1] is 0x50 (order::POLLING), not order::CONFIG: a reply to a different
+        // payload[1] is 0x50 (order::POLLING), not order::PROFILE: a reply to a different
         // sub-order landing here must be rejected, not misread as profile index 0x00.
         assert_eq!(
             parse_profile(&[0x00, 0x50, 0x00, 0xFF]).unwrap_err(),
             DecodeError::Shape
         );
+    }
+
+    #[test]
+    fn parse_profile_rejects_an_index_the_board_cannot_report() {
+        // 0xFE is past the board's four measured profiles (wire index 0..=3): a garbled or
+        // misbehaving reply must not decode into a plausible-looking but meaningless profile.
+        assert_eq!(
+            parse_profile(&[0x00, 0x70, 0xFE, 0xFF]).unwrap_err(),
+            DecodeError::ProfileOutOfRange(0xFE)
+        );
+    }
+
+    #[test]
+    fn profile_number_from_wire_index_converts_zero_based_to_one_based() {
+        assert_eq!(ProfileNumber::from_wire_index(0).unwrap().one_based(), 1);
+        assert_eq!(ProfileNumber::from_wire_index(3).unwrap().one_based(), 4);
+    }
+
+    #[test]
+    fn profile_number_from_one_based_accepts_the_full_range_without_underflowing() {
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().one_based(), 1);
+        assert_eq!(ProfileNumber::from_one_based(4).unwrap().one_based(), 4);
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().wire_index(), 0);
+    }
+
+    #[test]
+    fn profile_number_from_one_based_rejects_zero_and_anything_past_four() {
+        assert_eq!(
+            ProfileNumber::from_one_based(0).unwrap_err(),
+            DecodeError::ProfileNumberOutOfRange(0)
+        );
+        assert_eq!(
+            ProfileNumber::from_one_based(5).unwrap_err(),
+            DecodeError::ProfileNumberOutOfRange(5)
+        );
+    }
+
+    /// The two constructors take the same argument type but different conventions: pinned here
+    /// as a behavioural difference, not just a doc comment. The same input, `1`, means "profile
+    /// 2" through `from_wire_index` (it is a wire index) and "profile 1" through `from_one_based`
+    /// (it is already the one-based number).
+    #[test]
+    fn profile_number_constructors_disagree_on_the_same_input_by_design() {
+        assert_eq!(ProfileNumber::from_wire_index(1).unwrap().one_based(), 2);
+        assert_eq!(ProfileNumber::from_one_based(1).unwrap().one_based(), 1);
+    }
+
+    #[test]
+    fn profile_number_from_wire_index_rejects_an_index_the_board_cannot_report() {
+        assert_eq!(
+            ProfileNumber::from_wire_index(0xFE).unwrap_err(),
+            DecodeError::ProfileOutOfRange(0xFE)
+        );
+        assert_eq!(
+            ProfileNumber::from_wire_index(0xFF).unwrap_err(),
+            DecodeError::ProfileOutOfRange(0xFF)
+        );
+        // The two wire indices `saturating_add(1)` would otherwise collapse into the same 255
+        // must stay distinct all the way to the error a caller sees.
+        assert_ne!(
+            ProfileNumber::from_wire_index(0xFE).unwrap_err(),
+            ProfileNumber::from_wire_index(0xFF).unwrap_err()
+        );
+    }
+
+    #[test]
+    fn profile_number_display_prints_the_one_based_number() {
+        let p = ProfileNumber::from_wire_index(1).unwrap();
+        assert_eq!(p.to_string(), "2");
     }
 
     #[test]

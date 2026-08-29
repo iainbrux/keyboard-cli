@@ -1,7 +1,7 @@
 //! The user-facing TOML snapshot of a board's settings.
 
-use crate::profile::ProfileNumber;
 use serde::{Deserialize, Serialize};
+use wh_proto::cmds::ProfileNumber;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -10,13 +10,15 @@ pub struct Snapshot {
     pub taken_at: String, // RFC3339, informational
     /// The board's active profile at the moment this snapshot was taken. `ProfileNumber` (not a
     /// bare `u8`) so the UI's one-based numbering can never be mixed up with the wire's own
-    /// zero-based index at a call site (task 19b group B, review round 1 finding 2); see
-    /// `ProfileNumber`'s own doc comment. `None` means this snapshot predates profile recording,
-    /// so its provenance is unknown, not that the board has no active profile (every board
-    /// always has one). Absent entirely from a snapshot's TOML deserializes to `None` (serde's
-    /// own behaviour for a missing `Option` field), so backups taken before this field existed
-    /// still parse.
-    #[serde(default)]
+    /// zero-based index at a call site (task 19b group B, review round 1 finding 2; the type
+    /// itself moved into `wh-proto` at task 20 step 4c, see its own doc comment there). `None`
+    /// means this snapshot predates profile recording, so its provenance is unknown, not that the
+    /// board has no active profile (every board always has one). Absent entirely from a
+    /// snapshot's TOML deserializes to `None` (serde's own behaviour for a missing `Option`
+    /// field), so backups taken before this field existed still parse. `wh-proto` carries no
+    /// serde dependency, so this field goes through `crate::profile`'s bridge functions
+    /// (`#[serde(with = "...")]`) rather than a direct impl on `ProfileNumber`.
+    #[serde(default, with = "crate::profile")]
     pub profile: Option<ProfileNumber>,
     pub global: GlobalToml,
     pub keys: Vec<KeyToml>,
