@@ -550,6 +550,45 @@ fn verify_rt_off<T: Transport>(
     report_verification(out, "rt off", &usages, &bad)
 }
 
+/// Verifies an actuation point write: AP for every key in `usages`, MODE only for a key whose
+/// `records` include a MODE entry (`ops::ap_records` deliberately leaves `Rt`, `RtContinuous`,
+/// `Unknown`, and already-`Single` keys untouched). Catches a board that acks the write but
+/// silently drops the MODE write, leaving the key `Global` and greyed in the vendor UI.
+fn verify_ap<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    depth: Um,
+    usages: &[u8],
+    records: &[KeyRecord],
+) -> Result<()> {
+    let mut bad = Vec::new();
+    for &u in usages {
+        let ks = ops::read_key_settings(s, u)?;
+        let name = key_label(u);
+        if ks.ap != depth {
+            bad.push(format!(
+                "{name}: board reports {:.2}mm, wanted {:.2}mm",
+                ks.ap.to_mm(),
+                depth.to_mm()
+            ));
+        } else if let Some(want_mode) = records
+            .iter()
+            .find(|r| r.key == u && r.layout == layout::MODE)
+            .map(|r| r.value)
+        {
+            if ks.mode.value() != want_mode {
+                bad.push(format!(
+                    "{name}: board reports mode {:#06x}, wanted mode {:#06x} (single, key no \
+                     longer follows global travel)",
+                    ks.mode.value(),
+                    want_mode,
+                ));
+            }
+        }
+    }
+    report_verification(out, &format!("ap {:.2}mm", depth.to_mm()), usages, &bad)
+}
+
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
 /// cannot disagree with themselves, unlike a bare `off: bool` plus a separate
 /// `Option<(Um, Um)>` could.
@@ -626,25 +665,8 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     return print_frames(&mut out, &cmds::write_key_records(&records));
                 }
                 auto_backup(s, store)?;
-                ops::set_ap(s, &usages, depth)?;
-                let mut bad = Vec::new();
-                for &u in &usages {
-                    let ks = ops::read_key_settings(s, u)?;
-                    if ks.ap != depth {
-                        bad.push(format!(
-                            "{}: board reports {:.2}mm, wanted {:.2}mm",
-                            key_label(u),
-                            ks.ap.to_mm(),
-                            depth.to_mm()
-                        ));
-                    }
-                }
-                report_verification(
-                    &mut out,
-                    &format!("ap {:.2}mm", depth.to_mm()),
-                    &usages,
-                    &bad,
-                )
+                let records = ops::set_ap(s, &usages, depth)?;
+                verify_ap(&mut out, s, depth, &usages, &records)
             })
         }
     }

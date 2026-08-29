@@ -641,13 +641,19 @@ fn keys_list_renders_an_unnamed_group_member_as_hex_not_dropping_it() {
 /// coincidence. `profile_idx` lets `restore`'s profile-safety tests script a board profile that
 /// matches or differs from the snapshot being restored.
 fn auto_backup_lines(profile_idx: u8) -> Vec<String> {
+    auto_backup_lines_with_modes(profile_idx, 0x0220, 0x00)
+}
+
+/// Like `auto_backup_lines`, but lets a caller pick 'w' and 'a''s pre-write MODE values, for a
+/// scenario that needs a specific touch nibble already on the board (e.g. rapid trigger on 'w').
+fn auto_backup_lines_with_modes(profile_idx: u8, mode_w: u16, mode_a: u16) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(sync_lines("SNWRITETEST00001", "V1.0.0.001"));
     lines.extend(profile_lines(profile_idx));
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
-    lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500, 0, 0)); // 'w' pre-write
-    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0)); // 'a' pre-write
+    lines.extend(key_settings_lines(0x1A, 1000, mode_w, 500, 500, 0, 0)); // 'w' pre-write
+    lines.extend(key_settings_lines(0x04, 1500, mode_a, 0, 0, 0, 0)); // 'a' pre-write
     lines
 }
 
@@ -760,13 +766,13 @@ fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
     let recs = vec![
         KeyRecord {
             key: 0x04,
-            layout: layout::AP,
-            value: 1200,
+            layout: layout::MODE,
+            value: 0x10,
         },
         KeyRecord {
             key: 0x04,
-            layout: layout::MODE,
-            value: 0x10,
+            layout: layout::AP,
+            value: 1200,
         },
     ];
     let batch = cmds::write_key_records(&recs);
@@ -777,7 +783,8 @@ fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
     // Readback verification reads all six layouts for 'a'; MODE now comes back 0x10, reflecting
-    // the promotion just written.
+    // the promotion just written. `verify_ap` checks this MODE value because the write batch
+    // above included a MODE record for 0x04.
     lines.extend(key_settings_lines(0x04, readback_ap, 0x10, 0, 0, 0, 0));
     lines
 }
@@ -791,6 +798,64 @@ fn set_ap_end_to_end_promotes_a_global_key_to_single() {
 
     let out = run_wh(
         &["set", "ap", "--keys", "a", "--set", "1.2"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The end-to-end sibling of `ops::ap_records_never_clears_rapid_trigger`, driven through
+/// `run.rs` to the wire instead of unit-tested against `ops` alone: `wh set ap --keys w` against
+/// 'w' (0x1A), whose MODE reads back `Rt` (0x38). The write batch scripted below is AP alone; if
+/// `ap_records` ever forced the touch nibble to `Single` here, the frame it actually sent would
+/// no longer match this script and `ReplayTransport` would reject it as a send mismatch, proving
+/// rapid trigger provably survives a depth change through the real command path.
+fn set_ap_preserves_rapid_trigger_script(readback_ap: u16) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
+    lines.extend(auto_backup_lines_with_modes(0, 0x38, 0x00));
+    lines.extend(mode_read_lines(0x1A, 0x38)); // ap_records' own pre-write MODE read: Rt
+
+    let recs = vec![KeyRecord {
+        key: 0x1A,
+        layout: layout::AP,
+        value: 1200,
+    }];
+    let batch = cmds::write_key_records(&recs);
+    for f in &batch {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    // No SAVE order follows the write batch: the vendor was never observed sending one.
+
+    // Readback verification reads all six layouts for 'w'; MODE still comes back 0x38, proving
+    // rapid trigger survived the depth change.
+    lines.extend(key_settings_lines(0x1A, readback_ap, 0x38, 500, 500, 0, 0));
+    lines
+}
+
+/// `set ap --keys w --set 1.2` against a key with rapid trigger on: the write batch carries no
+/// MODE record, and the run still succeeds and verifies, including the MODE value on readback.
+#[test]
+fn set_ap_end_to_end_preserves_rapid_trigger() {
+    let path = write_script(
+        "set-ap-preserve-rt",
+        &set_ap_preserves_rapid_trigger_script(1200),
+    );
+    let config_home = scratch_config_dir("set-ap-preserve-rt");
+
+    let out = run_wh(
+        &["set", "ap", "--keys", "w", "--set", "1.2"],
         &path,
         &config_home,
     );

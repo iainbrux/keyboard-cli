@@ -214,12 +214,14 @@ pub fn set_rt_off<T: Transport>(
     Ok(records)
 }
 
-/// Builds the [ap, mode?] records to set `usages`' actuation point (layout DB0). Reads current
+/// Builds the [mode?, ap] records to set `usages`' actuation point (layout DB0). Reads current
 /// MODE per key but sends nothing else, so a caller can dry-run before writing.
 ///
 /// Always writes AP. Also writes MODE, promoted to `Single`, but only when the key currently
 /// reads `Global`: that is the marker the vendor sets on every actuation point change, and the
-/// reason a value written without it renders greyed in the configurator.
+/// reason a value written without it renders greyed in the configurator. MODE is ordered before
+/// AP, matching the one ordering measured on hardware (`captures/ap-wasd-1.2.jsonl`); whether the
+/// device cares about intra-batch order is unmeasured, so there is no reason to diverge from it.
 ///
 /// `Single`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. `Rt`/`RtContinuous` matter
 /// most: an RT key still carries its own actuation point, so a depth change must not silently
@@ -233,11 +235,6 @@ pub fn ap_records<T: Transport>(
 ) -> Result<Vec<KeyRecord>, DeviceError> {
     let mut records = Vec::new();
     for &u in usages {
-        records.push(KeyRecord {
-            key: u,
-            layout: layout::AP,
-            value: depth.0,
-        });
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
         if cur_mode.touch == TouchMode::Global {
@@ -252,18 +249,26 @@ pub fn ap_records<T: Transport>(
                 value: mode.value(),
             });
         }
+        records.push(KeyRecord {
+            key: u,
+            layout: layout::AP,
+            value: depth.0,
+        });
     }
     Ok(records)
 }
 
-/// Per-key actuation point (layout DB0), plus the MODE promotion `ap_records` builds.
+/// Per-key actuation point (layout DB0), plus the MODE promotion `ap_records` builds. Returns the
+/// exact records written, in `usages` order, so a caller can verify AP for every key and MODE for
+/// only the keys that actually got a MODE record.
 pub fn set_ap<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     depth: Um,
-) -> Result<(), DeviceError> {
+) -> Result<Vec<KeyRecord>, DeviceError> {
     let records = ap_records(s, usages, depth)?;
-    write_records(s, &records)
+    write_records(s, &records)?;
+    Ok(records)
 }
 
 pub fn device_info<T: Transport>(s: &mut Session<T>) -> Result<cmds::DeviceInfo, DeviceError> {
@@ -897,7 +902,8 @@ mod tests {
 
     #[test]
     fn ap_records_promotes_a_global_key_to_single() {
-        // touch nibble 0 (Global), advanced 8
+        // touch nibble 0 (Global), advanced 8. MODE must come before AP, matching the one
+        // ordering measured on hardware (captures/ap-wasd-1.2.jsonl).
         let lines = mode_read_script(0x09, 0x08, 0x00).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
@@ -906,13 +912,13 @@ mod tests {
             vec![
                 KeyRecord {
                     key: 0x09,
-                    layout: layout::AP,
-                    value: 300
+                    layout: layout::MODE,
+                    value: 0x18
                 },
                 KeyRecord {
                     key: 0x09,
-                    layout: layout::MODE,
-                    value: 0x18
+                    layout: layout::AP,
+                    value: 300
                 },
             ]
         );
@@ -987,7 +993,7 @@ mod tests {
         let lines = mode_read_script(0x09, 0x05, 0x27).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
-        assert_eq!(recs[1].value, 0x2715, "only the touch nibble may change");
+        assert_eq!(recs[0].value, 0x2715, "only the touch nibble may change");
         assert!(s.into_inner().finished());
     }
 
