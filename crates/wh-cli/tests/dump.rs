@@ -1331,6 +1331,54 @@ fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The distinction that justifies `DeviceError::ProfileOutOfRange` existing as its own variant,
+/// separate from `DeviceError::Decode` (task 20, fix round 1, important 5): a profile reply that
+/// fails to decode for a reason *other* than an out-of-range index, here a payload too short to
+/// hold the index at all, must still hard-fail `backup`, exactly like the pre-refactor behaviour
+/// and exactly unlike the out-of-range case the test above covers. If `ops::profile`'s two failure
+/// causes were ever collapsed back into one bucket and `snapshot_from_device` degraded on either,
+/// this would pass with `profile: None` and exit 0 instead of failing, silently turning a garbled
+/// reply into "unknown provenance" the same way an out-of-range index is meant to, alone, degrade.
+#[test]
+fn backup_hard_fails_on_a_profile_reply_too_short_to_decode() {
+    let mut lines = sync_lines("SNSHORTPROFILE01", "V1.0.0.001");
+    lines.push(out_line(&cmds::read_profile()));
+    // Two payload bytes, `[status, sub-order]`: shaped like the start of a profile reply but
+    // missing the index byte `parse_profile` needs, so it fails with `DecodeError::Short`, not
+    // `DecodeError::ProfileOutOfRange`.
+    lines.push(in_line(&reply(cmds::cmd::CMD, &[0x00, 0x70])));
+
+    let path = write_script("backup-short-profile", &lines);
+    let config_home = scratch_config_dir("backup-short-profile");
+    let out_path =
+        std::env::temp_dir().join(format!("wh-backup-short-{}.toml", std::process::id()));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "a garbled profile reply must hard-fail backup, not degrade to unknown provenance: \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("decode"),
+        "expected a decode failure naming the short payload: {stderr}"
+    );
+    assert!(
+        !out_path.exists(),
+        "backup must not write a partial snapshot file when it fails before finishing"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `selftest` must never send SAVE: it rewrites the global travel with its own current value
 /// and reads it back, and the script below never includes a SAVE roundtrip. If the
 /// implementation sent one anyway, `ReplayTransport` would reject the unexpected send and this
