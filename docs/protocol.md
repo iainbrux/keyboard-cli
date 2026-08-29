@@ -154,11 +154,11 @@ parsing them as layout records produces nonsense).
 | `0x08` | 2252 | 5 | Mode (touch mode nibble plus advanced-key nibble). Modelled and used by `wh` |
 | `0x14` | 1858 | 3 | RT press depth, micrometres. Modelled and used by `wh` |
 | `0x15` | 1858 | 4 | RT release depth, micrometres. Modelled and used by `wh` |
-| `0x16` | 1858 | 1 | **Always `0`.** Never once observed non-zero across the whole corpus, written alongside every rapid trigger change. Purpose unknown |
-| `0x17` | 1858 | 1 | **Always `0`,** same as `0x16`. Purpose unknown |
+| `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Reads `100` on every key touched since, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
+| `0x17` | 1858 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
 | `0x19` | 700 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | Keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set. Read and used by `wh` (Phase 2) |
-| `0xff` | 420 | 3 | Read `210` times, written `0`. Inferred as the actuation point keyset index; read and used by `wh` (Phase 2), see `docs/backlog.md` |
+| `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: measured reaching `2`. Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
+| `0xff` | 420 | 3 | Actuation point keyset index, host-written, measured to `9`. Recorded here as read-but-never-written from a corpus that had never created a keyset. Read and used by `wh` (Phase 2) |
 
 
 The record counts above are what these ten captured scenarios happened to exercise, not each field's
@@ -170,8 +170,8 @@ full possible range. Within the corpus: layout `0x04` (actuation point) only eve
 `wh` models four of these: `0x04`, `0x08`, `0x14`, `0x15`. `0x00` and `0x01` are now identified (see
 below) but `wh` does not read or write the key mapping through them; remapping keys is out of Phase 1
 scope. `0x16`, `0x17`, and `0x19` remain unused by `wh`. `0xff` and `0xfe` are read (Phase 2), not
-written: `wh` surfaces each key's raw keyset value but does not yet write keyset membership, since
-writing it is unspecified pending the capture session in `docs/tasks.md` (2.3/2.4). Board keyset
+yet written: `wh` surfaces each key's raw keyset value, and how the vendor writes membership is now
+fully measured in `docs/keysets.md`, pending task 2.4. Board keyset
 membership is not the same thing as a `wh keys group`, which is a purely host-side name for a set of
 keys stored in `wh`'s own `config.json` and never sent to the board at all. The two happen to share
 the word "group"/"keyset"; they are not the same mechanism.
@@ -186,14 +186,26 @@ divergences.
 
 Upstream (`research/proto/package/src/constants/param.ts`'s `KeyTouchMode`, and
 `byte.ts`'s near-identical copy) declares three values: `global = 0x00`, `single = 0x01`,
-`rt = 0x02`. Measured against the real device across 1224 captured frames, the K-001 does not use
-`0x02` for anything: the nibble only ever took `0` (follow the global travel setting), `1` (per-key
-actuation point, no rapid trigger), `3` (per-key rapid trigger, continuous mode off), or `4` (the
-same with continuous mode on). `0x02` was never once observed on the wire, in either direction, in
-any of the ten captured scenarios. Whatever `KeyTouchMode.rt = 0x02` means upstream, on this
-firmware rapid trigger is `0x03` or `0x04`, not `0x02`; a port that writes `0x02` expecting rapid
-trigger to turn on will instead land on whatever this firmware treats an unrecognised nibble as,
-untested territory this document does not cover.
+`rt = 0x02`. An earlier draft of this document recorded, from 1224 captured frames, that the K-001
+never uses `0x02` for anything. **That was a statement about the sample, and the sample was blind:**
+no capture in it had ever touched the GLOBAL RAPID TRIGGER switch. Measured on 2026-08-29, turning
+that switch on writes nibble `2` to every key outside a rapid trigger keyset. Upstream was right.
+
+The five nibbles now measured:
+
+| Nibble | Meaning |
+|---|---|
+| `0` | follows the global travel setting, no rapid trigger |
+| `1` | per-key actuation point, no rapid trigger |
+| `2` | rapid trigger, following the global settings |
+| `3` | rapid trigger, own settings, continuous mode off |
+| `4` | the same with continuous mode on |
+
+Nibble `2` and nibble `3` are both rapid trigger on. They differ in where the sensitivity comes
+from: `2` follows the global RT SENSITIVITY, `3` carries the key's own, which is what a rapid
+trigger keyset holds. Any code deciding whether rapid trigger is enabled must treat `2`, `3` and `4`
+alike; treating `2` as unknown reports rapid trigger off on a board where it is on for every key.
+See `docs/keysets.md` for the full evidence.
 
 **Writing an actuation point does not touch this layout at all.** `wh set ap` writes layout `0x04`
 alone. This is measured, not assumed: `docs/tasks.md` records a hardware check where a key's
@@ -325,15 +337,17 @@ Honestly, what this corpus does not resolve:
   it across the whole corpus, and the measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a
   `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
   may be something else entirely.
-- Layouts `0x16`, `0x17`, and `0x19`: present, measured, and never once informative in this corpus
-  (`0x16`/`0x17` never non-zero; `0x19` only ever two values). `0xff` is the one exception: only
-  ever three values in the corpus, but that distribution is what the keyset inference in
-  `docs/backlog.md` rests on. What the corpus does not resolve for `0xff` is whether anything writes
-  it and what `0` denotes; see 2.3 in `docs/tasks.md`.
+- Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero, which
+  held only until a keyset existed; they have read `100` ever since and have never been observed
+  changing, including through two global sensitivity changes. `0x19` is still only ever `0x0000` or
+  `0x3e2c`. `0xff` and `0xfe` are no longer open: both are host-written keyset indices, allocated
+  max plus one, measured in `docs/keysets.md`.
 - Commands `0x18` and `0x2c`: unidentified at the command level, discussed above.
 - The nine unidentified `cmd 0x00` sub-orders: `0x22`, `0x50`, `0xa1`, `0xb9`, `0xba`, `0xbb`,
-  `0xbc`, `0xbd`, `0xc0`. All confined to the connect sequence except `0xbd`, which recurs as a
-  poll.
+  `0xbc`, `0xbd`, `0xc0`. Two now have a context beyond the connect sequence: `0x22` is read three
+  times at the head of every global rapid trigger capture, always replying `0`, and `0xbd` is sent
+  once immediately before a global sensitivity write as well as before the write in
+  `remap-one-key`.
 - Key `0x01`'s identity: probably FN, from its position in the key enumeration, but this was
   deliberately never measured directly, because confirming it means remapping FN away, and FN is
   how the board reaches the FN layer used to identify every other remapped key in this document.

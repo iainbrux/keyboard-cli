@@ -31,11 +31,23 @@ rather than as settings it recognises.
   real board. `0xFF` is host-written, allocation is max plus one and never reuses a freed index, the
   two layouts have separate counters, `0xFE` is an index and not a boolean, and a delete resets the
   value to the global before clearing membership. Full write-up in `docs/keysets.md`.
-- [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it: two
-  independent counters, max-plus-one allocation with no gap reuse, membership written one record per
-  frame, and the create/delete orderings the vendor uses. **Scope grew:** `wh restore` must restore
-  membership too. Measured on 2026-08-29, a restore put every value back and left four keysets in
-  place, so the board no longer matched the snapshot it had just been restored from.
+- [ ] **2.12 Model touch nibble 2 (global rapid trigger). Blocks 2.4.** Measured 2026-08-29:
+  turning GLOBAL RAPID TRIGGER on writes MODE touch nibble `2` to every key outside a rapid trigger
+  keyset. `TouchMode` maps `2` to `Unknown(2)` and `rt_enabled()` matches only `Rt`/`RtContinuous`,
+  so `wh dump` and `wh get rt` report rapid trigger **off** on a board where it is on for every key.
+  A reporting bug, not a data-loss one: read-modify-write preserved the nibble it could not name.
+  Add the variant, fix `rt_enabled`, `raw_mode_rt_on` and the display paths. 2.4's write template
+  depends on `rt_enabled` being right.
+- [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it completely
+  from fourteen capture scenarios: one write template shared by every operation, values always
+  before membership, membership one record per frame and always last, non-owned layouts rewritten at
+  each key's current value, the whole template written only when an owned value differs, max-plus-one
+  allocation from live membership with no gap reuse, and a new keyset taking the global value rather
+  than its members'. Creating a keyset over a key already in one steals it. **Scope grew:**
+  `wh restore` must restore membership too. Measured on 2026-08-29, a restore put every value back
+  and left four keysets in place, so the board no longer matched the snapshot it had just been
+  restored from. CLI surface agreed: `wh keyset list|create|set|delete`, and `wh set ap` on a key
+  already in a keyset splits it into a new keyset automatically, telling the user it did so.
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
@@ -96,8 +108,13 @@ rather than as settings it recognises.
   by anything in Phase 1.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
   observed non-zero across 1858 records. That held only until a keyset was created: they hold `100`
-  on every key a keyset touches, and they do not track the rapid trigger press and release values.
-  `0x19` is still only ever `0x0000` or `0x3e2c`.
+  on every key a keyset touches. They are not the global rapid trigger sensitivity either, measured
+  2026-08-29: they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and
+  then `200`. `0x19` is still only ever `0x0000` or `0x3e2c`.
+- [ ] **Where the global rapid trigger sensitivity is stored.** No global command carries it. It
+  appears only in `0x14`/`0x15` of keys outside a rapid trigger keyset, which would also be how the
+  configurator reads it back. Plausible and testable, not measured. Needed to name the reset target
+  of a rapid trigger keyset delete as something other than "what the vendor wrote".
 - [ ] **Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
   remapping FN away and FN is how you reach the layer that would let you undo that.
 - [ ] **Widen what a snapshot captures.** It currently records global travel, four layouts per key,
