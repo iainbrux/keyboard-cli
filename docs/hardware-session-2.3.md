@@ -71,6 +71,23 @@ These are `wh` writing to the board. Pick keys the vendor keysets do not already
    the key and both values, if a key it deliberately left alone reads back changed. **A silent
    success here is now meaningful.** Before this branch it was not.
 
+   **Then look at `w` in the vendor UI, and record whether it is greyed.** This is the step that
+   separates two hypotheses check 1 cannot tell apart, and it was added after a reviewer measured
+   something no document stated: in all five captures that write layout `0x04`, the vendor writes
+   layout `0x08` to the same key in the immediately preceding frame. It never sends an actuation
+   point write on its own. For a rapid trigger key the value it writes is that key's own current
+   nibble (`0x38` or `0x48`), which preserves rapid trigger.
+
+   We write no MODE record at all for `Rt`, `RtContinuous`, `Unknown` and already-`Single` keys. So
+   if the greying is caused by an actuation point write arriving *unaccompanied* by a MODE write,
+   rather than by the nibble's value, our rapid trigger path will still grey and hypothesis 1 is
+   subtly wrong. Check 1 uses `f`, a Global key, which gets a MODE record either way, so check 1
+   cannot detect this. Only this observation can.
+
+   If `w` comes back greyed while `f` does not, the fix is already identified: rewrite MODE with the
+   key's **current** value for non-Global keys. That matches the vendor byte for byte and still
+   cannot clear rapid trigger.
+
 3. **Profile select.**
    ```
    wh profile
