@@ -118,6 +118,53 @@ workflow with a different `PATH`, a different config location, and no shim. Both
 but the installer implies the native Windows path is a first-class way to use the tool, and the
 README currently does not describe it that way.
 
+### Decide what stays in `research/`
+
+**Where this came from.** GitHub reported the repository as 41% Rust, 34% Vue, 24% TypeScript,
+because linguist counts every tracked file and `research/` holds 195 vendored third-party files
+against 26 of our own. That symptom is fixed: `.gitattributes` marks `research/**` as
+`linguist-vendored`, so the files stay, their licences stay, and they stop being counted as ours.
+
+**The real question it exposed** is whether all four vendored packages have earned their place, and
+they have not equally:
+
+| Directory | Files | Size | Cited by our source? |
+|---|---|---|---|
+| `research/proto/` | 51 | 484K | **Yes.** Both `frame.rs` and `cmds.rs` name it as the origin of the port |
+| `research/kbdocs/` | 42 | 680K | No |
+| `research/hidpkg/` | 20 | 144K | No, and `THIRD_PARTY_NOTICES.md` says explicitly that nothing ports from it |
+| `research/aure/` | 82 | **4.3M** | No |
+
+For comparison, `crates/` is 26 files and 472K.
+
+**`research/proto/` should stay regardless.** It is load-bearing, not decorative:
+`crates/wh-proto/src/frame.rs` and `cmds.rs` carry `//! Port of research/proto/package/src/...` in
+their module docs, and those citations are how anyone verifies which files the Sparklink MIT notice
+attaches to. Removing it leaves the attribution chain pointing at nothing.
+
+**`research/aure/` is the one to think about.** It is a separate Vue driver project by another
+author, larger than the rest of the repository combined, cited nowhere in our code, and useful only
+as reference during reverse engineering. Keeping it is entirely legal with its MIT notice intact, and
+it is a genuinely useful frozen snapshot. It is also the bulk of a clone.
+
+**The two options.**
+
+1. **Keep all four as a pinned reference snapshot.** Costs clone size and nothing else. Defensible:
+   these are the exact versions the protocol work was done against, and a future capture session may
+   want to diff behaviour against them.
+2. **Trim to `research/proto/` and reference the rest by URL and exact version or commit.** Smaller
+   repository, but a URL can rot and a snapshot cannot, so record enough to re-fetch the identical
+   artefact rather than just a project name.
+
+**What a trim would touch**, so it is not done casually: `THIRD_PARTY_NOTICES.md` and
+`THIRD_PARTY_LICENSES.md` both enumerate all four packages with their licences, `research/README.md`
+tabulates them, and `.gitattributes` references the directory. The notices must keep covering
+whatever remains, and anything removed must stop being claimed.
+
+**Deliberately not urgent.** Nothing is wrong today. The licences are correct, the notices are
+complete, and the language bar is fixed. This is a housekeeping decision to take once a release is
+out, not something to rush while one is in flight.
+
 ### Writing keyset membership, so our changes render as keysets
 
 **Measured, and this corrects an earlier wrong entry.** Keysets are stored on the board, not in the
