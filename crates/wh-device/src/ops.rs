@@ -298,6 +298,23 @@ pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, 
     })
 }
 
+/// Selects `p`, then reads the profile back to confirm. `select_profile`'s ack does not
+/// reliably prove which profile landed, so a successful send alone is not treated as success:
+/// this re-reads with `profile()` and errors if the board reports anything but `p`.
+pub fn set_profile<T: Transport>(
+    s: &mut Session<T>,
+    p: cmds::ProfileNumber,
+) -> Result<cmds::ProfileNumber, DeviceError> {
+    s.roundtrip(&cmds::select_profile(p))?;
+    let got = profile(s)?;
+    if got != p {
+        return Err(DeviceError::Decode(format!(
+            "selected profile {p} but the board reports {got}"
+        )));
+    }
+    Ok(got)
+}
+
 /// Writes a whole snapshot back to the board: global travel first, then every per-key record.
 /// Global travel goes first so a restore that fails partway through the per-key batch still
 /// leaves the board's overall travel consistent with what was intended.
@@ -1267,6 +1284,40 @@ mod tests {
             matches!(err, DeviceError::ProfileOutOfRange(0xFE)),
             "expected ProfileOutOfRange(0xFE), got {err:?}"
         );
+    }
+
+    /// A select is confirmed by re-reading, not by trusting the ack: `set_profile` must send
+    /// exactly `cmds::select_profile`, then a fresh `cmds::read_profile`, in that order.
+    #[test]
+    fn set_profile_selects_then_reads_back() {
+        let target = cmds::ProfileNumber::from_one_based(2).unwrap();
+        let lines = [
+            l("out", &cmds::select_profile(target)),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70])),
+            l("out", &cmds::read_profile()),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70, 0x01, 0xFF])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let got = set_profile(&mut s, target).unwrap();
+        assert_eq!(got.one_based(), 2);
+        assert!(s.into_inner().finished());
+    }
+
+    /// If the board reports a different profile after the select, that is a failure, not a
+    /// success to report cheerfully: the ack alone never proves the switch landed.
+    #[test]
+    fn set_profile_errors_when_the_board_lands_on_a_different_profile() {
+        let target = cmds::ProfileNumber::from_one_based(2).unwrap();
+        let lines = [
+            l("out", &cmds::select_profile(target)),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70])),
+            l("out", &cmds::read_profile()),
+            l("in", &rf(cmds::cmd::CMD, &[0x00, 0x70, 0x00, 0xFF])),
+        ]
+        .join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        assert!(set_profile(&mut s, target).is_err());
     }
 
     /// Writes the global travel DB record first, then the per-key batch(es), no SAVE

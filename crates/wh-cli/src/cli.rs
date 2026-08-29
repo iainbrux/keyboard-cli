@@ -55,6 +55,11 @@ pub enum Cmd {
         #[command(subcommand)]
         what: KeysWhat,
     },
+    /// Read or select the active profile
+    Profile {
+        /// Profile to select, 1 to 4. Omit to read the current one.
+        number: Option<u8>,
+    },
     /// No-op write self-test (writes current values back, verifies)
     Selftest,
 }

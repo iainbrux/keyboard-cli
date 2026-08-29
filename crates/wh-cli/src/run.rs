@@ -24,6 +24,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Set { what } => set(what, &store),
         Cmd::Backup { to } => backup(to, &store),
         Cmd::Restore { file, last, force } => restore(file, last, force, &store),
+        Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
     }
 }
@@ -673,6 +674,33 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             })
         }
     }
+}
+
+/// Reads the active profile with no argument, or selects one with `1..=4`. A select takes no
+/// automatic backup, unlike every write command above: this is a mode switch, not a settings
+/// write. Snapshots are recorded per-profile, which is exactly what makes `wh restore` refuse
+/// once the board is on a different profile than the one a snapshot was taken from.
+fn profile_cmd(number: Option<u8>) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    with_session(|s| match number {
+        None => {
+            let p = ops::profile(s)?;
+            writeln!(out, "profile {p}")?;
+            Ok(())
+        }
+        Some(n) => {
+            let target = cmds::ProfileNumber::from_one_based(n)?;
+            let confirmed = ops::set_profile(s, target)?;
+            writeln!(out, "profile {confirmed} selected")?;
+            writeln!(
+                out,
+                "note: snapshots are per-profile; `wh restore` refuses to write a snapshot \
+                 taken on a different profile than the one the board is currently on"
+            )?;
+            Ok(())
+        }
+    })
 }
 
 fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
