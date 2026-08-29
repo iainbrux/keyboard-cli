@@ -735,7 +735,7 @@ fn ap_fault_line(
 fn raw_mode_rt_on(mode_raw: u16) -> bool {
     matches!(
         cmds::Mode::from_value(mode_raw).touch,
-        cmds::TouchMode::Rt | cmds::TouchMode::RtContinuous
+        cmds::TouchMode::RtGlobal | cmds::TouchMode::Rt | cmds::TouchMode::RtContinuous
     )
 }
 
@@ -1344,6 +1344,20 @@ mod tests {
 
     /// One line per key, naming both faults. The `else if` this replaced hid a MODE fault behind
     /// an AP fault on the same key, which is exactly the pairing a failed write produces.
+    /// The pre-write nibble is reported through `raw_mode_rt_on`, which had no case for nibble 2.
+    /// A board that dropped a key out of the global rapid trigger would have been reported as
+    /// "expected mode 0x0020 unchanged (rt off)", naming the loss of rapid trigger as no change.
+    #[test]
+    fn ap_fault_line_names_the_global_rapid_trigger_nibble_as_rt_on() {
+        let ks = readback(Um(1200), 0x10);
+        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x20))
+            .expect("mode moved with no mode record sent");
+        assert!(
+            line.contains("0x0020 unchanged (rt on)"),
+            "the pre-write nibble 2 must read as rt on, got: {line}"
+        );
+    }
+
     #[test]
     fn ap_fault_line_names_both_faults_when_depth_and_mode_are_both_wrong() {
         let ks = readback(Um(1100), 0x18);

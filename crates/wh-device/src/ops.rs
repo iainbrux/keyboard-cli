@@ -19,10 +19,14 @@ pub struct KeySettings {
 }
 
 impl KeySettings {
-    /// True for either RT variant: `TouchMode::RtContinuous` is still rapid trigger, just with
-    /// the device's own continuous-mode toggle (not something `wh` exposes) left on.
+    /// True for all three rapid trigger nibbles. `RtGlobal` (2) follows the board's global
+    /// settings, `Rt` (3) carries the key's own, and `RtContinuous` (4) adds the device's
+    /// continuous-mode toggle, which `wh` does not expose. All three mean rapid trigger is on.
     pub fn rt_enabled(&self) -> bool {
-        matches!(self.mode.touch, TouchMode::Rt | TouchMode::RtContinuous)
+        matches!(
+            self.mode.touch,
+            TouchMode::RtGlobal | TouchMode::Rt | TouchMode::RtContinuous
+        )
     }
 }
 
@@ -118,6 +122,8 @@ pub fn rt_records<T: Transport>(
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
+        // `RtGlobal` collapses to `Rt`: asking for a sensitivity is asking for the key's own,
+        // which is nibble 3. That is what the vendor writes when it makes a rapid trigger keyset.
         let touch = match cur_mode.touch {
             TouchMode::RtContinuous => TouchMode::RtContinuous,
             _ => TouchMode::Rt,
@@ -149,10 +155,14 @@ pub fn rt_records<T: Transport>(
 /// Builds the [mode] records to turn rapid trigger off on `usages`, preserving each key's
 /// advanced-mode nibble. Reads current MODE per key but sends nothing else.
 ///
-/// Only rewrites keys currently `Rt` or `RtContinuous`, to `Single` (nibble 1), never to
-/// `Global` (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key
-/// with nothing to change gets no record (see the skip below), so `wh set rt --keys all --off`
-/// on a board with few RT keys doesn't detach every other key from the global travel setting.
+/// Only rewrites keys with rapid trigger on, to `Single` (nibble 1), never to `Global`
+/// (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key with
+/// nothing to change gets no record (see the skip below), so `wh set rt --keys all --off` on a
+/// board with few RT keys doesn't detach every other key from the global travel setting.
+///
+/// `RtGlobal` counts: a key following the board's global rapid trigger has it on, so `--off`
+/// must turn it off. Nibble 1 is what the vendor itself writes when the global switch goes off
+/// (`captures/ks-global-rt-off.jsonl`), so this is the same value from the same measurement.
 ///
 /// Measured on the real device (`captures/rt-off-w.jsonl`): turning RT off wrote nibble 1, not
 /// 0. What nibble 0 does to the key's own actuation-point value is unmeasured; this function
@@ -166,7 +176,7 @@ pub fn rt_off_records<T: Transport>(
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
         let touch = match cur_mode.touch {
-            TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
+            TouchMode::RtGlobal | TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
             other => other,
         };
         let mode = Mode {
@@ -252,11 +262,11 @@ impl ApPlan {
 /// writes before one AP write, measured three times over in `captures/ap-wasd-1.2.jsonl`; our
 /// per-key interleaving is a deliberate divergence whose safety is untested.
 ///
-/// `Single`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. `Rt`/`RtContinuous` matter
-/// most: an RT key still carries its own actuation point, so a depth change must not silently
-/// turn rapid trigger off. Whether the vendor forces nibble 1 here is unmeasured, so this takes
-/// the non-destructive reading. `Unknown` nibbles have never been observed on hardware, so
-/// overwriting one would discard state we cannot interpret.
+/// `Single`, `RtGlobal`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. The three
+/// rapid trigger nibbles matter most: such a key still carries its own actuation point, so a
+/// depth change must not silently turn rapid trigger off. Whether the vendor forces nibble 1
+/// here is unmeasured, so this takes the non-destructive reading. `Unknown` nibbles have never
+/// been observed on hardware, so overwriting one would discard state we cannot interpret.
 ///
 /// A key's MODE and AP records can land in different write frames, and a failure between the two
 /// leaves those keys `Single`, detached from global travel, still holding their old actuation
@@ -1049,12 +1059,12 @@ mod tests {
         }
     }
 
-    /// An unobserved touch nibble is left exactly as found. Nibble 2 has never been seen on
+    /// An unobserved touch nibble is left exactly as found. Nibble 5 has never been seen on
     /// hardware, so overwriting it would discard state we cannot interpret.
     #[test]
     fn ap_records_leaves_an_unknown_touch_nibble_alone() {
-        // MODE 0x0220: touch nibble 2, which maps to TouchMode::Unknown(2).
-        let lines = mode_read_script(0x1A, 0x20, 0x02).join("\n");
+        // MODE 0x0250: touch nibble 5, which maps to TouchMode::Unknown(5).
+        let lines = mode_read_script(0x1A, 0x50, 0x02).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let plan = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
         assert_eq!(
@@ -1065,6 +1075,67 @@ mod tests {
                 value: 1000
             }],
             "an unknown touch nibble must yield no MODE record"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// A key following the board's global rapid trigger (nibble 2) has rapid trigger on. An
+    /// actuation point change must not write MODE for it, or the depth change would silently
+    /// turn rapid trigger off across every key the global switch covers.
+    #[test]
+    fn ap_records_leaves_the_global_rapid_trigger_nibble_alone() {
+        let lines = mode_read_script(0x1A, 0x20, 0x00).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let plan = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
+        assert_eq!(
+            plan.records,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::AP,
+                value: 1000
+            }],
+            "TouchMode::RtGlobal must yield no MODE record"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// Nibble 2 is rapid trigger on, following the global settings. Reporting it as off is what
+    /// `wh dump` did before the global rapid trigger switch was ever captured.
+    #[test]
+    fn rt_enabled_is_true_for_the_global_rapid_trigger_nibble() {
+        let ks = KeySettings {
+            usage: 0x1A,
+            ap: Um(2000),
+            mode: Mode::from_value(0x20),
+            rt_press: Um(200),
+            rt_release: Um(200),
+            ap_keyset: 0,
+            rt_keyset: 0,
+        };
+        assert_eq!(ks.mode.touch, TouchMode::RtGlobal);
+        assert!(
+            ks.rt_enabled(),
+            "a key at touch nibble 2 has rapid trigger on"
+        );
+    }
+
+    /// `--off` on a key following the global rapid trigger must actually turn it off. It writes
+    /// nibble 1, the value the vendor itself writes when the global switch goes off
+    /// (`captures/ks-global-rt-off.jsonl`).
+    #[test]
+    fn rt_off_records_turns_off_a_key_following_the_global_rapid_trigger() {
+        // MODE 0x0028: touch nibble 2, advanced nibble 8, as measured on W.
+        let lines = mode_read_script(0x1A, 0x28, 0x00).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_off_records(&mut s, &[0x1A]).unwrap();
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x18,
+            }],
+            "nibble 2 must be written down to nibble 1, preserving the advanced nibble"
         );
         assert!(s.into_inner().finished());
     }

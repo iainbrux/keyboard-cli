@@ -138,9 +138,10 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
 pub enum TouchMode {
     Global,       // 0x0
     Single,       // 0x1
-    Rt,           // 0x3, continuous off
-    RtContinuous, // 0x4, continuous on
-    Unknown(u8),  // any other nibble (0x2 included); preserved so read-modify-write is lossless
+    RtGlobal,     // 0x2, rapid trigger following the global settings
+    Rt,           // 0x3, own settings, continuous off
+    RtContinuous, // 0x4, own settings, continuous on
+    Unknown(u8),  // any other nibble; preserved so read-modify-write is lossless
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -161,6 +162,7 @@ impl Mode {
         let touch = match nibble {
             0x0 => TouchMode::Global,
             0x1 => TouchMode::Single,
+            0x2 => TouchMode::RtGlobal,
             0x3 => TouchMode::Rt,
             0x4 => TouchMode::RtContinuous,
             n => TouchMode::Unknown(n),
@@ -175,6 +177,7 @@ impl Mode {
         let t = match self.touch {
             TouchMode::Global => 0x0u8,
             TouchMode::Single => 0x1,
+            TouchMode::RtGlobal => 0x2,
             TouchMode::Rt => 0x3,
             TouchMode::RtContinuous => 0x4,
             TouchMode::Unknown(n) => n & 0x0F,
@@ -537,13 +540,13 @@ mod tests {
         assert_eq!(m.value(), 0x48);
     }
 
-    /// Nibble 2 never appeared in any of 1224 captured frames; it must stay folded into
-    /// `Unknown` rather than aliasing `Rt`, or a read-modify-write on a key in this state would
-    /// silently coerce it to `Rt`'s wire value.
+    /// Nibble 2 is rapid trigger following the global settings, measured 2026-08-29: turning
+    /// GLOBAL RAPID TRIGGER on wrote it to every key outside a rapid trigger keyset. It must not
+    /// alias `Rt` (nibble 3), which is the same feature with the key's own sensitivity.
     #[test]
-    fn mode_nibble_2_is_never_observed_and_stays_unknown() {
+    fn mode_nibble_2_is_rapid_trigger_from_the_global_settings() {
         let m = Mode::from_value(0x23);
-        assert_eq!(m.touch, TouchMode::Unknown(0x2));
+        assert_eq!(m.touch, TouchMode::RtGlobal);
         assert_eq!(m.advanced, 0x03);
         assert_eq!(m.value(), 0x23);
     }
@@ -560,10 +563,10 @@ mod tests {
     /// unmodified: `wh-cli`'s `dump`/`restore` depends on this being a true identity.
     #[test]
     fn mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte() {
-        let v = 0x0221u16; // high byte 0x02, touch nibble 0x2 (Unknown, never observed), advanced nibble 0x1
+        let v = 0x0221u16; // high byte 0x02, touch nibble 0x2 (RtGlobal), advanced nibble 0x1
         let m = Mode::from_value(v);
         assert_eq!(m.high, 0x02);
-        assert_eq!(m.touch, TouchMode::Unknown(0x2));
+        assert_eq!(m.touch, TouchMode::RtGlobal);
         assert_eq!(m.advanced, 0x01);
         assert_eq!(m.value(), v);
     }
