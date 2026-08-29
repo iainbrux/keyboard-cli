@@ -3,8 +3,8 @@
 Live checklist for `wh`. Items are struck through and ticked as they complete. Anything needing the
 keyboard physically present is marked **[hardware]**.
 
-Evidence for every protocol claim below is in `docs/protocol.md` and `docs/protocol-inventory.md`,
-measured from 1224 frames of real device traffic.
+Evidence for every protocol claim below is in `docs/protocol.md`, `docs/protocol-inventory.md` and
+`docs/keysets.md`, measured from 3696 frames of real device traffic across 27 capture files.
 
 ## Phase 1
 
@@ -12,7 +12,8 @@ Complete. See the Done section.
 
 ## Phase 2
 
-Numbered 2.0 to 2.9, matching `docs/superpowers/specs/2026-08-29-phase-2-design.md`. The objective
+Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.13
+added from what the hardware sessions measured. The objective
 is close to 1:1 interoperability between the CLI and terminal.wallhack.com. Keysets come first,
 because they are the one thing that makes our writes render as loose overrides in the vendor UI
 rather than as settings it recognises.
@@ -39,7 +40,7 @@ rather than as settings it recognises.
   bug, not a data-loss one: read-modify-write preserved the nibble it could not name.
   `TouchMode::RtGlobal` added, with `rt_enabled`, `rt_off_records` and `raw_mode_rt_on` fixed.
 - [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it completely
-  from fourteen capture scenarios: one write template shared by every operation, values always
+  from fifteen capture scenarios: one write template shared by every operation, values always
   before membership, membership one record per frame and always last, non-owned layouts rewritten at
   each key's current value, the whole template written only when an owned value differs, max-plus-one
   allocation from live membership with no gap reuse, and a new keyset taking the global value rather
