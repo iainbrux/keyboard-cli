@@ -683,8 +683,9 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // Readback verification reads all four layouts for 'w', not just AP; MODE/press/release
-    // echo back unchanged so only the AP field can drive a match or mismatch here.
+    // Readback verification reads all six layouts for 'w', not just AP. MODE echoes back the
+    // 0x0220 read before the write, so it verifies as unchanged and only the AP field can drive a
+    // match or mismatch here.
     lines.extend(key_settings_lines(
         0x1A,
         readback_ap,
