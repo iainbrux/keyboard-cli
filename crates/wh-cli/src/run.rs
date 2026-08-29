@@ -622,7 +622,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
                 if dry_run {
-                    let records = ops::ap_records(&usages, depth);
+                    let records = ops::ap_records(s, &usages, depth)?;
                     return print_frames(&mut out, &cmds::write_key_records(&records));
                 }
                 auto_backup(s, store)?;

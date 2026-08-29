@@ -20,6 +20,14 @@ vendor UI rather than as settings it recognises.
   and `0xFE` (rapid trigger keyset membership), read them per key, and surface them in `wh dump`,
   `wh dump --json`, `wh get`, and snapshots. Read only, no writes. Verifiable against the existing
   captures, so no board needed.
+- [ ] **Actuation point writes match the vendor. [hardware to verify]** Implemented: `wh set ap`
+  now also promotes MODE nibble 0 (Global) to nibble 1 (Single) on every actuation point change,
+  the marker the vendor sets that our own writes previously omitted. `Single`, `Rt`,
+  `RtContinuous`, and `Unknown` touch nibbles are left untouched. Covered by unit and end-to-end
+  tests against replayed frames, but not yet run against the real board. Verification: set an
+  actuation point on an untouched key from the CLI and confirm the vendor UI no longer greys it,
+  then set an actuation point on a key with rapid trigger on and confirm rapid trigger still
+  reads on afterwards.
 - [ ] **2.2 Measure how the vendor allocates a keyset index. [hardware]** Create two actuation point
   keysets over untouched keys, delete the first, create a third, and watch `0xFF`. This settles three
   things at once: whether a new index reuses a gap or takes the maximum plus one, whether `0xFE` is a

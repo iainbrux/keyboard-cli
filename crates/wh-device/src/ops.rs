@@ -214,30 +214,56 @@ pub fn set_rt_off<T: Transport>(
     Ok(records)
 }
 
-/// Builds the [ap] records to set `usages`' actuation point (layout DB0). Reads nothing, since
-/// AP has no other nibble to preserve, so it needs no session and the CLI's dry-run path can
-/// call it directly.
-/// Actuation point records: layout `0x04` alone, no MODE write. The vendor sends a MODE write
-/// before every actuation point change; hardware proved it is not needed for the value to take
-/// effect (F set to 0.30mm actuates at 0.30mm).
-pub fn ap_records(usages: &[u8], depth: Um) -> Vec<KeyRecord> {
-    usages
-        .iter()
-        .map(|&u| KeyRecord {
+/// Builds the [ap, mode?] records to set `usages`' actuation point (layout DB0). Reads current
+/// MODE per key but sends nothing else, so a caller can dry-run before writing.
+///
+/// Always writes AP. Also writes MODE, promoted to `Single`, but only when the key currently
+/// reads `Global`: that is the marker the vendor sets on every actuation point change, and the
+/// reason a value written without it renders greyed in the configurator.
+///
+/// `Single`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. `Rt`/`RtContinuous` matter
+/// most: an RT key still carries its own actuation point, so a depth change must not silently
+/// turn rapid trigger off. Whether the vendor forces nibble 1 here is unmeasured, so this takes
+/// the non-destructive reading. `Unknown` nibbles have never been observed on hardware, so
+/// overwriting one would discard state we cannot interpret.
+pub fn ap_records<T: Transport>(
+    s: &mut Session<T>,
+    usages: &[u8],
+    depth: Um,
+) -> Result<Vec<KeyRecord>, DeviceError> {
+    let mut records = Vec::new();
+    for &u in usages {
+        records.push(KeyRecord {
             key: u,
             layout: layout::AP,
             value: depth.0,
-        })
-        .collect()
+        });
+        let cur_value = read_layout_value(s, u, layout::MODE)?;
+        let cur_mode = Mode::from_value(cur_value);
+        if cur_mode.touch == TouchMode::Global {
+            let mode = Mode {
+                touch: TouchMode::Single,
+                advanced: cur_mode.advanced,
+                high: cur_mode.high,
+            };
+            records.push(KeyRecord {
+                key: u,
+                layout: layout::MODE,
+                value: mode.value(),
+            });
+        }
+    }
+    Ok(records)
 }
 
-/// Per-key actuation point (layout DB0).
+/// Per-key actuation point (layout DB0), plus the MODE promotion `ap_records` builds.
 pub fn set_ap<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     depth: Um,
 ) -> Result<(), DeviceError> {
-    write_records(s, &ap_records(usages, depth))
+    let records = ap_records(s, usages, depth)?;
+    write_records(s, &records)
 }
 
 pub fn device_info<T: Transport>(s: &mut Session<T>) -> Result<cmds::DeviceInfo, DeviceError> {
@@ -800,13 +826,20 @@ mod tests {
 
     #[test]
     fn set_ap_writes_ap_records_and_sends_no_save() {
+        // MODE reads back Single (0x18), so no MODE record joins the write batch.
         let recs = vec![KeyRecord {
             key: 0x1A,
             layout: layout::AP,
             value: 1500,
         }];
         let batch = cmds::write_key_records(&recs);
-        let mut lines = Vec::new();
+        let mut lines = vec![
+            l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
+            l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, 0x1A, layout::MODE, 0x18, 0x00]),
+            ),
+        ];
         for f in &batch {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
@@ -818,8 +851,18 @@ mod tests {
     }
 
     #[test]
-    fn ap_records_builds_records_without_a_session() {
-        let recs = ap_records(&[0x04, 0x05], Um(1200));
+    fn ap_records_builds_ap_and_mode_records_across_multiple_keys() {
+        // Both keys read back Single (0x18), so each contributes only its AP record.
+        let mut lines = Vec::new();
+        for &u in &[0x04u8, 0x05u8] {
+            lines.push(l("out", &cmds::read_key_layout(u, layout::MODE)));
+            lines.push(l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, u, layout::MODE, 0x18, 0x00]),
+            ));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let recs = ap_records(&mut s, &[0x04, 0x05], Um(1200)).unwrap();
         assert_eq!(
             recs,
             vec![
@@ -835,23 +878,147 @@ mod tests {
                 },
             ]
         );
+        assert!(s.into_inner().finished());
+    }
+
+    /// One key's MODE-only read roundtrip, mirroring `rt_records`' own script shape above.
+    fn mode_read_script(usage: u8, mode_lo: u8, mode_hi: u8) -> Vec<String> {
+        vec![
+            l("out", &cmds::read_key_layout(usage, layout::MODE)),
+            l(
+                "in",
+                &rf(
+                    cmds::cmd::KEY,
+                    &[0x00, usage, layout::MODE, mode_lo, mode_hi],
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn ap_records_promotes_a_global_key_to_single() {
+        // touch nibble 0 (Global), advanced 8
+        let lines = mode_read_script(0x09, 0x08, 0x00).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
+        assert_eq!(
+            recs,
+            vec![
+                KeyRecord {
+                    key: 0x09,
+                    layout: layout::AP,
+                    value: 300
+                },
+                KeyRecord {
+                    key: 0x09,
+                    layout: layout::MODE,
+                    value: 0x18
+                },
+            ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn ap_records_writes_no_mode_when_the_key_is_already_single() {
+        let lines = mode_read_script(0x09, 0x18, 0x00).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x09,
+                layout: layout::AP,
+                value: 300
+            }]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The regression this rule exists for. A key with rapid trigger on (nibble 3) keeps nibble
+    /// 3. Forcing nibble 1 would silently disable rapid trigger, and whether the vendor does
+    /// that is unmeasured: every key in `captures/ap-wasd-1.2.jsonl` was already on nibble 1
+    /// before the write, so the capture cannot distinguish forcing from preserving. An RT key
+    /// still carries its own actuation point (`captures/rt-on-w-0.5.jsonl` writes nibble 3 and
+    /// keeps 0x04=300), so a depth change is not a request to turn rapid trigger off.
+    #[test]
+    fn ap_records_never_clears_rapid_trigger() {
+        for raw in [0x38u8, 0x48] {
+            let lines = mode_read_script(0x1A, raw, 0x00).join("\n");
+            let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+            let recs = ap_records(&mut s, &[0x1A], Um(800)).unwrap();
+            assert_eq!(
+                recs,
+                vec![KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 800
+                }],
+                "MODE {raw:#04x} must be left alone"
+            );
+            assert!(s.into_inner().finished());
+        }
+    }
+
+    /// An unobserved touch nibble is left exactly as found. Nibble 2 has never been seen on
+    /// hardware, so overwriting it would discard state we cannot interpret.
+    #[test]
+    fn ap_records_leaves_an_unknown_touch_nibble_alone() {
+        // MODE 0x0220: touch nibble 2, which maps to TouchMode::Unknown(2).
+        let lines = mode_read_script(0x1A, 0x20, 0x02).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::AP,
+                value: 1000
+            }],
+            "an unknown touch nibble must yield no MODE record"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The advanced nibble and the high byte are preserved when the touch nibble is promoted.
+    #[test]
+    fn ap_records_preserves_the_advanced_nibble_and_high_byte() {
+        // high byte 0x27, touch 0, advanced 5
+        let lines = mode_read_script(0x09, 0x05, 0x27).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
+        assert_eq!(recs[1].value, 0x2715, "only the touch nibble may change");
+        assert!(s.into_inner().finished());
     }
 
     #[test]
     fn write_records_uses_roundtrip_many_so_mid_batch_failure_reports_progress() {
         // 16 AP records split into a 14-record and a 2-record frame; only the first gets a
         // reply, so this must surface as a Batch error with partial-progress detail, not a
-        // bare Timeout.
+        // bare Timeout. Every key reads back Single (0x18), so no MODE records join the batch.
         let usages: Vec<u8> = (0x04u8..0x14).collect();
-        let records = ap_records(&usages, Um(1500));
+        let mut lines = Vec::new();
+        for &u in &usages {
+            lines.push(l("out", &cmds::read_key_layout(u, layout::MODE)));
+            lines.push(l(
+                "in",
+                &rf(cmds::cmd::KEY, &[0x00, u, layout::MODE, 0x18, 0x00]),
+            ));
+        }
+        let records: Vec<KeyRecord> = usages
+            .iter()
+            .map(|&u| KeyRecord {
+                key: u,
+                layout: layout::AP,
+                value: 1500,
+            })
+            .collect();
         let frames = cmds::write_key_records(&records);
         assert_eq!(frames.len(), 2);
-        let lines = [
-            l("out", &frames[0]),
-            l("in", &rf(cmds::cmd::KEY, &[0x01])),
-            l("out", &frames[1]),
-            // no reply for frames[1]: script ends here
-        ];
+        lines.push(l("out", &frames[0]));
+        lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
+        lines.push(l("out", &frames[1]));
+        // no reply for frames[1]: script ends here
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let err = set_ap(&mut s, &usages, Um(1500)).unwrap_err();
         match err {

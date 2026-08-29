@@ -652,13 +652,18 @@ fn auto_backup_lines(profile_idx: u8) -> Vec<String> {
 }
 
 /// The full script for `wh set ap --keys w --set 1.2` against the two-key board: `resolve_keys`'
-/// own matrix read, the auto-backup phase, the AP write batch (no SAVE follows it, the vendor was
-/// never observed sending one), then the readback verification for 'w'. `readback_ap` lets the
-/// happy-path and mismatch tests below share this builder and diverge only on that one number.
+/// own matrix read, the auto-backup phase, `ap_records`' own MODE read, the AP write batch (no
+/// SAVE follows it, the vendor was never observed sending one), then the readback verification
+/// for 'w'. `readback_ap` lets the happy-path and mismatch tests below share this builder and
+/// diverge only on that one number.
+///
+/// 'w' reads back MODE 0x0220 (touch `Unknown(2)`), so no MODE record joins the write batch: the
+/// promotion path only fires for a `Global` key, covered separately by `set_ap_promotes_script`.
 fn set_ap_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
     lines.extend(auto_backup_lines(0));
+    lines.extend(mode_read_lines(0x1A, 0x0220)); // ap_records' own pre-write MODE read
 
     let recs = vec![KeyRecord {
         key: 0x1A,
@@ -736,6 +741,67 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("mismatch"), "unexpected stderr: {stderr}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The end-to-end promotion path: `wh set ap --keys a` against 'a' (0x04), whose MODE reads back
+/// `Global` (0x00, advanced nibble 0) in `auto_backup_lines`. `ap_records`' own MODE read repeats
+/// that same value, so the write batch must gain a MODE record (nibble promoted to `Single`,
+/// advanced nibble 0 preserved, 0x10) alongside AP, covering the promotion path end to end and
+/// not only in `ops::ap_records`' own unit tests.
+fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
+    lines.extend(auto_backup_lines(0));
+    lines.extend(mode_read_lines(0x04, 0x00)); // ap_records' own pre-write MODE read: Global
+
+    let recs = vec![
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x10,
+        },
+    ];
+    let batch = cmds::write_key_records(&recs);
+    for f in &batch {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    // No SAVE order follows the write batch: the vendor was never observed sending one.
+
+    // Readback verification reads all six layouts for 'a'; MODE now comes back 0x10, reflecting
+    // the promotion just written.
+    lines.extend(key_settings_lines(0x04, readback_ap, 0x10, 0, 0, 0, 0));
+    lines
+}
+
+/// `set ap --keys a --set 1.2` against a `Global` key: the write batch gains a MODE record
+/// (nibble promoted to `Single`), and the run still succeeds and verifies.
+#[test]
+fn set_ap_end_to_end_promotes_a_global_key_to_single() {
+    let path = write_script("set-ap-promote", &set_ap_promotes_script(1200));
+    let config_home = scratch_config_dir("set-ap-promote");
+
+    let out = run_wh(
+        &["set", "ap", "--keys", "a", "--set", "1.2"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -849,12 +915,16 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 }
 
 /// `--dry-run` means no writes and no SAVE, not "no I/O": `resolve_keys` still reads the live
-/// matrix, since a preview has to be of an operation that could actually happen against this
-/// board. The script is exactly that one read; a stray write or SAVE afterwards would hit the
-/// exhausted script and `ReplayTransport` would reject it.
+/// matrix, and `ops::ap_records` still reads the key's current MODE, since a preview has to be
+/// of an operation that could actually happen against this board. 'w' reads back MODE 0x18
+/// (already `Single`), so the preview carries no MODE record. The script is exactly those two
+/// reads; a stray write or SAVE afterwards would hit the exhausted script and `ReplayTransport`
+/// would reject it.
 #[test]
 fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
-    let path = write_script("set-ap-dry-run", &matrix_lines());
+    let mut lines = matrix_lines();
+    lines.extend(mode_read_lines(0x1A, 0x18));
+    let path = write_script("set-ap-dry-run", &lines);
     let config_home = scratch_config_dir("set-ap-dry-run");
 
     let out = run_wh(
