@@ -70,7 +70,8 @@ easy to change many settings quickly is the worst place to discover a write bug.
 ### Writing keyset membership, layout `0xFE`
 
 **What we know, measured on hardware.** Settings written by `wh` do apply and do work. `set ap` on F
-was confirmed by feel against a 2.00mm key, and `set rt` on W was confirmed in the vendor UI. But the
+was confirmed physically actuating at 0.30mm, checked using the board's own actuation LEDs against E
+at 2.00mm, and `set rt` on W was confirmed in the vendor UI. But the
 vendor configurator renders those values greyed and outside any named keyset, because we never write
 layout `0xFE`. The vendor writes `1` to it when a keyset is created and `0` when one is deleted, and
 leaves it alone for edits within an existing set.

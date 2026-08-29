@@ -11,6 +11,17 @@ measured from 1224 frames of real device traffic.
 - [ ] **Final whole-branch review** of every commit on `phase-1`.
 - [ ] **Merge `phase-1` into `main`.**
 
+## In flight
+
+- [ ] **Task 20: `docs/protocol.md`, `README.md`, rename `order::CONFIG` to `PROFILE`, move
+  `ProfileNumber` into `wh-proto`, and sweep em dashes from the tracked plan, spec and research
+  docs.** Under review; not done until review closes. Findings addressed so far, across two fix
+  rounds: `--force`'s two refusals documented correctly, broken README examples fixed and every
+  example re-run against the built binary, the mode-nibble write guidance corrected, `WH_REPLAY`
+  fixed to actually reach the Windows binary through `bin/wh` (it silently did not, and a review
+  run performed a real write believing it was a replay), and the licence corrected to disclose the
+  ported portions of `wh-proto`.
+
 ## Backlog, not scheduled
 
 ### Hardware questions **[hardware]**
@@ -68,9 +79,6 @@ measured from 1224 frames of real device traffic.
   from its length prefix, and name the four board-function keys.~~
 - [x] ~~Task 19b group B: record the active profile in snapshots and refuse a profile-mismatched
   restore.~~
-- [x] ~~Task 20: `docs/protocol.md`, `README.md`, rename `order::CONFIG` to `PROFILE`, move
-  `ProfileNumber` into `wh-proto`, and sweep em dashes from the tracked plan, spec and research
-  docs.~~
 - [x] ~~Read path verified against the real board: serial, all 68 keys, `get`, `backup`, `selftest`,
   and a dry-run frame whose records match the vendor's byte for byte.~~
 - [x] ~~Identify layouts `0x00` and `0x01` as the base and FN mapping layers.~~
