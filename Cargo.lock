@@ -860,6 +860,7 @@ version = "0.1.1-alpha"
 dependencies = [
  "directories",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
  "wh-proto",

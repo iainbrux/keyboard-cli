@@ -1,6 +1,6 @@
 //! Command dispatch. Every command in the `wh` tree, read and write alike, runs through here.
 
-use crate::cli::{Cli, Cmd, KeysWhat, SetWhat};
+use crate::cli::{BackupsWhat, Cli, Cmd, KeysWhat, SetWhat};
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -14,16 +14,18 @@ use wh_proto::value::Um;
 
 pub fn run(cli: Cli) -> Result<()> {
     // Opened once here: `Store::open` only resolves a path, so it is cheap even for commands
-    // that never read it. Every command below takes a `&Store` instead of reaching for the
-    // config directory again.
+    // that never read it. Every command that needs one takes this `&Store` instead of reaching
+    // for the config directory again; `Dump` and `Profile` touch no config at all.
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
-        Cmd::Dump { json } => dump(json),
+        Cmd::Backups { what } => backups(what, &store),
+        Cmd::Dump { table } => dump(table),
         Cmd::Get { what } => get(what, &store),
         Cmd::Set { what } => set(what, &store),
         Cmd::Backup { to } => backup(to, &store),
         Cmd::Restore { file, last, force } => restore(file, last, force, &store),
+        Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
     }
 }
@@ -42,7 +44,7 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 /// `bin/wh` must propagate `WH_REPLAY` across the WSL/Windows boundary, or this function
 /// silently opens the real keyboard instead. This line is the backstop that makes a run
 /// quietly hitting real hardware never silent, regardless of what carries the variable.
-/// Kept off stdout so `dump --json`'s parseable output stays clean.
+/// Kept off stdout so `dump`'s parseable JSON output stays clean.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
@@ -77,6 +79,28 @@ pub(crate) fn key_label(usage: u8) -> String {
     wh_proto::keys::name_for_usage(usage)
         .map(str::to_string)
         .unwrap_or_else(|| format!("0x{usage:02X}"))
+}
+
+/// Renders a raw keyset value for display: `0`, the value read outside any keyset, as `-`,
+/// anything else as its decimal index verbatim, since whether the wire value is a boolean or an
+/// index is unmeasured.
+fn keyset_display(v: u16) -> String {
+    if v == 0 {
+        "-".to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+/// The `" keyset N"` / `" keyset none"` suffix `wh get ap`/`wh get rt` appends, from the raw
+/// keyset value: `0`, the value read outside any keyset, prints as "none"; anything else prints
+/// as its decimal index verbatim.
+fn keyset_suffix(v: u16) -> String {
+    if v == 0 {
+        " keyset none".to_string()
+    } else {
+        format!(" keyset {v}")
+    }
 }
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
@@ -114,6 +138,8 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
             rt_press_mm: ks.rt_press.to_mm(),
             rt_release_mm: ks.rt_release.to_mm(),
             mode_raw: ks.mode.value(),
+            ap_keyset: ks.ap_keyset,
+            rt_keyset: ks.rt_keyset,
         });
     }
     Ok(wh_config::snapshot::Snapshot {
@@ -121,6 +147,9 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         serial: info.serial,
         taken_at: httpdate_now()?,
         profile,
+        // Set by the caller once it knows why this snapshot was taken (`backup` or
+        // `auto_backup`); `dump` never assigns one, since it saves nothing to disk.
+        origin: None,
         global: wh_config::snapshot::GlobalToml {
             travel_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
@@ -170,7 +199,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn dump(json: bool) -> Result<()> {
+fn dump(table: bool) -> Result<()> {
     // `writeln!`'s `Result` (unlike `println!`, which panics) lets an early-closing reader,
     // e.g. `wh dump | head -1`, surface as an `io::Error` that `main` recognises and exits on
     // quietly.
@@ -178,8 +207,8 @@ fn dump(json: bool) -> Result<()> {
     let mut out = stdout.lock();
     with_session(|s| {
         let snap = snapshot_from_device(s)?;
-        if json {
-            writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
+        if !table {
+            writeln!(out, "{}", snap.to_json()?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
             // `snapshot_from_device` degrades to `None` (warning already printed to stderr)
@@ -196,18 +225,20 @@ fn dump(json: bool) -> Result<()> {
             )?;
             writeln!(
                 out,
-                "{:<12} {:>6} {:>4} {:>8} {:>8}",
-                "key", "ap", "rt", "press", "release"
+                "{:<12} {:>6} {:>4} {:>4} {:>8} {:>8} {:>4}",
+                "key", "ap", "apks", "rt", "press", "release", "rtks"
             )?;
             for k in &snap.keys {
                 writeln!(
                     out,
-                    "{:<12} {:>4.2}mm {:>4} {:>6.2}mm {:>6.2}mm",
+                    "{:<12} {:>4.2}mm {:>4} {:>4} {:>6.2}mm {:>6.2}mm {:>4}",
                     k.name,
                     k.ap_mm,
+                    keyset_display(k.ap_keyset),
                     if k.rt { "on" } else { "off" },
                     k.rt_press_mm,
-                    k.rt_release_mm
+                    k.rt_release_mm,
+                    keyset_display(k.rt_keyset)
                 )?;
             }
         }
@@ -252,13 +283,19 @@ fn get(what: crate::cli::GetWhat, store: &Store) -> Result<()> {
             if show_rt {
                 writeln!(
                     out,
-                    "{name}: rt {} press {:.2}mm release {:.2}mm",
+                    "{name}: rt {} press {:.2}mm release {:.2}mm{}",
                     if ks.rt_enabled() { "on" } else { "off" },
                     ks.rt_press.to_mm(),
-                    ks.rt_release.to_mm()
+                    ks.rt_release.to_mm(),
+                    keyset_suffix(ks.rt_keyset)
                 )?;
             } else {
-                writeln!(out, "{name}: ap {:.2}mm", ks.ap.to_mm())?;
+                writeln!(
+                    out,
+                    "{name}: ap {:.2}mm{}",
+                    ks.ap.to_mm(),
+                    keyset_suffix(ks.ap_keyset)
+                )?;
             }
         }
         Ok(())
@@ -269,6 +306,8 @@ fn keys(what: KeysWhat, store: &Store) -> Result<()> {
     match what {
         KeysWhat::List => list_keys(store),
         KeysWhat::Group { name, selector } => group(store, &name, &selector),
+        KeysWhat::Ungroup { name } => ungroup(store, &name),
+        KeysWhat::Rename { old, new } => rename(store, &old, &new),
     }
 }
 
@@ -307,23 +346,43 @@ fn list_keys(store: &Store) -> Result<()> {
     Ok(())
 }
 
-fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
-    // The selector grammar lowercases a bare name before looking it up (see
-    // Selector::resolve), so storing under a mixed-case spelling would make it unreachable.
-    // Normalize once here, where the group is created.
-    let name = name.to_ascii_lowercase();
-    if wh_proto::keys::usage_for_name(&name).is_some()
-        || wh_proto::keys::builtin_group(&name).is_some()
+/// Refuses a name that could not be a usable group name: one already taken by a key or
+/// builtin group, or one the selector grammar would not read back as a plain name. Shared
+/// by `group` (on create) and `rename` (on the new name), so a later addition to the
+/// disallowed set only needs to change here.
+fn check_group_name_usable(name: &str) -> Result<()> {
+    if wh_proto::keys::usage_for_name(name).is_some()
+        || wh_proto::keys::builtin_group(name).is_some()
     {
         bail!("'{name}' is already a key or builtin group name");
     }
-    if !group_name_is_reachable(&name) {
+    if looks_like_hex_form(name) {
+        bail!("'{name}' looks like a hex usage code (e.g. `0x01`); pick a different name");
+    }
+    if !group_name_is_reachable(name) {
         bail!(
             "'{name}' cannot be used as a group name: the selector grammar would not read it \
              back as a plain name (for example it looks like a range, 'all', a negation, or a \
              list), so the group would be unreachable once saved"
         );
     }
+    Ok(())
+}
+
+/// Whether `name` has the `0x01`-style shape the selector grammar reads back as a single
+/// usage code, matching `Selector::parse`'s own hex prefix check.
+fn looks_like_hex_form(name: &str) -> bool {
+    name.strip_prefix("0x")
+        .or_else(|| name.strip_prefix("0X"))
+        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
+    // The selector grammar lowercases a bare name before looking it up (see
+    // Selector::resolve), so storing under a mixed-case spelling would make it unreachable.
+    // Normalize once here, where the group is created.
+    let name = name.to_ascii_lowercase();
+    check_group_name_usable(&name)?;
     let sel = Selector::parse(selector)?;
     // resolve against the full static table (device not needed to define a group)
     let universe: Vec<u8> = wh_proto::keys::TABLE.iter().map(|&(_, u)| u).collect();
@@ -337,6 +396,78 @@ fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
         "group '{name}' = {} keys",
         usages.len()
     )?;
+    Ok(())
+}
+
+/// Deletes a group by name directly, never through `Selector::parse`, so a group whose name
+/// collides with a key name (refused as a selector) can still be removed. No naming guard
+/// applies here: removing is always safe.
+fn ungroup(store: &Store, name: &str) -> Result<()> {
+    let name = name.to_ascii_lowercase();
+    if !store.remove_group(&name)? {
+        bail!("no such group: '{name}'");
+    }
+    writeln!(std::io::stdout().lock(), "removed group '{name}'")?;
+    Ok(())
+}
+
+/// Renames a group by name directly, never through `Selector::parse`. The new name gets the
+/// same usability guard `group` applies on create, so a rename cannot recreate the problem
+/// `ungroup` exists to recover from.
+fn rename(store: &Store, old: &str, new: &str) -> Result<()> {
+    let old = old.to_ascii_lowercase();
+    let new = new.to_ascii_lowercase();
+    check_group_name_usable(&new)?;
+    store.rename_group(&old, &new)?;
+    writeln!(std::io::stdout().lock(), "renamed group '{old}' to '{new}'")?;
+    Ok(())
+}
+
+fn backups(what: BackupsWhat, store: &Store) -> Result<()> {
+    match what {
+        BackupsWhat::List => list_backups(store),
+    }
+}
+
+/// Lists every stored backup, oldest first. Each backup is parsed on its own, and a file that
+/// fails to parse prints a warning naming it, on stderr, rather than aborting the whole listing:
+/// one corrupt file must not hide every other backup that still reads fine.
+fn list_backups(store: &Store) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for path in store.list_backups()? {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                best_effort_eprintln(&format!(
+                    "warning: could not read backup {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        match wh_config::snapshot::Snapshot::from_file_text(&path, &text) {
+            Ok(snap) => {
+                let origin = snap.origin.as_deref().unwrap_or("unknown");
+                let profile = snap
+                    .profile
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".into());
+                writeln!(
+                    out,
+                    "{}  {origin}  profile {profile}  {}",
+                    snap.taken_at,
+                    path.display()
+                )?;
+            }
+            Err(e) => {
+                best_effort_eprintln(&format!(
+                    "warning: could not parse backup {}: {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -390,13 +521,14 @@ fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
-/// Takes and saves an auto-backup. `restore` reads the board's profile through its own
-/// separate `ops::profile` call rather than off this function's returned snapshot, so a
-/// future `--no-backup` flag or a best-effort backup here cannot silently drop the profile
-/// safety check.
-fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
-    let snap = snapshot_from_device(s)?;
-    let path = store.save_backup(&snap.to_toml()?)?;
+/// Takes and saves an auto-backup, recording `command` (e.g. `set rt`) as its origin. `restore`
+/// reads the board's profile through its own separate `ops::profile` call rather than off this
+/// function's returned snapshot, so a future `--no-backup` flag or a best-effort backup here
+/// cannot silently drop the profile safety check.
+fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store, command: &str) -> Result<()> {
+    let mut snap = snapshot_from_device(s)?;
+    snap.origin = Some(format!("auto: {command}"));
+    let path = store.save_backup(&snap.to_json()?)?;
     best_effort_eprintln(&format!("(backed up to {})", path.display()));
     Ok(())
 }
@@ -520,6 +652,93 @@ fn verify_rt_off<T: Transport>(
     report_verification(out, "rt off", &usages, &bad)
 }
 
+/// Verifies an actuation point write: AP for every key with an AP entry in `plan.records`
+/// (`ops::ap_records` emits exactly one per key), and MODE for *every* key, either against the
+/// promoted value it was sent or, for a key that got no MODE record, against the value read from
+/// it before the write. A key left alone on purpose whose MODE moved anyway is a failure: that is
+/// the firmware clearing rapid trigger behind an actuation point change.
+///
+/// Derives the key list from `plan` rather than a separate `usages` parameter, so the two can
+/// never disagree, mirroring `verify_rt`. One line per key, naming both faults when both are
+/// wrong, rather than hiding the mode fault behind the depth one.
+fn verify_ap<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    depth: Um,
+    plan: &ops::ApPlan,
+) -> Result<()> {
+    let mut bad = Vec::new();
+    let mut usages = Vec::new();
+    for r in plan.records.iter().filter(|r| r.layout == layout::AP) {
+        let u = r.key;
+        usages.push(u);
+        let ks = ops::read_key_settings(s, u)?;
+        let promoted = plan
+            .records
+            .iter()
+            .find(|r| r.key == u && r.layout == layout::MODE)
+            .map(|r| r.value);
+        if let Some(line) = ap_fault_line(&key_label(u), depth, &ks, promoted, plan.prior_mode(u)) {
+            bad.push(line);
+        }
+    }
+    report_verification(out, &format!("ap {:.2}mm", depth.to_mm()), &usages, &bad)
+}
+
+/// The one line `verify_ap` reports for a key, or `None` when the readback is right.
+///
+/// `promoted` is the MODE value this key was sent, if any; `prior` is the MODE it read before the
+/// write. A promoted key must report what it was sent, and a key deliberately left alone must
+/// report `prior` unchanged, or the firmware moved MODE by itself. Split out from `verify_ap`
+/// because `report_verification` writes these lines to stderr, where a test cannot read them back.
+fn ap_fault_line(
+    name: &str,
+    depth: Um,
+    ks: &ops::KeySettings,
+    promoted: Option<u16>,
+    prior: Option<u16>,
+) -> Option<String> {
+    let mut faults = Vec::new();
+    if ks.ap != depth {
+        faults.push(format!(
+            "board reports {:.2}mm, wanted {:.2}mm",
+            ks.ap.to_mm(),
+            depth.to_mm()
+        ));
+    }
+    let got = ks.mode.value();
+    match promoted {
+        Some(want) if got != want => faults.push(format!(
+            "board reports mode {got:#06x}, wanted mode {want:#06x} (single, key no longer \
+             follows global travel)"
+        )),
+        None => {
+            if let Some(before) = prior.filter(|&before| got != before) {
+                faults.push(format!(
+                    "board reports mode {got:#06x} (rt {}), expected mode {before:#06x} unchanged \
+                     (rt {}); nothing wrote mode for this key",
+                    if ks.rt_enabled() { "on" } else { "off" },
+                    if raw_mode_rt_on(before) { "on" } else { "off" },
+                ));
+            }
+        }
+        Some(_) => {}
+    }
+    if faults.is_empty() {
+        return None;
+    }
+    Some(format!("{name}: {}", faults.join("; ")))
+}
+
+/// Whether a raw MODE value has rapid trigger on, for reporting a pre-write value held as a bare
+/// `u16` rather than a parsed `KeySettings`.
+fn raw_mode_rt_on(mode_raw: u16) -> bool {
+    matches!(
+        cmds::Mode::from_value(mode_raw).touch,
+        cmds::TouchMode::Rt | cmds::TouchMode::RtContinuous
+    )
+}
+
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
 /// cannot disagree with themselves, unlike a bare `off: bool` plus a separate
 /// `Option<(Um, Um)>` could.
@@ -569,7 +788,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             let records = ops::rt_off_records(s, &usages)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
-                        auto_backup(s, store)?;
+                        auto_backup(s, store, "set rt")?;
                         let records = ops::set_rt_off(s, &usages)?;
                         verify_rt_off(&mut out, s, &records)
                     }
@@ -578,7 +797,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             let records = ops::rt_records(s, &usages, press, release)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
-                        auto_backup(s, store)?;
+                        auto_backup(s, store, "set rt")?;
                         let records = ops::set_rt(s, &usages, press, release)?;
                         verify_rt(&mut out, s, press, release, &records)
                     }
@@ -592,40 +811,51 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
                 if dry_run {
-                    let records = ops::ap_records(&usages, depth);
-                    return print_frames(&mut out, &cmds::write_key_records(&records));
+                    let plan = ops::ap_records(s, &usages, depth)?;
+                    return print_frames(&mut out, &cmds::write_key_records(&plan.records));
                 }
-                auto_backup(s, store)?;
-                ops::set_ap(s, &usages, depth)?;
-                let mut bad = Vec::new();
-                for &u in &usages {
-                    let ks = ops::read_key_settings(s, u)?;
-                    if ks.ap != depth {
-                        bad.push(format!(
-                            "{}: board reports {:.2}mm, wanted {:.2}mm",
-                            key_label(u),
-                            ks.ap.to_mm(),
-                            depth.to_mm()
-                        ));
-                    }
-                }
-                report_verification(
-                    &mut out,
-                    &format!("ap {:.2}mm", depth.to_mm()),
-                    &usages,
-                    &bad,
-                )
+                auto_backup(s, store, "set ap")?;
+                let plan = ops::set_ap(s, &usages, depth)?;
+                verify_ap(&mut out, s, depth, &plan)
             })
         }
     }
+}
+
+/// Reads the active profile with no argument, or selects one with `1..=4`. A select takes no
+/// automatic backup, unlike every write command above: this is a mode switch, not a settings
+/// write. Snapshots are recorded per-profile, which is exactly what makes `wh restore` refuse
+/// once the board is on a different profile than the one a snapshot was taken from.
+fn profile_cmd(number: Option<u8>) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    with_session(|s| match number {
+        None => {
+            let p = ops::profile(s)?;
+            writeln!(out, "profile {p}")?;
+            Ok(())
+        }
+        Some(n) => {
+            let target = cmds::ProfileNumber::from_one_based(n)?;
+            let confirmed = ops::set_profile(s, target)?;
+            writeln!(out, "profile {confirmed} selected")?;
+            writeln!(
+                out,
+                "note: snapshots are per-profile; `wh restore` refuses to write a snapshot \
+                 taken on a different profile than the one the board is currently on"
+            )?;
+            Ok(())
+        }
+    })
 }
 
 fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     with_session(|s| {
-        let snap = snapshot_from_device(s)?;
-        let text = snap.to_toml()?;
+        let mut snap = snapshot_from_device(s)?;
+        snap.origin = Some("manual".into());
+        let text = snap.to_json()?;
         match to {
             Some(p) => {
                 std::fs::write(&p, &text)
@@ -790,13 +1020,27 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     if file.is_some() && last {
         bail!("pass a snapshot file or --last, not both");
     }
-    let text = match (file, last) {
-        (Some(p), _) => std::fs::read_to_string(&p)
-            .with_context(|| format!("reading snapshot from {}", p.display()))?,
+    let (path, text) = match (file, last) {
+        (Some(p), _) => {
+            let text = std::fs::read_to_string(&p)
+                .with_context(|| format!("reading snapshot from {}", p.display()))?;
+            (p, text)
+        }
         (None, true) => store.load_backup(None)?,
         (None, false) => bail!("give a snapshot file or --last"),
     };
-    let snap = wh_config::snapshot::Snapshot::from_toml(&text)?;
+    let snap = wh_config::snapshot::Snapshot::from_file_text(&path, &text)
+        .with_context(|| format!("parsing snapshot {}", path.display()))?;
+    // `--last` means "the most recent snapshot, whatever took it", auto or manual alike: it does
+    // not change meaning here, only visibility does. Naming what was picked, and its origin, is
+    // the whole fix for a real session where that surprised an operator expecting a manual backup.
+    if last {
+        best_effort_eprintln(&format!(
+            "--last picked {} (origin: {})",
+            path.display(),
+            snap.origin.as_deref().unwrap_or("unknown")
+        ));
+    }
     // Every value is validated and the write records built before a session ever opens, so a
     // bad snapshot is refused before a single frame is sent.
     let global = snap_to_global(&snap)?;
@@ -814,7 +1058,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.
-        auto_backup(s, store)?;
+        auto_backup(s, store, "restore")?;
         ops::restore_all(s, &global, &records)?;
         // Printed only after verification passes, so stdout never claims success on a run
         // where stderr reports a mismatch.
@@ -930,6 +1174,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A name that reads back as a hex usage code (e.g. `0x01`) would be unreachable as a
+    /// group: the selector grammar would resolve it against that literal usage, never the
+    /// stored group. `group` must refuse it, the same class as a key-name collision.
+    #[test]
+    fn hex_shaped_group_name_is_rejected() {
+        let dir = test_dir("hex-shaped");
+        let store = Store::at(dir.clone());
+        let err = keys(group_cmd("0x01", "w,a"), &store).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("0x01"),
+            "unexpected error: {err}"
+        );
+        assert!(store.groups().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `0x00` is the one hex-shaped name the reachability probe alone would let through by
+    /// coincidence, since its sentinel universe happens to include usage `0x00`: the explicit
+    /// hex-shape guard is what actually closes this, not the generic reachability check.
+    #[test]
+    fn hex_shaped_group_name_zero_is_rejected() {
+        let dir = test_dir("hex-shaped-zero");
+        let store = Store::at(dir.clone());
+        let err = keys(group_cmd("0x00", "w,a"), &store).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("0x00"),
+            "unexpected error: {err}"
+        );
+        assert!(store.groups().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn plain_legal_group_name_is_still_accepted() {
         let dir = test_dir("plain-legal");
@@ -950,6 +1226,159 @@ mod tests {
             assert!(store.groups().unwrap().contains_key(name));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// The group most worth deleting is exactly the one whose name collides with a key, since
+    /// that collision is what makes it unusable as a selector. `ungroup` must take the name
+    /// directly rather than through `Selector::parse`, or this exact case would fail with the
+    /// same ambiguity error that made the group unreachable in the first place.
+    #[test]
+    fn ungroup_deletes_a_group_whose_name_collides_with_a_key() {
+        let dir = test_dir("ungroup-key-collision");
+        let store = Store::at(dir.clone());
+        // The store itself allows this; only the CLI's create-time guard would refuse it.
+        store.set_group("rt", &[0x1A]).unwrap();
+        keys(
+            KeysWhat::Ungroup {
+                name: "rt".to_string(),
+            },
+            &store,
+        )
+        .unwrap();
+        assert!(store.groups().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ungroup_reports_no_such_group() {
+        let dir = test_dir("ungroup-missing");
+        let store = Store::at(dir.clone());
+        let err = keys(
+            KeysWhat::Ungroup {
+                name: "ghost".to_string(),
+            },
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("ghost"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_moves_members_under_the_new_name() {
+        let dir = test_dir("rename-basic");
+        let store = Store::at(dir.clone());
+        keys(group_cmd("fps", "w,a"), &store).unwrap();
+        keys(
+            KeysWhat::Rename {
+                old: "fps".to_string(),
+                new: "quiver".to_string(),
+            },
+            &store,
+        )
+        .unwrap();
+        let groups = store.groups().unwrap();
+        assert!(!groups.contains_key("fps"));
+        assert!(groups.contains_key("quiver"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rename must apply the same create-time guard as `group`: a new name that is a key or a
+    /// builtin group name must be refused, not silently accepted and left unreachable again.
+    #[test]
+    fn rename_refuses_a_new_name_that_is_a_key() {
+        let dir = test_dir("rename-into-key");
+        let store = Store::at(dir.clone());
+        keys(group_cmd("fps", "w,a"), &store).unwrap();
+        let err = keys(
+            KeysWhat::Rename {
+                old: "fps".to_string(),
+                new: "rt".to_string(),
+            },
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("rt"));
+        // Refusal must not clobber the original group.
+        assert!(store.groups().unwrap().contains_key("fps"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A readback for one key, with MODE and AP set by the caller and the rest fixed: only
+    /// those two fields drive `ap_fault_line`.
+    fn readback(ap: Um, mode_raw: u16) -> ops::KeySettings {
+        ops::KeySettings {
+            usage: 0x1A,
+            ap,
+            mode: cmds::Mode::from_value(mode_raw),
+            rt_press: Um(500),
+            rt_release: Um(500),
+            ap_keyset: 0,
+            rt_keyset: 0,
+        }
+    }
+
+    #[test]
+    fn ap_fault_line_is_silent_when_depth_and_an_unchanged_mode_both_match() {
+        let ks = readback(Um(1200), 0x38);
+        assert_eq!(ap_fault_line("w", Um(1200), &ks, None, Some(0x38)), None);
+    }
+
+    /// The Critical 1 case: no MODE record was sent, and the board still moved MODE from `Rt`
+    /// (0x38) to `Single` (0x18), silently clearing rapid trigger. That must be a reported fault,
+    /// not an unchecked read.
+    #[test]
+    fn ap_fault_line_catches_a_mode_the_board_changed_with_no_mode_record_sent() {
+        let ks = readback(Um(1200), 0x18);
+        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x38))
+            .expect("a mode that moved on its own must be a fault");
+        assert!(
+            line.contains("w:") && line.contains("0x0018") && line.contains("0x0038"),
+            "must name the key and both mode values: {line}"
+        );
+        assert!(
+            line.contains("rt off") && line.contains("rt on"),
+            "must say rapid trigger was on before and off now: {line}"
+        );
+    }
+
+    /// One line per key, naming both faults. The `else if` this replaced hid a MODE fault behind
+    /// an AP fault on the same key, which is exactly the pairing a failed write produces.
+    #[test]
+    fn ap_fault_line_names_both_faults_when_depth_and_mode_are_both_wrong() {
+        let ks = readback(Um(1100), 0x18);
+        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x38)).expect("both are wrong");
+        assert_eq!(
+            line.lines().count(),
+            1,
+            "still one line per key, not two: {line}"
+        );
+        assert!(
+            line.contains("1.10mm") && line.contains("1.20mm"),
+            "the depth fault must survive: {line}"
+        );
+        assert!(
+            line.contains("0x0018") && line.contains("0x0038"),
+            "the mode fault must survive alongside it: {line}"
+        );
+    }
+
+    /// A promoted key is still checked against the value it was sent, not against its prior MODE.
+    #[test]
+    fn ap_fault_line_checks_a_promoted_key_against_the_value_it_was_sent() {
+        let ks = readback(Um(1200), 0x00);
+        let line = ap_fault_line("a", Um(1200), &ks, Some(0x10), Some(0x00))
+            .expect("the promotion did not land");
+        assert!(
+            line.contains("wanted mode 0x0010"),
+            "unexpected line: {line}"
+        );
+        // And the same key reading back the promoted value is silent.
+        let ok = readback(Um(1200), 0x10);
+        assert_eq!(
+            ap_fault_line("a", Um(1200), &ok, Some(0x10), Some(0x00)),
+            None
+        );
     }
 
     #[test]

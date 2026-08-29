@@ -13,9 +13,9 @@ pub struct Cli {
 pub enum Cmd {
     /// Read the full board configuration
     Dump {
-        /// Print the configuration as JSON instead of plain text
+        /// Print a human-readable table instead of JSON
         #[arg(long)]
-        json: bool,
+        table: bool,
     },
     /// Read a setting for selected keys
     Get {
@@ -35,9 +35,9 @@ pub enum Cmd {
     },
     /// Write a snapshot back to the board
     Restore {
-        /// Snapshot file; omit with --last for the newest auto-backup
+        /// Snapshot file; omit and pass --last to use the newest stored one instead
         file: Option<std::path::PathBuf>,
-        /// Use the newest auto-backup instead of naming a file
+        /// Use the most recent snapshot in the store, whichever command took it; see `wh backups list`
         #[arg(long)]
         last: bool,
         /// Restore a snapshot with no recorded profile, asserting it belongs to the board's
@@ -54,6 +54,16 @@ pub enum Cmd {
     Keys {
         #[command(subcommand)]
         what: KeysWhat,
+    },
+    /// Manage stored backups
+    Backups {
+        #[command(subcommand)]
+        what: BackupsWhat,
+    },
+    /// Read or select the active profile
+    Profile {
+        /// Profile to select, 1 to 4. Omit to read the current one.
+        number: Option<u8>,
     },
     /// No-op write self-test (writes current values back, verifies)
     Selftest,
@@ -118,6 +128,16 @@ pub enum KeysWhat {
     List,
     /// Define a user group: wh keys group fps "w,a,s,d,space"
     Group { name: String, selector: String },
+    /// Delete a user group: wh keys ungroup fps
+    Ungroup { name: String },
+    /// Rename a user group: wh keys rename fps arrows
+    Rename { old: String, new: String },
+}
+
+#[derive(Subcommand)]
+pub enum BackupsWhat {
+    /// List stored backups, oldest first
+    List,
 }
 
 #[cfg(test)]

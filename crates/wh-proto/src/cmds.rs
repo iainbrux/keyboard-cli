@@ -78,6 +78,12 @@ pub mod layout {
     pub const MODE: u8 = 0x08; // Layout_Mode
     pub const RT_PRESS: u8 = 0x14; // Layout_RTP
     pub const RT_RELEASE: u8 = 0x15; // Layout_RTR
+    /// Actuation point keyset index. Read as 1 for w,a,s,d and 2 for esc, matching the two
+    /// keysets the vendor UI showed. Never observed being written, so do not write it.
+    pub const KEYSET_AP: u8 = 0xFF;
+    /// Rapid trigger keyset membership. Written 1 on create (`captures/rt-on-w-0.5.jsonl`) and
+    /// 0 on delete (`captures/rt-off-w.jsonl`).
+    pub const KEYSET_RT: u8 = 0xFE;
 }
 
 /// MaxPack from constants/byte.ts.
@@ -294,6 +300,16 @@ pub fn parse_profile(payload: &[u8]) -> Result<ProfileNumber, DecodeError> {
         return Err(DecodeError::Shape);
     }
     ProfileNumber::from_wire_index(payload[2])
+}
+
+/// Select the active profile: cmd 0x00, sub-order `order::PROFILE` (0x70), argument the wire's
+/// own zero-based index. Measured byte-for-byte in `captures/profile-switch.jsonl` (checksum
+/// included): the select frame is identical in shape to `cmd_order(order::PROFILE, &[idx])`, the
+/// same padding `read_profile` sends with `0xFF` in the argument slot instead of a real index.
+/// The ack that follows carries no reliable confirmation of which profile actually landed, so
+/// callers must re-read with `profile()` rather than trust it.
+pub fn select_profile(p: ProfileNumber) -> [u8; REPORT_LEN] {
+    cmd_order(order::PROFILE, &[p.wire_index()]).expect("1 byte")
 }
 
 pub fn sync() -> [u8; REPORT_LEN] {
@@ -593,6 +609,28 @@ mod tests {
         assert!(f[8..].iter().all(|&b| b == 0));
     }
 
+    /// The measured select frames from `captures/profile-switch.jsonl`, checksum included:
+    /// `5c 04 00 94 70 01 ff ff` (select profile 2) and `5c 04 00 94 70 00 ff ff` (select
+    /// profile 1). Byte-for-byte identical to `cmd_order(order::PROFILE, &[idx])`, not the
+    /// two-byte-then-zero-padded shape a naive reading of the capture might suggest: the
+    /// trailing `0xFF 0xFF` is on the wire in both directions.
+    #[test]
+    fn select_profile_matches_the_measured_frames() {
+        let f = select_profile(ProfileNumber::from_one_based(2).unwrap());
+        assert_eq!(f[1], 4, "declared length");
+        assert_eq!(f[2], cmd::CMD);
+        assert_eq!(f[3], 0x94, "checksum measured on the wire");
+        assert_eq!(&f[4..8], &[0x70, 0x01, 0xFF, 0xFF]);
+        assert!(
+            f[8..].iter().all(|&b| b == 0),
+            "nothing beyond the declared length"
+        );
+
+        let f1 = select_profile(ProfileNumber::from_one_based(1).unwrap());
+        assert_eq!(f1[3], 0x94, "checksum measured on the wire");
+        assert_eq!(&f1[4..8], &[0x70, 0x00, 0xFF, 0xFF]);
+    }
+
     #[test]
     fn parse_profile_reads_the_zero_based_index_from_the_real_replies() {
         assert_eq!(
@@ -887,6 +925,15 @@ mod tests {
         payload[fw_len_pos] = 10;
         payload[fw_len_pos + 1..fw_len_pos + 11].copy_from_slice(b"V1.2.3.456");
         assert_eq!(parse_sync(&payload).unwrap().serial, "ABC");
+    }
+
+    /// The two keyset layouts. `0xFE` has direct write evidence (1 on rapid trigger create, 0 on
+    /// delete). `0xFF` correlates with the actuation point keysets the vendor UI showed but has
+    /// never been observed being written, so nothing here may write it.
+    #[test]
+    fn keyset_layout_ids() {
+        assert_eq!(layout::KEYSET_AP, 0xFF);
+        assert_eq!(layout::KEYSET_RT, 0xFE);
     }
 
     #[test]

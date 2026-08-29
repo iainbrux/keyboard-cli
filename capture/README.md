@@ -142,14 +142,19 @@ each scenario should still change exactly one thing, the whole method this proce
   grouping a single-key capture cannot. Does a plain AP write use the same
   layout `0x04` path, and how does the vendor batch several keys' records
   into one report?
-- `remap-one-key`: remap one key, then re-read its own layout `0x00`
-  record. Confirms layout `0x00` is the live key mapping, not a fixed
-  identifier: the remapped key's `0x00` value changed to match.
+- `remap-one-key`: remap one key. Four frames: `cmd 0x00` sub-order `0xbd`
+  and its ack, then a single KEY frame with `rw=0x01` writing key `0x0e`
+  layout `0x00` value `0x003a` (k remapped to F1), and its ack. The write
+  alone is what this file shows; it contains no read of layout `0x00`, so
+  the re-read that confirms `0x00` is the live mapping is in
+  `remap-matrix-read`, not here.
 - `remap-matrix-read`: re-read the DEFKEY matrix (`cmd 0x2b`) with that
   same remap still live. Confirms the opposite for DEFKEY: it kept
   reporting the key's original, physical usage, not the new mapping, which
   is why `wh` can address a key by its DEFKEY-reported usage even after an
-  operator remaps it.
+  operator remaps it. This file also holds the per-key layout `0x00`
+  re-read (key `0x0e` reads back `0x3a`), which is what actually confirms
+  layout `0x00` is the live mapping rather than a fixed identifier.
 - `nav-key-identify`: remap each of the four non-standard keys (`0xfa`,
   `0xfb`, `0xd6`, `0xfc`) to a distinct, recognisable key (F2 through F5)
   in turn and capture the write. Settles which physical key is which by

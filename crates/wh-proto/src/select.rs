@@ -15,13 +15,15 @@ pub enum SelectError {
     Unknown(String, String),
     #[error("'{0}' is not a key on this device")]
     NotOnDevice(String),
-    /// There is no route to rename or delete a stale stored group under an ambiguous name, so
-    /// the message points at the one that works: read the group's members via `wh keys list`,
-    /// then recreate it under a different name using an explicit list of those keys.
+    #[error("bad hex value '{0}'")]
+    BadHex(String),
+    /// `wh keys ungroup` and `wh keys rename` both take a group's name directly rather than
+    /// through this grammar, so either one resolves an ambiguous stored group without needing
+    /// this name to work as a selector at all.
     #[error(
-        "'{0}' is both a key or builtin group name and a stored group; run `wh keys list` to see \
-         what '{0}' contains, then recreate it under a different name using an explicit list of \
-         those key names (not '{0}')"
+        "'{0}' is ambiguous as a selector (both a key or builtin group name and a stored group); \
+         run `wh keys ungroup {0}` to remove it, or `wh keys rename {0} <new-name>` to give it an \
+         unambiguous name"
     )]
     AmbiguousWithGroup(String),
 }
@@ -31,6 +33,7 @@ enum Item {
     All,
     Name(String),
     Range(u8, u8),
+    Usage(u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +59,15 @@ impl Selector {
             }
             if body.eq_ignore_ascii_case("all") {
                 items.push((neg, Item::All));
+                continue;
+            }
+            // `wh keys list` prints unnamed keys as `0x01`; accept that form back. Checked
+            // before the range check below, or `0x01-0x05` would be probed as a range with
+            // unparseable ends instead of failing cleanly as a bad hex value.
+            if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+                let usage = u8::from_str_radix(hex, 16)
+                    .map_err(|_| SelectError::BadHex(body.to_string()))?;
+                items.push((neg, Item::Usage(usage)));
                 continue;
             }
             // Range only when both sides resolve as key names ("f1-f12", "a-z").
@@ -95,6 +107,19 @@ impl Selector {
             let expanded: Vec<u8> = match item {
                 Item::All => universe.to_vec(),
                 Item::Range(a, b) => (*a..=*b).filter(in_universe).collect(),
+                Item::Usage(u) => {
+                    // Same assertion a positively named key makes: absence is an error, not a
+                    // silent filter, unless negated (a harmless no-op).
+                    if !in_universe(u) {
+                        if *neg {
+                            vec![]
+                        } else {
+                            return Err(SelectError::NotOnDevice(format!("{u:#04x}")));
+                        }
+                    } else {
+                        vec![*u]
+                    }
+                }
                 Item::Name(n) => {
                     if let Some(u) = usage_for_name(n) {
                         // A name that is both a key and a stored user group is ambiguous, not a
@@ -311,30 +336,22 @@ mod tests {
         assert_eq!(sel.resolve(&universe, &groups).unwrap(), vec![0xFB]);
     }
 
-    /// The message must prescribe a route that actually works: recreating a group under the
-    /// same name still goes through `Selector::resolve` against that same ambiguous name.
-    /// Asserts it points at `wh keys list` and at recreating under a different name from an
-    /// explicit key list.
+    /// The message must prescribe routes that actually work: `wh keys ungroup` and `wh keys
+    /// rename` both take a group's name directly, not through this ambiguous selector grammar.
     #[test]
-    fn ambiguous_with_group_message_prescribes_a_route_that_actually_works() {
+    fn ambiguous_with_group_message_prescribes_routes_that_actually_work() {
         let mut groups = HashMap::new();
         groups.insert("rt".to_string(), vec![0x1A, 0x04, 0x16, 0x07]);
         let universe = vec![0x04, 0x07, 0x16, 0x1A, 0xFB];
         let sel = Selector::parse("rt").unwrap();
         let msg = sel.resolve(&universe, &groups).unwrap_err().to_string();
         assert!(
-            msg.contains("wh keys list"),
-            "message should point at `wh keys list` to recover the stale group's members: {msg}"
+            msg.contains("wh keys ungroup"),
+            "message should point at `wh keys ungroup` to remove the stale group: {msg}"
         );
         assert!(
-            msg.contains("different name"),
-            "message should say to recreate under a different name: {msg}"
-        );
-        // "rename the group" does not work here and must not appear, or a reader will try it
-        // and hit the same refusal again.
-        assert!(
-            !msg.contains("rename the group"),
-            "message must not repeat the non-working remediation: {msg}"
+            msg.contains("wh keys rename"),
+            "message should point at `wh keys rename` to give it an unambiguous name: {msg}"
         );
     }
 
@@ -368,6 +385,50 @@ mod tests {
             sel.resolve(&uni(), &groups).unwrap(),
             vec![0x1A, 0x04, 0x16, 0x07]
         );
+    }
+
+    /// `wh keys list` prints keys with no name as `0x01`. That form must be typeable back into
+    /// a selector, or such a key is unreachable from the CLI.
+    #[test]
+    fn hex_form_resolves_to_a_usage() {
+        let sel = Selector::parse("0x01").unwrap();
+        assert_eq!(
+            sel.resolve(&[0x01, 0x1A], &HashMap::new()).unwrap(),
+            vec![0x01]
+        );
+    }
+
+    #[test]
+    fn hex_form_is_case_insensitive_and_negatable() {
+        let sel = Selector::parse("all,!0X1a").unwrap();
+        assert_eq!(
+            sel.resolve(&[0x01, 0x1A], &HashMap::new()).unwrap(),
+            vec![0x01]
+        );
+    }
+
+    /// A hex form naming a key the board does not have is an error, not a silent empty result,
+    /// matching how a named key absent from the universe already behaves.
+    #[test]
+    fn hex_form_absent_from_the_board_errors() {
+        assert!(Selector::parse("0x7f")
+            .unwrap()
+            .resolve(&[0x01], &HashMap::new())
+            .is_err());
+    }
+
+    /// `0x100` does not fit in a usage byte and is not a key name either.
+    #[test]
+    fn hex_form_out_of_byte_range_is_rejected() {
+        assert!(Selector::parse("0x100").is_err());
+    }
+
+    /// A hex range would otherwise be probed with unparseable ends: the hex check must run
+    /// before the range check, so this fails cleanly as a bad hex value instead.
+    #[test]
+    fn hex_shaped_range_is_a_bad_hex_value_not_a_confusing_range_error() {
+        let err = Selector::parse("0x01-0x05").unwrap_err();
+        assert!(matches!(err, SelectError::BadHex(_)));
     }
 
     #[test]

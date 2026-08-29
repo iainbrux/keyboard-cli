@@ -9,5 +9,6 @@ publish = false
 wh-proto = { path = "../wh-proto" }
 serde.workspace = true
 toml.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 directories = "5"
