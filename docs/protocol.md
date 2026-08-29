@@ -188,8 +188,10 @@ Upstream (`research/proto/package/src/constants/param.ts`'s `KeyTouchMode`, and
 `byte.ts`'s near-identical copy) declares three values: `global = 0x00`, `single = 0x01`,
 `rt = 0x02`. An earlier draft of this document recorded, from 1224 captured frames, that the K-001
 never uses `0x02` for anything. **That was a statement about the sample, and the sample was blind:**
-no capture in it had ever touched the GLOBAL RAPID TRIGGER switch. Measured on 2026-08-29, turning
-that switch on writes nibble `2` to every key outside a rapid trigger keyset. Upstream was right.
+no capture in it had ever touched the GLOBAL RAPID TRIGGER switch. Measured on 2026-08-29, a board
+with that switch on holds nibble `2` on every key outside a rapid trigger keyset, and switching it
+off writes nibble `1` to exactly those keys. Upstream was right. The write that puts a key *into*
+nibble `2` has still never been captured; see `docs/keysets.md`.
 
 The five nibbles now measured:
 
