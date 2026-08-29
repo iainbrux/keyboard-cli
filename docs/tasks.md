@@ -20,13 +20,13 @@ rather than as settings it recognises.
 - [x] ~~**2.0 JSON replaces TOML** for backups and snapshots. Older TOML backups are still read.~~
 - [x] ~~**2.1 Read keyset membership.** Layouts `0xFF` (actuation point keyset index, inferred from
   read correlation) and `0xFE` (rapid trigger keyset membership, measured from write evidence),
-  read per key and surfaced in `wh dump`, `wh dump --json`, `wh get`, and snapshots. Read only, no
-  writes.~~
-- [x] ~~**2.2 Actuation point writes match the vendor.** `wh set ap` now also promotes MODE nibble 0
-  (Global) to nibble 1 (Single) on every actuation point change, the marker the vendor sets that our
-  own writes previously omitted. `Single`, `Rt`, `RtContinuous`, and `Unknown` touch nibbles are left
-  untouched. Covered by unit and end-to-end tests against replayed frames; hardware verification is
-  still outstanding, see `README.md`.~~
+  read per key and surfaced in `wh dump` (JSON), `wh dump --table`, `wh get`, and snapshots. Read
+  only, no writes.~~
+- [x] **[hardware verification outstanding]** ~~**2.2 Actuation point writes match the vendor.**
+  `wh set ap` now also promotes MODE nibble 0 (Global) to nibble 1 (Single) on every actuation point
+  change, the marker the vendor sets that our own writes previously omitted. `Single`, `Rt`,
+  `RtContinuous`, and `Unknown` touch nibbles are left untouched. Covered by unit and end-to-end
+  tests against replayed frames; not yet confirmed against real hardware, see `README.md`.~~
 - [ ] **2.3 The keyset capture session. [hardware]** Create two actuation point keysets over
   untouched keys, delete the first, create a third, and watch `0xFF`. Settles three things at once:
   whether a new index reuses a gap or takes the maximum plus one, whether `0xFE` is a boolean or an

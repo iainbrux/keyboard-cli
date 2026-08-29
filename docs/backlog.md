@@ -398,8 +398,8 @@ no device state. An FDW is a caching-shaped thing, so the honest design is no ca
 scan re-reads, at roughly 400 HID roundtrips per full table scan. That is fine for 68 rows and keeps
 the invariant intact.
 
-**Honest assessment.** A good demo, weak on necessity. `wh dump --json | jq` already covers most of
-what anyone would actually query, works today, and needs neither a daemon nor an extension.
+**Honest assessment.** A good demo, weak on necessity. `wh dump | jq` already covers most of what
+anyone would actually query, and needs neither a daemon nor an extension.
 
 ## Protocol gaps
 

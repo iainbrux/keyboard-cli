@@ -157,8 +157,8 @@ parsing them as layout records produces nonsense).
 | `0x16` | 1858 | 1 | **Always `0`.** Never once observed non-zero across the whole corpus, written alongside every rapid trigger change. Purpose unknown |
 | `0x17` | 1858 | 1 | **Always `0`,** same as `0x16`. Purpose unknown |
 | `0x19` | 700 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | Keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set |
-| `0xff` | 420 | 3 | **Unidentified.** Only ever `0`, `1`, or `2` |
+| `0xfe` | 424 | 2 | Keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set. Read and used by `wh` (Phase 2) |
+| `0xff` | 420 | 3 | Read `210` times, written `0`. Inferred as the actuation point keyset index; read and used by `wh` (Phase 2), see `docs/backlog.md` |
 
 The record counts above are what these ten captured scenarios happened to exercise, not each field's
 full possible range. Within the corpus: layout `0x04` (actuation point) only ever took `0, 300, 850,
@@ -168,11 +168,12 @@ full possible range. Within the corpus: layout `0x04` (actuation point) only eve
 
 `wh` models four of these: `0x04`, `0x08`, `0x14`, `0x15`. `0x00` and `0x01` are now identified (see
 below) but `wh` does not read or write the key mapping through them; remapping keys is out of Phase 1
-scope. `0x16`, `0x17`, `0x19`, and `0xff` remain unused by `wh`. `0xfe` is also never written by
-`wh`: it is board keyset membership, not the same thing as a `wh keys group`, which is a purely
-host-side name for a set of keys stored in `wh`'s own `config.toml` and never sent to the board at
-all. The two happen to share the word "group"/"keyset"; they are not the same mechanism, and `wh`
-never reads or writes `0xfe`.
+scope. `0x16`, `0x17`, and `0x19` remain unused by `wh`. `0xff` and `0xfe` are read (Phase 2), not
+written: `wh` surfaces each key's raw keyset value but does not yet write keyset membership, since
+writing it is unspecified pending the capture session in `docs/tasks.md` (2.3/2.4). Board keyset
+membership is not the same thing as a `wh keys group`, which is a purely host-side name for a set of
+keys stored in `wh`'s own `config.json` and never sent to the board at all. The two happen to share
+the word "group"/"keyset"; they are not the same mechanism.
 
 ### Mode: nibble values, and a divergence from upstream
 
@@ -311,8 +312,8 @@ Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
 - Select measurably takes roughly 120 times as long as a read (task 19b group B measurement, from
   the same two selects above); a caller doing both in sequence should not assume they cost the same.
 
-`wh` implements read only. Select is documented here because the wire behaviour is known, but
-nothing in Phase 1 needs to change the board's active profile.
+Phase 1 implemented read only. `wh profile <1-4>` (Phase 2) added select, over exactly this wire
+behaviour.
 
 ## Open items
 
@@ -323,8 +324,11 @@ Honestly, what this corpus does not resolve:
   it across the whole corpus, and the measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a
   `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
   may be something else entirely.
-- Layouts `0x16`, `0x17`, `0x19`, and `0xff`: present, measured, and never once informative in this
-  corpus (`0x16`/`0x17` never non-zero; `0x19` only ever two values; `0xff` only ever three).
+- Layouts `0x16`, `0x17`, and `0x19`: present, measured, and never once informative in this corpus
+  (`0x16`/`0x17` never non-zero; `0x19` only ever two values). `0xff` is the one exception: only
+  ever three values in the corpus, but that distribution is what the keyset inference in
+  `docs/backlog.md` rests on. What the corpus does not resolve for `0xff` is whether anything writes
+  it and what `0` denotes; see 2.3 in `docs/tasks.md`.
 - Commands `0x18` and `0x2c`: unidentified at the command level, discussed above.
 - The nine unidentified `cmd 0x00` sub-orders: `0x22`, `0x50`, `0xa1`, `0xb9`, `0xba`, `0xbb`,
   `0xbc`, `0xbd`, `0xc0`. All confined to the connect sequence except `0xbd`, which recurs as a
