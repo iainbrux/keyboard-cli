@@ -67,6 +67,24 @@ that keys belong to. Same wire format, different abstraction, and the TUI would 
 **Prerequisite.** Not until the write path has been exercised against hardware. A UI that makes it
 easy to change many settings quickly is the worst place to discover a write bug.
 
+### Deleting or renaming a stored key group
+
+**The problem.** `wh keys group <name> <selector>` creates a group, and nothing removes one. That
+became visible when four board-function key names (`ap`, `rt`, `play`, `light`) were added to the key
+table: a group created under one of those names before the change is now refused by the selector,
+correctly, because a bare name that is both a key and a stored group is ambiguous and writing to the
+wrong key on hardware is unacceptable. But the operator's only recovery is to read the group's
+members off `wh keys list` and retype them under a new name, because `wh keys group` cannot delete
+and cannot rename.
+
+**What it needs.** A delete, and probably a rename. The awkward part is that a group whose name
+collides is exactly the one you most want to remove, and any command that takes the group's name as a
+selector will hit the same ambiguity guard — so the delete has to address the group by name in a
+position that is unambiguously a group, not a selector.
+
+**Deliberately deferred.** It is a new CLI surface, and it was found during a task of protocol
+corrections where adding one would have been unreviewed scope creep.
+
 ### A loading spinner on CLI commands
 
 **The idea.** When a command runs, show a brief spinner cycling `|`, `/`, `-`, `\` for something in
@@ -123,10 +141,18 @@ All request and reply balanced, none ever failing, all confined to the connect s
 | `0xBD` | 9 | `00bd01ff` |
 | `0xC0` | 3 | `00c001` |
 
-### Unidentified layouts
+### Layouts, identified and not
 
-- `0x16` and `0x17`, written as zero alongside every rapid trigger change and never once observed
-  non-zero. Purpose unknown.
+Two former unknowns are now measured. See `docs/protocol-inventory.md` for the full table and counts.
+
+- `0x00` is the **base layer key mapping** and `0x01` is the **FN layer**. Measured from
+  `initial-load` by reading each key's `0x00` against its `0x01`: esc maps to grave, and 1 through 0
+  map to F1 through F10, holding across 69 distinct values in two independent series. That is
+  exactly how the board behaves under FN.
+- `0x16` and `0x17`, 1858 records each across the corpus, written as zero alongside every rapid
+  trigger change and **never once observed non-zero**. Purpose unknown.
+- `0x19`, 700 records, only ever `0x0000` or `0x3e2c`. Purpose unknown.
+- `0xFF`, 420 records, only ever `0`, `1` or `2`. Purpose unknown.
 - `0xFE`, written as 1 when a keyset is created and 0 when it is deleted, and untouched by edits
   within an existing keyset. Reads as a membership flag.
 
@@ -137,9 +163,17 @@ because confirming it means remapping FN away and FN is how you reach the FN lay
 non-standard keys were confirmed by measurement: `0xFA` is AP, `0xFB` is RT, `0xD6` is PLAY, and
 `0xFC` is LIGHT.
 
+One honest limit on those four, raised in review. The captures prove that the four usage codes exist,
+are configurable, and were remapped to F2, F3, F4 and F5 respectively. They do not by themselves
+prove that `0xFA` is the key *legended* AP rather than the one legended RT. That binding rests on the
+operator's report of which key they remapped, corroborated by the four codes sitting in the same
+column across four consecutive matrix rows. Good enough to name them; not the same standard as the
+byte-level facts elsewhere in this document.
+
 ### Settings a snapshot does not capture
 
-`wh backup` stores global travel plus four layouts per key. It does not capture key mappings, SOCD,
-dynamic keystroke, mod tap, gamepad configuration, RGB, polling rate, or which profile it came from.
-The profile gap is being closed in Phase 1. The rest are Phase 2 scope questions, and the README
-must say plainly what a snapshot does and does not contain either way.
+`wh backup` stores global travel plus four layouts per key. It does not capture the base layer key
+mapping (layout `0x00`), the FN layer (layout `0x01`), SOCD, dynamic keystroke, mod tap, gamepad
+configuration, RGB, or polling rate. Recording which profile a snapshot came from is being closed in
+Phase 1. The rest are Phase 2 scope questions, and the README must say plainly what a snapshot does
+and does not contain either way.
