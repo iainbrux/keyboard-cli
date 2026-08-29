@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # wh
 
 A Rust CLI that reads and writes actuation-point and rapid-trigger settings on a Wallhack K-001
@@ -18,6 +22,27 @@ Four crates, and the layering is the point. Keep changes in the right one.
 The hardware transport is `#[cfg(windows)]`. The binary cross-compiles to
 `x86_64-pc-windows-gnu` and is driven from WSL through `bin/wh`.
 
+**How a command travels.** `wh-cli` parses, resolves a key selector against the board's real key
+matrix (read from the device, not assumed), and calls a `wh-device` operation. That operation builds
+`KeyRecord`s via `wh-proto` encoders, sends them through a `Transport`, and reads back to verify.
+`Transport` has two implementations: `HidTransport` for the real board, and `ReplayTransport`, which
+matches every outgoing frame against a scripted JSONL capture byte for byte. Every test in the repo
+runs against the second one, which is why the matching must never be loosened.
+
+**Writes are read-modify-write.** A settings write reads the key's current MODE first, so that
+changing one thing cannot silently clear another. `ap_records` promotes touch nibble 0 to 1 and
+deliberately leaves 1, 3, 4 and unknown nibbles alone; `rt_records` preserves `RtContinuous`. This is
+the single most important invariant in the codebase and it exists because clobbering a nibble
+silently disables a feature the user set from the vendor UI.
+
+**Only one process can hold the device.** The vendor HID collection (usage page `0xFFA0`) is
+exclusive, so `wh` fails with `DeviceError::Busy` while terminal.wallhack.com has it open. This is
+why there is no daemon and why long-running features are backlogged rather than built.
+
+**`wh` caches no device state.** Every command reads live over HID, which is why it cannot show a
+stale value where the web configurator can. The only exception is the read-modify-write window
+above.
+
 ## Commands
 
 ```bash
@@ -29,6 +54,18 @@ cargo build -p wh-cli --release --target x86_64-pc-windows-gnu   # the real bina
 ```
 
 All three gate commands must pass before any commit.
+
+Running one test, or one suite:
+
+```bash
+cargo test -p wh-device ap_records                     # by name substring
+cargo test -p wh-proto --test golden -- --nocapture    # decodes captures/, prints its summary
+cargo test -p wh-cli --test dump                       # end-to-end CLI over replay scripts
+```
+
+`--nocapture` matters for `golden`: without it cargo swallows the summary on a passing run and you
+see only `ok`. The two integration suites are `wh-proto/tests/golden.rs`, which decodes real captured
+traffic, and `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays.
 
 ## Safety rules, each one learned the hard way
 
