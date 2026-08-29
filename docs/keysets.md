@@ -2,7 +2,7 @@
 
 How the vendor configurator creates, values and deletes a keyset, and what the global rapid trigger
 switch does, measured on 2026-08-29 against a real K-001 running firmware `App_V1.1.046000`.
-Fourteen keyset capture scenarios across two sittings, each changing one thing.
+Fifteen keyset capture scenarios across two sittings, each changing one thing.
 
 This document is the evidence base for task 2.4. Everything here is measured. Where something is
 inferred, it says so.
@@ -120,25 +120,27 @@ does this by writing the global value, not by leaving the old one in place.
 
 ## Touch nibble 2 is global rapid trigger
 
-Nibble `2` is rapid trigger following the board's global settings. Three measurements support it,
-and one that would have been the most direct is **missing**, so the distinction matters.
+Nibble `2` is rapid trigger following the board's global settings, and both transitions are
+measured.
 
-**Measured.** With GLOBAL RAPID TRIGGER on, every key outside a rapid trigger keyset read nibble
-`2` (62 keys at `0x20`, four at `0x28`), while the two rapid trigger keyset members read `0x30`.
-Turning the switch off wrote nibble `1` to exactly those 66 keys, preserving each advanced nibble.
-The nibble `2` keys carried the global sensitivity in `0x14`/`0x15`, moving with it from `100` to
-`150` to `200`, while the two nibble `3` keys kept their own and were skipped by every global
-write.
+**On.** `ks-global-rt-on` reads every one of the 68 keys back at nibble `1` (`0x10` on 64 of them,
+`0x18` on four) *before* its first write, then writes nibble `2` to all 68 (`0x20` and `0x28`),
+advanced nibble preserved, with the global sensitivity `200` into `0x14`/`0x15` alongside.
 
-**Not measured: the transition into nibble `2`.** No capture in the corpus contains a MODE write
-that moves a key from another nibble to `2`. Both `ks-global-rt-sens-150` and
-`ks-global-rt-sens-200` read nibble `2` back from the board *before* their first write and then
-write the same nibble again; they are sensitivity changes on a board already in that state, not
-the switch being thrown. An earlier draft of this document said "turning it on writes nibble 2 to
-every key". That was an inference from the operator's description of what they clicked, stated as
-a measurement, and it is the same error this project has made three times before.
+**Off.** `ks-global-rt-off` writes nibble `1` back, again preserving the advanced nibble.
 
-This still falsifies `docs/protocol.md`'s claim that the firmware never uses `0x02`, which was
+**While on**, the nibble `2` keys carry the global sensitivity in `0x14`/`0x15`, which moved with
+it from `100` to `150` to `200` across the three captures, while rapid trigger keyset members sit
+at nibble `3` and keep their own.
+
+That ordering matters, because an earlier draft of this document claimed the on-transition from a
+capture that did not contain it. Both `ks-global-rt-sens-150` and `ks-global-rt-sens-200` read
+nibble `2` back before writing and then write the same nibble again: they are sensitivity changes
+on a board already in that state. The claim was an inference from the operator's description of
+what they clicked, written down as a measurement, which is the same error this project has made
+three times before. `ks-global-rt-on` was then captured specifically to settle it.
+
+This falsifies `docs/protocol.md`'s claim that the firmware never uses `0x02`, which was
 recorded from a corpus in which the global switch had never been touched. Upstream's
 `KeyTouchMode.rt = 0x02` was right; our sample was simply blind to it. The full nibble set now
 measured:
@@ -152,7 +154,8 @@ measured:
 | `4` | rapid trigger continuous, own settings |
 
 **Keys in a rapid trigger keyset are skipped entirely** by the off write and by both sensitivity
-changes. That is the mechanism by which a keyset's own sensitivity survives a global
+changes. The on write is untested on this point: no rapid trigger keyset existed when it was
+captured, so all 68 keys were written and there was nothing to skip. That is the mechanism by which a keyset's own sensitivity survives a global
 change, and it is the same shape as an actuation point keyset shielding its members from global
 travel. Measured three times: 66 of 68 keys written, the two skipped being exactly the two members
 of the live rapid trigger keyset.
@@ -256,13 +259,14 @@ the name is now measured rather than inferred from byte shapes.
   configurator reads it back. Plausible and testable, not measured.
 - **What `0x16` and `0x17` are for.** Written `100` in every template, never observed changing.
 - **`cmd 0x00` sub-order `0x22`**, read three times at the head of every global rapid trigger
-  capture, always replying `0`. Position suggests the global switch's own state.
-- **What writes nibble `2`.** Capturing GLOBAL RAPID TRIGGER being switched on, from a board whose
-  keys are at nibble `0` or `1`, would settle it in one scenario. The board is in that state now.
+  capture. Not the switch's state: it replies `0` with the switch off (`ks-global-rt-on`) and `0`
+  with it on (both sensitivity captures).
+- **Whether the on write skips rapid trigger keyset members**, as the off write and both
+  sensitivity changes do. Needs one capture with a keyset present before the switch is thrown.
 - **`cmd 0x00` sub-order `0xbd`**, sent once before the sensitivity change, and also before the
   write in `remap-one-key`. Possibly a write barrier.
 
 ## Corpus
 
-Twenty-six capture files, 3448 frames, all decoding with correct framing and checksums and no hard
-failures. Up from ten files and 1224 frames after Phase 1.
+Twenty-seven capture files, 3696 frames, all decoding with correct framing and checksums and no
+hard failures. Up from ten files and 1224 frames after Phase 1.
