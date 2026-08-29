@@ -820,7 +820,7 @@ fn set_ap_end_to_end_promotes_a_global_key_to_single() {
 /// `ap_records` ever forced the touch nibble to `Single` here, the frame it actually sent would
 /// no longer match this script and `ReplayTransport` would reject it as a send mismatch, proving
 /// rapid trigger provably survives a depth change through the real command path.
-fn set_ap_preserves_rapid_trigger_script(readback_ap: u16) -> Vec<String> {
+fn set_ap_preserves_rapid_trigger_script(readback_ap: u16, readback_mode: u16) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
     lines.extend(auto_backup_lines_with_modes(0, 0x38, 0x00));
@@ -838,11 +838,19 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // Readback verification reads all six layouts for 'w'. Rapid trigger surviving is already
-    // proven above: the write batch carries no MODE record, pinned byte for byte by
-    // `ReplayTransport`, so nothing was written to MODE. `verify_ap` does not check MODE for this
-    // key, since there is no MODE record in the returned `records` to check it against.
-    lines.extend(key_settings_lines(0x1A, readback_ap, 0x38, 500, 500, 0, 0));
+    // Readback verification reads all six layouts for 'w'. Rapid trigger surviving is proven
+    // twice over: the write batch carries no MODE record, pinned byte for byte by
+    // `ReplayTransport`, and `verify_ap` compares `readback_mode` against the 0x38 read before
+    // the write, so a firmware that cleared rapid trigger on its own still fails the run.
+    lines.extend(key_settings_lines(
+        0x1A,
+        readback_ap,
+        readback_mode,
+        500,
+        500,
+        0,
+        0,
+    ));
     lines
 }
 
@@ -854,7 +862,7 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16) -> Vec<String> {
 fn set_ap_end_to_end_preserves_rapid_trigger() {
     let path = write_script(
         "set-ap-preserve-rt",
-        &set_ap_preserves_rapid_trigger_script(1200),
+        &set_ap_preserves_rapid_trigger_script(1200, 0x38),
     );
     let config_home = scratch_config_dir("set-ap-preserve-rt");
 
@@ -871,6 +879,39 @@ fn set_ap_end_to_end_preserves_rapid_trigger() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The twin that matters most on this branch: same script, but the board reports MODE 0x18
+/// (`Single`) on readback where it read 0x38 (`Rt`) before the write. Nothing wrote MODE, so the
+/// firmware cleared rapid trigger by itself, and `wh` must say so instead of printing "verified".
+/// Before this check existed the two runs produced byte-identical output.
+#[test]
+fn set_ap_end_to_end_fails_when_the_board_clears_rapid_trigger_by_itself() {
+    let path = write_script(
+        "set-ap-rt-cleared",
+        &set_ap_preserves_rapid_trigger_script(1200, 0x18),
+    );
+    let config_home = scratch_config_dir("set-ap-rt-cleared");
+
+    let out = run_wh(
+        &["set", "ap", "--keys", "w", "--set", "1.2"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("mismatch"), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("w: ") && stderr.contains("0x0018") && stderr.contains("0x0038"),
+        "the failure must name the key and both mode values, got: {stderr}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);

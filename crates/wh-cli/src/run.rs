@@ -652,46 +652,91 @@ fn verify_rt_off<T: Transport>(
     report_verification(out, "rt off", &usages, &bad)
 }
 
-/// Verifies an actuation point write: AP for every key with an AP entry in `records`
-/// (`ops::ap_records` emits exactly one per key), MODE only for a key whose `records` also
-/// include a MODE entry (`Rt`, `RtContinuous`, `Unknown`, and already-`Single` keys get none).
-/// Derives the key list from `records` rather than a separate `usages` parameter, so the two
-/// can never disagree, mirroring `verify_rt`.
+/// Verifies an actuation point write: AP for every key with an AP entry in `plan.records`
+/// (`ops::ap_records` emits exactly one per key), and MODE for *every* key, either against the
+/// promoted value it was sent or, for a key that got no MODE record, against the value read from
+/// it before the write. A key left alone on purpose whose MODE moved anyway is a failure: that is
+/// the firmware clearing rapid trigger behind an actuation point change.
+///
+/// Derives the key list from `plan` rather than a separate `usages` parameter, so the two can
+/// never disagree, mirroring `verify_rt`. One line per key, naming both faults when both are
+/// wrong, rather than hiding the mode fault behind the depth one.
 fn verify_ap<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     depth: Um,
-    records: &[KeyRecord],
+    plan: &ops::ApPlan,
 ) -> Result<()> {
     let mut bad = Vec::new();
     let mut usages = Vec::new();
-    for r in records.iter().filter(|r| r.layout == layout::AP) {
+    for r in plan.records.iter().filter(|r| r.layout == layout::AP) {
         let u = r.key;
         usages.push(u);
         let ks = ops::read_key_settings(s, u)?;
-        let name = key_label(u);
-        if ks.ap != depth {
-            bad.push(format!(
-                "{name}: board reports {:.2}mm, wanted {:.2}mm",
-                ks.ap.to_mm(),
-                depth.to_mm()
-            ));
-        } else if let Some(want_mode) = records
+        let promoted = plan
+            .records
             .iter()
             .find(|r| r.key == u && r.layout == layout::MODE)
-            .map(|r| r.value)
-        {
-            if ks.mode.value() != want_mode {
-                bad.push(format!(
-                    "{name}: board reports mode {:#06x}, wanted mode {:#06x} (single, key no \
-                     longer follows global travel)",
-                    ks.mode.value(),
-                    want_mode,
-                ));
-            }
+            .map(|r| r.value);
+        if let Some(line) = ap_fault_line(&key_label(u), depth, &ks, promoted, plan.prior_mode(u)) {
+            bad.push(line);
         }
     }
     report_verification(out, &format!("ap {:.2}mm", depth.to_mm()), &usages, &bad)
+}
+
+/// The one line `verify_ap` reports for a key, or `None` when the readback is right.
+///
+/// `promoted` is the MODE value this key was sent, if any; `prior` is the MODE it read before the
+/// write. A promoted key must report what it was sent, and a key deliberately left alone must
+/// report `prior` unchanged, or the firmware moved MODE by itself. Split out from `verify_ap`
+/// because `report_verification` writes these lines to stderr, where a test cannot read them back.
+fn ap_fault_line(
+    name: &str,
+    depth: Um,
+    ks: &ops::KeySettings,
+    promoted: Option<u16>,
+    prior: Option<u16>,
+) -> Option<String> {
+    let mut faults = Vec::new();
+    if ks.ap != depth {
+        faults.push(format!(
+            "board reports {:.2}mm, wanted {:.2}mm",
+            ks.ap.to_mm(),
+            depth.to_mm()
+        ));
+    }
+    let got = ks.mode.value();
+    match promoted {
+        Some(want) if got != want => faults.push(format!(
+            "board reports mode {got:#06x}, wanted mode {want:#06x} (single, key no longer \
+             follows global travel)"
+        )),
+        None => {
+            if let Some(before) = prior.filter(|&before| got != before) {
+                faults.push(format!(
+                    "board reports mode {got:#06x} (rt {}), expected mode {before:#06x} unchanged \
+                     (rt {}); nothing wrote mode for this key",
+                    if ks.rt_enabled() { "on" } else { "off" },
+                    if raw_mode_rt_on(before) { "on" } else { "off" },
+                ));
+            }
+        }
+        Some(_) => {}
+    }
+    if faults.is_empty() {
+        return None;
+    }
+    Some(format!("{name}: {}", faults.join("; ")))
+}
+
+/// Whether a raw MODE value has rapid trigger on, for reporting a pre-write value held as a bare
+/// `u16` rather than a parsed `KeySettings`.
+fn raw_mode_rt_on(mode_raw: u16) -> bool {
+    matches!(
+        cmds::Mode::from_value(mode_raw).touch,
+        cmds::TouchMode::Rt | cmds::TouchMode::RtContinuous
+    )
 }
 
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
@@ -766,12 +811,12 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
                 if dry_run {
-                    let records = ops::ap_records(s, &usages, depth)?;
-                    return print_frames(&mut out, &cmds::write_key_records(&records));
+                    let plan = ops::ap_records(s, &usages, depth)?;
+                    return print_frames(&mut out, &cmds::write_key_records(&plan.records));
                 }
                 auto_backup(s, store, "set ap")?;
-                let records = ops::set_ap(s, &usages, depth)?;
-                verify_ap(&mut out, s, depth, &records)
+                let plan = ops::set_ap(s, &usages, depth)?;
+                verify_ap(&mut out, s, depth, &plan)
             })
         }
     }
@@ -1257,6 +1302,83 @@ mod tests {
         // Refusal must not clobber the original group.
         assert!(store.groups().unwrap().contains_key("fps"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A readback for one key, with MODE and AP set by the caller and the rest fixed: only
+    /// those two fields drive `ap_fault_line`.
+    fn readback(ap: Um, mode_raw: u16) -> ops::KeySettings {
+        ops::KeySettings {
+            usage: 0x1A,
+            ap,
+            mode: cmds::Mode::from_value(mode_raw),
+            rt_press: Um(500),
+            rt_release: Um(500),
+            ap_keyset: 0,
+            rt_keyset: 0,
+        }
+    }
+
+    #[test]
+    fn ap_fault_line_is_silent_when_depth_and_an_unchanged_mode_both_match() {
+        let ks = readback(Um(1200), 0x38);
+        assert_eq!(ap_fault_line("w", Um(1200), &ks, None, Some(0x38)), None);
+    }
+
+    /// The Critical 1 case: no MODE record was sent, and the board still moved MODE from `Rt`
+    /// (0x38) to `Single` (0x18), silently clearing rapid trigger. That must be a reported fault,
+    /// not an unchecked read.
+    #[test]
+    fn ap_fault_line_catches_a_mode_the_board_changed_with_no_mode_record_sent() {
+        let ks = readback(Um(1200), 0x18);
+        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x38))
+            .expect("a mode that moved on its own must be a fault");
+        assert!(
+            line.contains("w:") && line.contains("0x0018") && line.contains("0x0038"),
+            "must name the key and both mode values: {line}"
+        );
+        assert!(
+            line.contains("rt off") && line.contains("rt on"),
+            "must say rapid trigger was on before and off now: {line}"
+        );
+    }
+
+    /// One line per key, naming both faults. The `else if` this replaced hid a MODE fault behind
+    /// an AP fault on the same key, which is exactly the pairing a failed write produces.
+    #[test]
+    fn ap_fault_line_names_both_faults_when_depth_and_mode_are_both_wrong() {
+        let ks = readback(Um(1100), 0x18);
+        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x38)).expect("both are wrong");
+        assert_eq!(
+            line.lines().count(),
+            1,
+            "still one line per key, not two: {line}"
+        );
+        assert!(
+            line.contains("1.10mm") && line.contains("1.20mm"),
+            "the depth fault must survive: {line}"
+        );
+        assert!(
+            line.contains("0x0018") && line.contains("0x0038"),
+            "the mode fault must survive alongside it: {line}"
+        );
+    }
+
+    /// A promoted key is still checked against the value it was sent, not against its prior MODE.
+    #[test]
+    fn ap_fault_line_checks_a_promoted_key_against_the_value_it_was_sent() {
+        let ks = readback(Um(1200), 0x00);
+        let line = ap_fault_line("a", Um(1200), &ks, Some(0x10), Some(0x00))
+            .expect("the promotion did not land");
+        assert!(
+            line.contains("wanted mode 0x0010"),
+            "unexpected line: {line}"
+        );
+        // And the same key reading back the promoted value is silent.
+        let ok = readback(Um(1200), 0x10);
+        assert_eq!(
+            ap_fault_line("a", Um(1200), &ok, Some(0x10), Some(0x00)),
+            None
+        );
     }
 
     #[test]

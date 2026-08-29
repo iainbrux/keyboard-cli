@@ -215,62 +215,98 @@ pub fn set_rt_off<T: Transport>(
     Ok(records)
 }
 
-/// Builds the [mode?, ap] records to set `usages`' actuation point (layout DB0). Reads current
-/// MODE per key but sends nothing else, so a caller can dry-run before writing.
+/// What an actuation point write plans to send, and what it expects to find afterwards.
+///
+/// `prior_modes` carries the MODE value read from each key before the write, in `usages` order.
+/// A key that got no MODE record must still read back that exact value, so a firmware that
+/// changed MODE on its own (clearing rapid trigger, say) is a verifiable failure rather than an
+/// unchecked read.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ApPlan {
+    pub records: Vec<KeyRecord>,
+    pub prior_modes: Vec<(u8, u16)>,
+}
+
+impl ApPlan {
+    /// The MODE value read from `usage` before the write, if that key is part of this plan.
+    pub fn prior_mode(&self, usage: u8) -> Option<u16> {
+        self.prior_modes
+            .iter()
+            .find(|&&(u, _)| u == usage)
+            .map(|&(_, v)| v)
+    }
+}
+
+/// Builds the [mode?, ap] records to set `usages`' actuation point (layout DB0), plus each key's
+/// pre-write MODE. Reads current MODE per key but sends nothing else, so a caller can dry-run.
 ///
 /// Always writes AP. Also writes MODE, promoted to `Single`, but only when the key currently
-/// reads `Global`: that is the marker the vendor sets on every actuation point change, and the
-/// reason a value written without it renders greyed in the configurator.
+/// reads `Global`. The vendor writes MODE `0x18` on every actuation point change, including for
+/// keys already at `0x18`, so our rule is a strict subset of the vendor's, not a match for it.
 ///
-/// MODE is ordered before AP per key, matching hardware; across keys the vendor groups all MODE
-/// writes before one AP write, which we do not, and that grouping is unmeasured.
+/// That MODE marker is the leading hypothesis for why a value written without it renders greyed
+/// in the vendor configurator: nibble 1 has direct write evidence in every captured actuation
+/// point change. It stays a hypothesis until the hardware session tests it.
+///
+/// MODE is ordered before AP per key, matching hardware. Across keys the vendor groups all MODE
+/// writes before one AP write, measured three times over in `captures/ap-wasd-1.2.jsonl`; our
+/// per-key interleaving is a deliberate divergence whose safety is untested.
 ///
 /// `Single`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. `Rt`/`RtContinuous` matter
 /// most: an RT key still carries its own actuation point, so a depth change must not silently
 /// turn rapid trigger off. Whether the vendor forces nibble 1 here is unmeasured, so this takes
 /// the non-destructive reading. `Unknown` nibbles have never been observed on hardware, so
 /// overwriting one would discard state we cannot interpret.
+///
+/// A key's MODE and AP records can land in different write frames (measured: 6 of 68 keys in a
+/// realistic mixed selection, 125 records over 9 frames), so a failure mid-batch can leave those
+/// keys `Single`, detached from global travel, still holding their old actuation point. That
+/// surfaces as `DeviceError::Batch` with progress detail; `wh restore --last` rolls it back.
+///
+/// The vendor's own MODE-then-AP grouping is strictly worse for this failure mode: a failure
+/// between its two phases would leave every key in the selection in that state, not six.
 pub fn ap_records<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     depth: Um,
-) -> Result<Vec<KeyRecord>, DeviceError> {
-    let mut records = Vec::new();
+) -> Result<ApPlan, DeviceError> {
+    let mut plan = ApPlan::default();
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
+        plan.prior_modes.push((u, cur_value));
         if cur_mode.touch == TouchMode::Global {
             let mode = Mode {
                 touch: TouchMode::Single,
                 advanced: cur_mode.advanced,
                 high: cur_mode.high,
             };
-            records.push(KeyRecord {
+            plan.records.push(KeyRecord {
                 key: u,
                 layout: layout::MODE,
                 value: mode.value(),
             });
         }
-        records.push(KeyRecord {
+        plan.records.push(KeyRecord {
             key: u,
             layout: layout::AP,
             value: depth.0,
         });
     }
-    Ok(records)
+    Ok(plan)
 }
 
 /// Per-key actuation point (layout DB0), plus the MODE promotion `ap_records` builds. Returns the
-/// exact records written, in `usages` order, so a caller can verify AP for every key and MODE for
-/// only the keys that actually got a MODE record.
+/// plan actually written, so a caller can verify AP for every key, the promoted MODE for keys that
+/// got a MODE record, and the unchanged pre-write MODE for keys that did not.
 pub fn set_ap<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     depth: Um,
-) -> Result<Vec<KeyRecord>, DeviceError> {
-    let records = ap_records(s, usages, depth)?;
-    write_records(s, &records)?;
-    Ok(records)
+) -> Result<ApPlan, DeviceError> {
+    let plan = ap_records(s, usages, depth)?;
+    write_records(s, &plan.records)?;
+    Ok(plan)
 }
 
 pub fn device_info<T: Transport>(s: &mut Session<T>) -> Result<cmds::DeviceInfo, DeviceError> {
@@ -886,9 +922,9 @@ mod tests {
             ));
         }
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let recs = ap_records(&mut s, &[0x04, 0x05], Um(1200)).unwrap();
+        let plan = ap_records(&mut s, &[0x04, 0x05], Um(1200)).unwrap();
         assert_eq!(
-            recs,
+            plan.records,
             vec![
                 KeyRecord {
                     key: 0x04,
@@ -925,9 +961,9 @@ mod tests {
         // ordering measured on hardware (captures/ap-wasd-1.2.jsonl).
         let lines = mode_read_script(0x09, 0x08, 0x00).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
+        let plan = ap_records(&mut s, &[0x09], Um(300)).unwrap();
         assert_eq!(
-            recs,
+            plan.records,
             vec![
                 KeyRecord {
                     key: 0x09,
@@ -948,15 +984,16 @@ mod tests {
     fn ap_records_writes_no_mode_when_the_key_is_already_single() {
         let lines = mode_read_script(0x09, 0x18, 0x00).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
+        let plan = ap_records(&mut s, &[0x09], Um(300)).unwrap();
         assert_eq!(
-            recs,
+            plan.records,
             vec![KeyRecord {
                 key: 0x09,
                 layout: layout::AP,
                 value: 300
             }]
         );
+        assert_eq!(plan.prior_mode(0x09), Some(0x18));
         assert!(s.into_inner().finished());
     }
 
@@ -971,15 +1008,20 @@ mod tests {
         for raw in [0x38u8, 0x48] {
             let lines = mode_read_script(0x1A, raw, 0x00).join("\n");
             let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-            let recs = ap_records(&mut s, &[0x1A], Um(800)).unwrap();
+            let plan = ap_records(&mut s, &[0x1A], Um(800)).unwrap();
             assert_eq!(
-                recs,
+                plan.records,
                 vec![KeyRecord {
                     key: 0x1A,
                     layout: layout::AP,
                     value: 800
                 }],
                 "MODE {raw:#04x} must be left alone"
+            );
+            assert_eq!(
+                plan.prior_mode(0x1A),
+                Some(raw as u16),
+                "the pre-write MODE must be handed back so a caller can verify it did not change"
             );
             assert!(s.into_inner().finished());
         }
@@ -992,9 +1034,9 @@ mod tests {
         // MODE 0x0220: touch nibble 2, which maps to TouchMode::Unknown(2).
         let lines = mode_read_script(0x1A, 0x20, 0x02).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        let recs = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
+        let plan = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
         assert_eq!(
-            recs,
+            plan.records,
             vec![KeyRecord {
                 key: 0x1A,
                 layout: layout::AP,
@@ -1011,8 +1053,11 @@ mod tests {
         // high byte 0x27, touch 0, advanced 5
         let lines = mode_read_script(0x09, 0x05, 0x27).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        let recs = ap_records(&mut s, &[0x09], Um(300)).unwrap();
-        assert_eq!(recs[0].value, 0x2715, "only the touch nibble may change");
+        let plan = ap_records(&mut s, &[0x09], Um(300)).unwrap();
+        assert_eq!(
+            plan.records[0].value, 0x2715,
+            "only the touch nibble may change"
+        );
         assert!(s.into_inner().finished());
     }
 
