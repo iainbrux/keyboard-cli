@@ -272,6 +272,41 @@ fn dump_json_via_replay() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `with_session` announces which transport it opened, on stderr, one line (task 20, fix round 2,
+/// critical 1): a run that believes it is a replay must never be silently a hardware write, and
+/// the reverse (a run against real hardware) must never be silent either. This only exercises the
+/// replay half directly, since the native test binary this crate's integration tests run
+/// (`CARGO_BIN_EXE_wh`, built for the host, not `x86_64-pc-windows-gnu`) never takes the hardware
+/// branch at all; see `bin_wh_shim_propagates_wh_replay_and_never_touches_hardware` below for the
+/// end-to-end proof through the actual shim and the real Windows binary.
+#[test]
+fn dump_via_replay_announces_the_replay_transport_on_stderr() {
+    let path = write_script("dump-transport-announce", &build_script());
+    let config_home = scratch_config_dir("dump-transport-announce");
+
+    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("transport: replay"),
+        "unexpected stderr, missing the transport announcement: {stderr}"
+    );
+    // Kept off stdout: `dump --json`'s output must stay valid, parseable JSON on its own.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stdout).is_ok(),
+        "the transport announcement must not have leaked into stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The human-readable sibling of `dump_json_via_replay`'s `v["profile"]` assertion above: both
 /// read the exact same fixture (the board replies with wire index 0), so a fix that mixed the
 /// two numbering conventions between the JSON field and the printed text (task 19b group B's own
@@ -1410,6 +1445,79 @@ fn selftest_sends_no_save_frame() {
     assert!(
         stdout.contains("selftest OK"),
         "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The regression this exists to prevent (task 20, fix round 2, critical 1): `bin/wh` execs the
+/// cross-compiled Windows binary from WSL, and WSL only forwards an environment variable across
+/// that boundary when it is named in `WSLENV`. Before this fix, `bin/wh` never set `WSLENV`, so
+/// `wh.exe` always saw an unset `WH_REPLAY` no matter what the caller exported, and silently fell
+/// back to opening the real keyboard. A review run hit exactly this running `wh restore --force`
+/// believing `WH_REPLAY` made it safe, and performed a real restore against the operator's board.
+///
+/// This runs the actual shim against the actual release Windows binary, the two things a purely
+/// Rust-level test (see `dump_via_replay_announces_the_replay_transport_on_stderr` above) cannot
+/// exercise, since `cargo test`'s own binary is built for the host, not for
+/// `x86_64-pc-windows-gnu`, and never crosses the WSL/Windows boundary this bug lived in at all.
+/// Skips cleanly, rather than failing, when the environment cannot run it: outside WSL (no
+/// `wslpath`), or before `cargo build --release --workspace --target x86_64-pc-windows-gnu` has
+/// produced `wh.exe`. When it does run, a fake fixture serial coming back on stdout instead of a
+/// hard failure or a real device's identity is itself part of the proof: replay actually worked
+/// end to end through the shim, not just up to the point of opening the transport.
+#[test]
+fn bin_wh_shim_propagates_wh_replay_and_never_touches_hardware() {
+    if std::process::Command::new("wslpath")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("no wslpath on PATH (not running under WSL), skipping");
+        return;
+    }
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let shim = repo_root.join("bin/wh");
+    let exe = repo_root.join("target/x86_64-pc-windows-gnu/release/wh.exe");
+    if !shim.exists() || !exe.exists() {
+        eprintln!(
+            "bin/wh or the release x86_64-pc-windows-gnu build is not present, skipping \
+             (run: cargo build --release --workspace --target x86_64-pc-windows-gnu)"
+        );
+        return;
+    }
+
+    let path = write_script("bin-wh-shim", &build_script());
+    let config_home = scratch_config_dir("bin-wh-shim");
+
+    let out = std::process::Command::new(&shim)
+        .args(["dump", "--json"])
+        .env("WH_REPLAY", &path)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("transport: replay"),
+        "unexpected stderr, WH_REPLAY may not have reached wh.exe: {stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["serial"],
+        "SNDUMPTEST000001",
+        "expected the fixture's fake serial, not a real device's identity: {}",
+        String::from_utf8_lossy(&out.stdout)
     );
 
     std::fs::remove_file(path).unwrap();

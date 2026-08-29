@@ -1,2 +1,42 @@
 #!/usr/bin/env bash
-exec "$(dirname "$(readlink -f "$0")")/../target/x86_64-pc-windows-gnu/release/wh.exe" "$@"
+# Execs the cross-compiled Windows binary from WSL, so `wh` can drive the keyboard through the
+# Windows HID stack without a Windows shell open. WSL only forwards an environment variable into a
+# Windows process when that variable is named in WSLENV, with a translation flag for anything that
+# is a path; without that, wh.exe never sees anything this shell exports, no matter how the caller
+# invoked `wh`.
+set -euo pipefail
+
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
+BIN="$BIN_DIR/../target/x86_64-pc-windows-gnu/release/wh.exe"
+
+# WH_REPLAY is the tool's only escape hatch from real hardware: set it to a capture script and
+# every command reads a scripted device conversation instead of opening the keyboard. This shim
+# used to exec straight through without ever telling WSL to carry WH_REPLAY across the WSL/Windows
+# boundary, so wh.exe always saw an unset WH_REPLAY and silently fell back to the real device: a
+# review run set WH_REPLAY, ran `wh restore --force` believing it was driving a fixture, and
+# performed a real restore against the operator's board instead.
+#
+# Fail closed instead of repeating that. This shell is the only place WH_REPLAY can be seen on the
+# WSL side before crossing into the opaque Windows process, so it is the only place that can
+# refuse before that crossing happens. If anything here suggests the variable will not reliably
+# reach wh.exe, this aborts rather than let a replay request silently become a hardware write.
+if [ -n "${WH_REPLAY:-}" ]; then
+    if ! command -v wslpath >/dev/null 2>&1; then
+        echo "wh: WH_REPLAY is set but this does not look like a WSL interop shell (no wslpath" \
+             "on PATH), so WH_REPLAY cannot be guaranteed to reach wh.exe; refusing to run rather" \
+             "than risk a silent write to real hardware" >&2
+        exit 1
+    fi
+    if ! wslpath -w -- "$WH_REPLAY" >/dev/null 2>&1; then
+        echo "wh: WH_REPLAY=$WH_REPLAY does not resolve to a path wslpath can translate for" \
+             "Windows, so it cannot be guaranteed to reach wh.exe; refusing to run rather than" \
+             "risk a silent write to real hardware" >&2
+        exit 1
+    fi
+    # /p tells WSL's interop layer to translate the value between WSL and Windows path syntax as
+    # it crosses the boundary. Appended to any WSLENV the caller already set, not assigned over
+    # it, so an operator's own WSLENV entries survive running `wh`.
+    export WSLENV="${WSLENV:+$WSLENV:}WH_REPLAY/p"
+fi
+
+exec "$BIN" "$@"

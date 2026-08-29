@@ -39,16 +39,30 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 
 /// Open the real device on Windows, or a replay script when WH_REPLAY is set to a non-empty
 /// path.
+///
+/// Announces which transport it opened, on stderr, one line, after the transport is actually
+/// ready rather than merely attempted: a review subagent that set `WH_REPLAY` and ran `wh
+/// restore --force` believing it was driving a fixture instead performed a real restore, because
+/// `bin/wh` (the shim that execs the cross-compiled Windows binary from WSL) never told WSL to
+/// carry `WH_REPLAY` across that boundary, so this function saw an unset variable and silently
+/// opened the real keyboard. `bin/wh` is fixed to propagate the variable, but this line exists so
+/// a run that is quietly talking to real hardware is never silent about it, independent of
+/// whether the shim, a future caller of this binary directly, or anything else in between gets it
+/// right. Kept off stdout deliberately, so `dump --json`'s parseable output stays clean.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading WH_REPLAY script from {path}"))?;
-            Box::new(wh_device::replay::ReplayTransport::from_jsonl(&text)?)
+            let t = wh_device::replay::ReplayTransport::from_jsonl(&text)?;
+            best_effort_eprintln(&format!("transport: replay ({path})"));
+            Box::new(t)
         } else {
             #[cfg(windows)]
             {
-                Box::new(wh_device::hid::HidTransport::open()?)
+                let t = wh_device::hid::HidTransport::open()?;
+                best_effort_eprintln("transport: hardware (real keyboard)");
+                Box::new(t)
             }
             #[cfg(not(windows))]
             {
