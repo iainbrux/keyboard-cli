@@ -21,6 +21,10 @@ pub enum StoreError {
     NoHomeDirectory,
     #[error("system clock is set before the Unix epoch")]
     ClockBeforeEpoch,
+    #[error("no such group: {0}")]
+    GroupNotFound(String),
+    #[error("group already exists: {0}")]
+    GroupExists(String),
 }
 
 pub struct Store {
@@ -209,6 +213,31 @@ impl Store {
     pub fn set_group(&self, name: &str, usages: &[u8]) -> Result<(), StoreError> {
         let mut groups = self.groups()?;
         groups.insert(name.to_string(), usages.to_vec());
+        self.write_groups(&groups)
+    }
+
+    /// Removes a group. Returns whether one was there. Takes the name directly rather than a
+    /// selector, so a group whose name collides with a key name can still be removed.
+    pub fn remove_group(&self, name: &str) -> Result<bool, StoreError> {
+        let mut groups = self.groups()?;
+        let removed = groups.remove(name).is_some();
+        if removed {
+            self.write_groups(&groups)?;
+        }
+        Ok(removed)
+    }
+
+    /// Renames a group. Refuses if `old` is absent or `new` is already taken, and writes
+    /// nothing in either failure case.
+    pub fn rename_group(&self, old: &str, new: &str) -> Result<(), StoreError> {
+        let mut groups = self.groups()?;
+        if groups.contains_key(new) {
+            return Err(StoreError::GroupExists(new.to_string()));
+        }
+        let members = groups
+            .remove(old)
+            .ok_or_else(|| StoreError::GroupNotFound(old.to_string()))?;
+        groups.insert(new.to_string(), members);
         self.write_groups(&groups)
     }
 
@@ -505,6 +534,40 @@ mod tests {
         let (_, newest) = store.load_backup(None).unwrap();
         assert_eq!(newest, "older-real");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A group whose name collides with a key name is refused as a selector, so delete must
+    /// address it by name in a position that is unambiguously a group. That is the only recovery.
+    #[test]
+    fn remove_group_deletes_by_name_even_when_the_name_is_a_key() {
+        let dir = test_dir("group-remove");
+        let store = Store::at(dir.clone());
+        store.set_group("rt", &[0x1A]).unwrap();
+        assert!(store.remove_group("rt").unwrap());
+        assert!(store.groups().unwrap().is_empty());
+        assert!(
+            !store.remove_group("rt").unwrap(),
+            "second remove reports nothing removed"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rename_group_moves_the_members_and_refuses_an_existing_name() {
+        let dir = test_dir("group-rename");
+        let store = Store::at(dir.clone());
+        store.set_group("old", &[0x1A, 0x04]).unwrap();
+        store.set_group("taken", &[0x07]).unwrap();
+        store.rename_group("old", "fps").unwrap();
+        let groups = store.groups().unwrap();
+        assert_eq!(groups["fps"], vec![0x1A, 0x04]);
+        assert!(!groups.contains_key("old"));
+        assert!(
+            store.rename_group("fps", "taken").is_err(),
+            "must not clobber"
+        );
+        assert!(store.rename_group("missing", "x").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Two back-to-back `save_backup` calls in the same process must produce two distinct

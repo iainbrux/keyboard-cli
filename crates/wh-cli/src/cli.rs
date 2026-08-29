@@ -128,6 +128,10 @@ pub enum KeysWhat {
     List,
     /// Define a user group: wh keys group fps "w,a,s,d,space"
     Group { name: String, selector: String },
+    /// Delete a user group: wh keys ungroup fps
+    Ungroup { name: String },
+    /// Rename a user group: wh keys rename fps arrows
+    Rename { old: String, new: String },
 }
 
 #[derive(Subcommand)]

@@ -304,6 +304,8 @@ fn keys(what: KeysWhat, store: &Store) -> Result<()> {
     match what {
         KeysWhat::List => list_keys(store),
         KeysWhat::Group { name, selector } => group(store, &name, &selector),
+        KeysWhat::Ungroup { name } => ungroup(store, &name),
+        KeysWhat::Rename { old, new } => rename(store, &old, &new),
     }
 }
 
@@ -342,23 +344,32 @@ fn list_keys(store: &Store) -> Result<()> {
     Ok(())
 }
 
-fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
-    // The selector grammar lowercases a bare name before looking it up (see
-    // Selector::resolve), so storing under a mixed-case spelling would make it unreachable.
-    // Normalize once here, where the group is created.
-    let name = name.to_ascii_lowercase();
-    if wh_proto::keys::usage_for_name(&name).is_some()
-        || wh_proto::keys::builtin_group(&name).is_some()
+/// Refuses a name that could not be a usable group name: one already taken by a key or
+/// builtin group, or one the selector grammar would not read back as a plain name. Shared
+/// by `group` (on create) and `rename` (on the new name), so a later addition to the
+/// disallowed set only needs to change here.
+fn check_group_name_usable(name: &str) -> Result<()> {
+    if wh_proto::keys::usage_for_name(name).is_some()
+        || wh_proto::keys::builtin_group(name).is_some()
     {
         bail!("'{name}' is already a key or builtin group name");
     }
-    if !group_name_is_reachable(&name) {
+    if !group_name_is_reachable(name) {
         bail!(
             "'{name}' cannot be used as a group name: the selector grammar would not read it \
              back as a plain name (for example it looks like a range, 'all', a negation, or a \
              list), so the group would be unreachable once saved"
         );
     }
+    Ok(())
+}
+
+fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
+    // The selector grammar lowercases a bare name before looking it up (see
+    // Selector::resolve), so storing under a mixed-case spelling would make it unreachable.
+    // Normalize once here, where the group is created.
+    let name = name.to_ascii_lowercase();
+    check_group_name_usable(&name)?;
     let sel = Selector::parse(selector)?;
     // resolve against the full static table (device not needed to define a group)
     let universe: Vec<u8> = wh_proto::keys::TABLE.iter().map(|&(_, u)| u).collect();
@@ -372,6 +383,30 @@ fn group(store: &Store, name: &str, selector: &str) -> Result<()> {
         "group '{name}' = {} keys",
         usages.len()
     )?;
+    Ok(())
+}
+
+/// Deletes a group by name directly, never through `Selector::parse`, so a group whose name
+/// collides with a key name (refused as a selector) can still be removed. No naming guard
+/// applies here: removing is always safe.
+fn ungroup(store: &Store, name: &str) -> Result<()> {
+    let name = name.to_ascii_lowercase();
+    if !store.remove_group(&name)? {
+        bail!("no such group: '{name}'");
+    }
+    writeln!(std::io::stdout().lock(), "removed group '{name}'")?;
+    Ok(())
+}
+
+/// Renames a group by name directly, never through `Selector::parse`. The new name gets the
+/// same usability guard `group` applies on create, so a rename cannot recreate the problem
+/// `ungroup` exists to recover from.
+fn rename(store: &Store, old: &str, new: &str) -> Result<()> {
+    let old = old.to_ascii_lowercase();
+    let new = new.to_ascii_lowercase();
+    check_group_name_usable(&new)?;
+    store.rename_group(&old, &new)?;
+    writeln!(std::io::stdout().lock(), "renamed group '{old}' to '{new}'")?;
     Ok(())
 }
 
@@ -1101,6 +1136,82 @@ mod tests {
             assert!(store.groups().unwrap().contains_key(name));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// The group most worth deleting is exactly the one whose name collides with a key, since
+    /// that collision is what makes it unusable as a selector. `ungroup` must take the name
+    /// directly rather than through `Selector::parse`, or this exact case would fail with the
+    /// same ambiguity error that made the group unreachable in the first place.
+    #[test]
+    fn ungroup_deletes_a_group_whose_name_collides_with_a_key() {
+        let dir = test_dir("ungroup-key-collision");
+        let store = Store::at(dir.clone());
+        // The store itself allows this; only the CLI's create-time guard would refuse it.
+        store.set_group("rt", &[0x1A]).unwrap();
+        keys(
+            KeysWhat::Ungroup {
+                name: "rt".to_string(),
+            },
+            &store,
+        )
+        .unwrap();
+        assert!(store.groups().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ungroup_reports_no_such_group() {
+        let dir = test_dir("ungroup-missing");
+        let store = Store::at(dir.clone());
+        let err = keys(
+            KeysWhat::Ungroup {
+                name: "ghost".to_string(),
+            },
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("ghost"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_moves_members_under_the_new_name() {
+        let dir = test_dir("rename-basic");
+        let store = Store::at(dir.clone());
+        keys(group_cmd("fps", "w,a"), &store).unwrap();
+        keys(
+            KeysWhat::Rename {
+                old: "fps".to_string(),
+                new: "quiver".to_string(),
+            },
+            &store,
+        )
+        .unwrap();
+        let groups = store.groups().unwrap();
+        assert!(!groups.contains_key("fps"));
+        assert!(groups.contains_key("quiver"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rename must apply the same create-time guard as `group`: a new name that is a key or a
+    /// builtin group name must be refused, not silently accepted and left unreachable again.
+    #[test]
+    fn rename_refuses_a_new_name_that_is_a_key() {
+        let dir = test_dir("rename-into-key");
+        let store = Store::at(dir.clone());
+        keys(group_cmd("fps", "w,a"), &store).unwrap();
+        let err = keys(
+            KeysWhat::Rename {
+                old: "fps".to_string(),
+                new: "rt".to_string(),
+            },
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("rt"));
+        // Refusal must not clobber the original group.
+        assert!(store.groups().unwrap().contains_key("fps"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
