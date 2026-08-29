@@ -21,6 +21,19 @@ fn reply(cmd: u8, payload: &[u8]) -> [u8; 64] {
     wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
 }
 
+/// Every line of `stdout` that is a 128-hex-digit frame, in order: exactly what `print_frames`
+/// emits for `--dry-run`, one line per frame with nothing else on it. Review round 2, finding 2:
+/// comparing this list against the expected frames *exactly* (not just "each expected frame
+/// appears somewhere", the previous standard) is what catches an added, removed, or reordered
+/// frame, not only a fully absent or fully present one.
+fn frame_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|l| l.len() == 128 && l.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .collect()
+}
+
 /// A scratch directory unique to this test and this process, mirroring the `test_dir` helper
 /// `run.rs`'s own unit tests use. Each test that spawns `wh` gets its own `XDG_CONFIG_HOME`
 /// rather than sharing the bare system temp directory: a shared config directory is harmless
@@ -334,6 +347,51 @@ fn get_on_a_group_absent_from_the_board_is_rejected() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Review round 2, finding 3: `wh keys list` must render a group member that has no `TABLE`
+/// entry as hex, not silently drop it. This matters more after finding 1: reading a stale
+/// group's members off this listing is the operator's only recovery route once
+/// `SelectError::AmbiguousWithGroup` refuses to resolve it, so a listing that silently
+/// under-reports would send them to recreate an incomplete group. The unnamed usage has to be
+/// written into `config.toml` directly (not via `wh keys group`), since the CLI can only ever
+/// select a usage that has a name, a builtin group, or an existing stored group in the first
+/// place.
+#[test]
+fn keys_list_renders_an_unnamed_group_member_as_hex_not_dropping_it() {
+    let config_home = scratch_config_dir("keys-list-unnamed");
+    let wh_dir = config_home.join("wh");
+    std::fs::create_dir_all(&wh_dir).unwrap();
+    let unnamed = (0u8..=u8::MAX)
+        .find(|&u| wh_proto::keys::name_for_usage(u).is_none())
+        .expect("wh_proto::keys::TABLE does not occupy every u8 usage code");
+    std::fs::write(
+        wh_dir.join("config.toml"),
+        format!("[groups]\nstale = [26, {unnamed}]\n"), // 26 = 0x1A = 'w'
+    )
+    .unwrap();
+    let empty_replay = write_script("keys-list-unnamed", &[]);
+
+    let out = run_wh(&["keys", "list"], &empty_replay, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected_hex = format!("0x{unnamed:02X}");
+    assert!(
+        stdout.contains(&expected_hex),
+        "unnamed usage {expected_hex} must still be listed, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("w,{expected_hex}")),
+        "named and unnamed members should both appear, in order: {stdout}"
+    );
+
+    std::fs::remove_file(empty_replay).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 // --- write path: `set`, `backup`, `restore`, `selftest` -------------------------------------
 
 /// Exactly the frames `auto_backup` sends against the two-key board (`matrix_lines`): the full
@@ -579,14 +637,23 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
-    // Negative assertion (review round 1, chunk 4): the old message,
-    // "dry run, no writes sent; save-to-flash frame {hex} would follow", also satisfied
-    // `contains("dry run")`, so that check alone could not catch a regression that reinstated
-    // the removed SAVE frame in the dry-run output. Pin its absence directly.
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    assert!(
-        !stdout.contains(&hex(&save)),
-        "dry-run output must not contain the SAVE frame: {stdout}"
+
+    // Review round 2, finding 2: the exact frame set, not just that some frame appears (which
+    // an added, removed, or reordered frame, including a reinstated SAVE frame, would not
+    // catch). "set ap --keys w --set 1.2" previews exactly one AP record for 'w' (1200um =
+    // 1.20mm) and nothing else.
+    let expected: Vec<String> = cmds::write_key_records(&[KeyRecord {
+        key: 0x1A,
+        layout: layout::AP,
+        value: 1200,
+    }])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "dry run must print exactly the frames a real run would send, and no others: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
@@ -622,19 +689,14 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
-    // Negative assertion (review round 1, chunk 4): see the `set ap` sibling above for why
-    // "contains(\"dry run\")" alone cannot catch a reinstated SAVE frame.
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    assert!(
-        !stdout.contains(&hex(&save)),
-        "dry-run output must not contain the SAVE frame: {stdout}"
-    );
 
-    // Pins the exact previewed records, not just that something printed, bringing this test up
-    // to the same standard as its `--off` sibling below: a regression in `rt_records`' touch
-    // nibble choice or its high-byte/advanced-nibble preservation would otherwise only be
-    // caught on the `--off` path.
-    let expected = cmds::write_key_records(&[
+    // Review round 2, finding 2: the exact frame set, not just that each expected frame
+    // appears somewhere (which a regression that also sent a bare SAVE, or reordered/duplicated
+    // a frame, would not catch). Pins the exact previewed records too, bringing this test up to
+    // the same standard as its `--off` sibling below: a regression in `rt_records`' touch nibble
+    // choice or its high-byte/advanced-nibble preservation would otherwise only be caught on the
+    // `--off` path.
+    let expected: Vec<String> = cmds::write_key_records(&[
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
@@ -650,14 +712,15 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
             layout: layout::RT_RELEASE,
             value: 400,
         },
-    ]);
-    for frame in &expected {
-        assert!(
-            stdout.contains(&hex(frame)),
-            "expected frame {} in stdout: {stdout}",
-            hex(frame)
-        );
-    }
+    ])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "dry run must print exactly the frames a real run would send, and no others: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -694,19 +757,13 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
-    // Negative assertion (review round 1, chunk 4): see the `set ap` sibling above for why
-    // "contains(\"dry run\")" alone cannot catch a reinstated SAVE frame.
-    let save = cmds::cmd_order(cmds::order::SAVE, &[]).unwrap();
-    assert!(
-        !stdout.contains(&hex(&save)),
-        "dry-run output must not contain the SAVE frame: {stdout}"
-    );
 
-    // Pins the exact previewed records, not just that something printed: the touch nibble
-    // must flip to Single (nibble 1, per-key actuation point) on both keys while each key's own
-    // advanced nibble and high byte survive independently, the same read-modify-write
-    // `verify_rt_off` checks on the real write path.
-    let expected = cmds::write_key_records(&[
+    // Review round 2, finding 2: the exact frame set, not just that each expected frame
+    // appears somewhere. Pins the exact previewed records too: the touch nibble must flip to
+    // Single (nibble 1, per-key actuation point) on both keys while each key's own advanced
+    // nibble and high byte survive independently, the same read-modify-write `verify_rt_off`
+    // checks on the real write path.
+    let expected: Vec<String> = cmds::write_key_records(&[
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
@@ -717,14 +774,15 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
             layout: layout::MODE,
             value: 0x0017,
         },
-    ]);
-    for frame in &expected {
-        assert!(
-            stdout.contains(&hex(frame)),
-            "expected frame {} in stdout: {stdout}",
-            hex(frame)
-        );
-    }
+    ])
+    .iter()
+    .map(|f| hex(f))
+    .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "dry run must print exactly the frames a real run would send, and no others: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
