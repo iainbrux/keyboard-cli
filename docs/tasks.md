@@ -10,6 +10,37 @@ measured from 1224 frames of real device traffic.
 
 Complete. See the Done section.
 
+## Phase 2, scheduled
+
+The objective is close to 1:1 interoperability between the CLI and terminal.wallhack.com. Keysets
+come first, because they are the one thing that makes our writes render as loose overrides in the
+vendor UI rather than as settings it recognises.
+
+- [ ] **2.1 Read keyset membership.** Teach the codec layouts `0xFF` (actuation point keyset index)
+  and `0xFE` (rapid trigger keyset membership), read them per key, and surface them in `wh dump`,
+  `wh dump --json`, `wh get`, and snapshots. Read only, no writes. Verifiable against the existing
+  captures, so no board needed.
+- [ ] **2.2 Measure how the vendor allocates a keyset index. [hardware]** Create two actuation point
+  keysets over untouched keys, delete the first, create a third, and watch `0xFF`. This settles three
+  things at once: whether a new index reuses a gap or takes the maximum plus one, whether `0xFE` is a
+  boolean or an index we have only ever seen `0` and `1` of, and what a delete writes.
+- [ ] **2.3 Write keyset membership. [hardware]** Put the keys a write touches into a keyset, with a
+  way to opt out. Blocked on 2.2 for the allocation rule.
+- [ ] **2.4 `wh profile`, read and select. [hardware]** The protocol is measured: `cmd 0x00` sub-order
+  `0x70`, argument `0xFF` to read, a zero-based index to select. Reading is already implemented; only
+  the command surface and the select encoder are missing. The website puts the profile stepper at the
+  top of every tab, so this is squarely on the interop path.
+- [ ] **2.5 `wh backups list`, and decide what `--last` means.** Manual and automatic backups are
+  indistinguishable today, so `--last` means "undo the last command" rather than "go back to where I
+  started". During the hardware session that briefly read as a restore bug when the tool was correct.
+- [ ] **2.6 Delete or rename a stored key group.** There is no CLI route today, which matters because
+  a group whose name collides with a key name is now correctly refused, and recreating it under a new
+  name is the only recovery.
+- [ ] **2.7 A hex form in the selector**, so a key with no name, such as `0x01`, can be typed back
+  into a selector after `wh keys list` shows it.
+- [ ] **2.8 The seven residual documentation inaccuracies**, listed further down this file. Wrong
+  pointers and over-broad scopes, no false protocol claims.
+
 ## Backlog, not scheduled
 
 ### Hardware questions **[hardware]**
@@ -21,28 +52,11 @@ Complete. See the Done section.
 
 ### Features
 
-- [ ] **Write keyset membership, layout `0xFE`.** Settings we write do apply and do work, confirmed
-  on hardware, but the vendor configurator shows them greyed and outside any named keyset, because we
-  never write that flag. The vendor writes `1` on keyset create and `0` on delete. Cosmetic for an
-  alpha, but it is the difference between our changes looking native in their UI and looking like
-  loose overrides.
-- [ ] **List backups, and reconsider what `--last` means.** There is no `wh backups list`, and manual
-  and automatic backups are indistinguishable. Every write takes an auto-backup first, so `--last`
-  means "undo the last command", not "return to where I started". That is defensible but surprising,
-  and during the hardware session it briefly looked like a restore bug when the tool was correct.
 - [ ] **A TUI clone of the vendor configurator**, running inside the `wh` binary. The prerequisite is
   now met: the write path has been exercised against hardware.
 - [ ] **A spinner on write commands.** Reads deliberately get none; their speed is a feature.
-- [ ] **Delete or rename a stored key group.** There is no CLI route today, which matters because a
-  group whose name collides with a key name is now correctly refused, and recreating it under a new
-  name is the only recovery.
-- [ ] **A hex form in the selector**, so a key with no name, such as `0x01`, can be typed back into a
-  selector after `wh keys list` shows it.
-- [ ] **`wh profile`, to read and select the active profile.** The protocol is already measured:
-  `cmd 0x00` sub-order `0x70`, argument `0xFF` to read, a zero-based index to select. Reading is
-  already implemented; only the command surface and the select encoder are missing.
 
-### Seven residual documentation inaccuracies
+### Seven residual documentation inaccuracies, scheduled as task 2.8
 
 Parked at the final whole-branch review with rulings rather than reopening a fix wave on the last
 gate. Every underlying protocol claim is true; these are wrong pointers and over-broad scopes.
