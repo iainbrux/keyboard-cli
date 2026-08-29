@@ -205,9 +205,14 @@ byte-level facts elsewhere in this document.
 ### Settings a snapshot does not capture
 
 `wh backup` stores global travel plus four layouts per key, and, as of Phase 1, the profile the
-board was on when the snapshot was taken: `Snapshot::profile` records it, and `wh restore` refuses to
-write onto a board sitting on a different profile unless the caller passes `--force`. That gap is
-closed. It still does not capture the base layer key mapping (layout `0x00`), the FN layer (layout
-`0x01`), SOCD, dynamic keystroke, mod tap, gamepad configuration, RGB, or polling rate. Those are
-Phase 2 scope questions, and the README says plainly what a snapshot does and does not contain
-either way.
+board was on when the snapshot was taken: `Snapshot::profile` records it. `wh restore` checks that
+recorded profile against the board's current one, and the two refusals are not the same and do not
+share an override. When the snapshot's recorded profile differs from the board's, `wh restore`
+refuses unconditionally; there is no `--force` for that case, since restoring would silently
+overwrite the wrong profile's settings. When the snapshot has no recorded profile at all (an older
+snapshot from before this field existed, or one whose board reported a profile index this build does
+not recognise), `wh restore` refuses by default but accepts `--force`, asserting the settings belong
+to the board's current profile. That gap is closed. It still does not capture the base layer key
+mapping (layout `0x00`), the FN layer (layout `0x01`), SOCD, dynamic keystroke, mod tap, gamepad
+configuration, RGB, or polling rate. Those are Phase 2 scope questions, and the README says plainly
+what a snapshot does and does not contain either way.

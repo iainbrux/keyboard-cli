@@ -57,7 +57,7 @@ Read or write rapid trigger and actuation point for a key selection:
 ```
 wh get rt --keys "w,a,s,d"
 wh set rt --keys "w,a,s,d" --set 0.5
-wh set rt --keys "w,a,s,d" --press 0.4 --release 0.6
+wh set rt --keys "w,a,s,d" --set 0.5 --press 0.4 --release 0.6
 wh set rt --keys "w,a,s,d" --off
 wh get ap --keys wasd
 wh set ap --keys wasd --set 1.2
@@ -89,10 +89,12 @@ wh selftest
 
 ## A safety note before you write anything
 
-`wh set`, `wh restore`, and `wh selftest` write to the physical keyboard. Every write-capable
-subcommand accepts `--dry-run` (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact
-64-byte reports a real run would send, and sends nothing. Use it to check a command before it
-touches hardware, especially the first time you type a new key selector.
+`wh set`, `wh restore`, and `wh selftest` write to the physical keyboard. `wh set rt` and `wh set ap`
+accept `--dry-run` (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports
+a real run would send, and sends nothing. Use it to check a command before it touches hardware,
+especially the first time you type a new key selector. `wh restore` and `wh selftest` have no
+`--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
+only ever rewrites a setting to the value it already read.
 
 ## What a backup does and does not contain, stated plainly
 
@@ -112,11 +114,23 @@ profile the board was on when the snapshot was taken.
 - Polling rate.
 
 **`wh restore` is not a factory-reset recovery path.** It restores exactly the settings listed above,
-to exactly the profile they were recorded on (it refuses to restore onto a different profile unless
-you pass `--force` and know what you are asserting), and nothing more. If you need to undo a change
-to remapping, SOCD, lighting, or anything else in the list above, use the board's own **RESET
-PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web configurator; `wh`
-does not implement either.
+and nothing more, and it guards the profile they were recorded on with two separate refusals that do
+not share an override:
+
+- If the snapshot recorded a profile and the board is currently on a different one, `wh restore`
+  refuses unconditionally. There is no `--force` for this case: restoring would silently overwrite
+  the wrong profile's settings, which `wh` will not do even if asked. Switch the board to the
+  recorded profile first, or restore only when you actually mean to overwrite the profile you are
+  currently on.
+- If the snapshot has no recorded profile at all (it predates profile recording, or the board it
+  came from reported a profile index this build does not recognise), `wh restore` also refuses by
+  default, since it cannot verify which profile the settings belong to. `--force` rescues only this
+  case, asserting the settings belong to the board's current profile; it does nothing for the
+  mismatch case above.
+
+If you need to undo a change to remapping, SOCD, lighting, or anything else in the list above, use
+the board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
+configurator; `wh` does not implement either.
 
 ## Protocol
 
