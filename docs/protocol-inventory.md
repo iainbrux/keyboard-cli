@@ -48,15 +48,20 @@ nonsense.
 |---|---|---|---|
 | `0x00` | 418 | 74 | **base layer key mapping.** Measured: values are HID usages matching each key |
 | `0x01` | 420 | 69 | **FN layer key mapping.** Measured, see below |
-| `0x04` | 1858 | many | actuation point, micrometres. Modelled |
-| `0x08` | 2252 | many | mode. Modelled |
-| `0x14` | 1858 | many | RT press, micrometres. Modelled |
-| `0x15` | 1858 | many | RT release, micrometres. Modelled |
+| `0x04` | 1858 | 7 | actuation point, micrometres. Modelled |
+| `0x08` | 2252 | 5 | mode. Modelled |
+| `0x14` | 1858 | 3 | RT press, micrometres. Modelled |
+| `0x15` | 1858 | 4 | RT release, micrometres. Modelled |
 | `0x16` | 1858 | 1 | **always `0`**, never once observed non-zero. Written alongside every RT change |
 | `0x17` | 1858 | 1 | **always `0`**, same |
 | `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 424 | 2 | keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set |
 | `0xff` | 420 | 3 | unidentified. Only ever `0`, `1` or `2` |
+
+The counts above are what these ten captured scenarios happened to exercise, not the fields'
+possible ranges: layout `0x04` (actuation point) only ever took `0, 300, 850, 1200, 1700, 2000,
+3000`; layout `0x08` (mode) only ever took `0, 16, 24, 56, 72`; layout `0x14` (RT press) only ever
+took `0, 100, 500`; layout `0x15` (RT release) only ever took `0, 100, 300, 500`.
 
 ### Layout `0x01` is the FN layer, and this is measured
 
