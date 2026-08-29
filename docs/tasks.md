@@ -3,37 +3,13 @@
 Live checklist for `wh`. Items are struck through and ticked as they complete. Anything needing the
 keyboard physically present is marked **[hardware]**.
 
-Evidence for every protocol claim below is in `docs/protocol-inventory.md`, measured from 1224 frames
-of real device traffic.
+Evidence for every protocol claim below is in `docs/protocol.md` and `docs/protocol-inventory.md`,
+measured from 1224 frames of real device traffic.
 
 ## Phase 1
 
-### In flight
-
-- [ ] **Task 20.** `docs/protocol.md`, `README.md`, corrections to `docs/backlog.md`, rename
-  `order::CONFIG` to `order::PROFILE`, move `ProfileNumber` into `wh-proto`, sweep the remaining em
-  dashes from the plan and spec, then the gate.
-
-### Then, no hardware needed
-
 - [ ] **Final whole-branch review** of every commit on `phase-1`.
 - [ ] **Merge `phase-1` into `main`.**
-
-### Hardware session part two **[hardware]**
-
-Needs the keyboard attached and the vendor configurator tab closed, since it holds the device
-exclusively.
-
-- [ ] **First real write.** `bin/wh set rt --keys w --set 0.5`, then confirm the web UI shows 0.5mm on
-  W. The dry run frames have already been checked against the vendor's own captured frames and match
-  byte for byte, so this is the last unverified step of the write path.
-- [ ] **Restore drill.** `bin/wh restore --last`, and confirm `dump` matches the pre-write state.
-- [ ] **Does `set ap` on a key at touch nibble 0 write a register the board ignores while reporting
-  success?** This is an unproven mirror of a bug already found and fixed, where RT-off wrote nibble 0
-  and silently discarded a per-key actuation point.
-- [ ] **Does the board accept our short write frames?** We send `len=13`, the vendor pads to `len=57`
-  with zero record slots. Reads prove the board honours the length field, since that is what makes
-  `dump` work. Writes are not yet proven.
 
 ## Backlog, not scheduled
 
@@ -46,9 +22,17 @@ exclusively.
 
 ### Features
 
-- [ ] **A TUI clone of the vendor configurator**, running inside the `wh` binary. Blocked until the
-  write path has been exercised against hardware: a UI that makes it easy to change many settings
-  quickly is the worst place to discover a write bug.
+- [ ] **Write keyset membership, layout `0xFE`.** Settings we write do apply and do work, confirmed
+  on hardware, but the vendor configurator shows them greyed and outside any named keyset, because we
+  never write that flag. The vendor writes `1` on keyset create and `0` on delete. Cosmetic for an
+  alpha, but it is the difference between our changes looking native in their UI and looking like
+  loose overrides.
+- [ ] **List backups, and reconsider what `--last` means.** There is no `wh backups list`, and manual
+  and automatic backups are indistinguishable. Every write takes an auto-backup first, so `--last`
+  means "undo the last command", not "return to where I started". That is defensible but surprising,
+  and during the hardware session it briefly looked like a restore bug when the tool was correct.
+- [ ] **A TUI clone of the vendor configurator**, running inside the `wh` binary. The prerequisite is
+  now met: the write path has been exercised against hardware.
 - [ ] **A spinner on write commands.** Reads deliberately get none; their speed is a feature.
 - [ ] **Delete or rename a stored key group.** There is no CLI route today, which matters because a
   group whose name collides with a key name is now correctly refused, and recreating it under a new
@@ -84,6 +68,20 @@ exclusively.
   from its length prefix, and name the four board-function keys.~~
 - [x] ~~Task 19b group B: record the active profile in snapshots and refuse a profile-mismatched
   restore.~~
+- [x] ~~Task 20: `docs/protocol.md`, `README.md`, rename `order::CONFIG` to `PROFILE`, move
+  `ProfileNumber` into `wh-proto`, and sweep em dashes from the tracked plan, spec and research
+  docs.~~
 - [x] ~~Read path verified against the real board: serial, all 68 keys, `get`, `backup`, `selftest`,
   and a dry-run frame whose records match the vendor's byte for byte.~~
 - [x] ~~Identify layouts `0x00` and `0x01` as the base and FN mapping layers.~~
+- [x] ~~**Write path verified against the real board.** `set rt --keys w --set 0.5` landed and the
+  vendor UI confirmed it.~~
+- [x] ~~**Restore drill.** `restore --last` restored exactly the snapshot it named, 68 keys verified,
+  confirmed against the backup files on disk.~~
+- [x] ~~**Does the board accept our short write frames?** Yes. We send `len=13`; the vendor pads to
+  `len=57`. The padding is not required.~~
+- [x] ~~**Does `set ap` on a key at touch nibble 0 write a register the board ignores?** No. F was set
+  to 0.30mm and physically actuates at 0.30mm, checked against E at 2.00mm. The MODE write the vendor
+  sends before every actuation point change is not needed for the value to take effect. This had been
+  predicted as a probable bug from a correlation across 63 keys; the prediction was wrong, and
+  measuring it was what settled it.~~

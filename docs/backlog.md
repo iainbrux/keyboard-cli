@@ -67,6 +67,38 @@ that keys belong to. Same wire format, different abstraction, and the TUI would 
 **Prerequisite.** Not until the write path has been exercised against hardware. A UI that makes it
 easy to change many settings quickly is the worst place to discover a write bug.
 
+### Writing keyset membership, layout `0xFE`
+
+**What we know, measured on hardware.** Settings written by `wh` do apply and do work. `set ap` on F
+was confirmed by feel against a 2.00mm key, and `set rt` on W was confirmed in the vendor UI. But the
+vendor configurator renders those values greyed and outside any named keyset, because we never write
+layout `0xFE`. The vendor writes `1` to it when a keyset is created and `0` when one is deleted, and
+leaves it alone for edits within an existing set.
+
+**Why it is worth doing.** Cosmetic for an alpha, and explicitly accepted as such. It is the
+difference between our changes looking native in the vendor's own UI and looking like loose overrides
+sitting outside its model. It also matters for the TUI item below, because the vendor's abstraction is
+a named group that keys belong to, while ours is per-key settings addressed by key.
+
+**How to find out the rest.** We know when `0xFE` is written but not how a keyset's name or membership
+list is stored, and a keyset clearly has both. Capture while creating a named keyset with two keys in
+it, then while renaming it, then while adding a third key.
+
+### Listing backups, and what `--last` should mean
+
+**The problem.** There is no `wh backups list`, and a manual `wh backup` is indistinguishable from the
+automatic one every write takes before it writes. So `wh restore --last` means "undo the last
+command", not "return to where I started".
+
+**How it showed up.** During the hardware session the sequence was: manual backup, `set rt`, `set ap`,
+`restore --last`. That restored the auto-backup taken immediately before `set ap`, which already had
+the rapid trigger change in it. The tool named the snapshot it used and restored it exactly, and 68
+keys verified, but it briefly read as a restore bug.
+
+**What it needs.** At minimum a way to list backups with their timestamps and a marker for manual
+versus automatic. Possibly `--last` should prefer the last manual backup, or there should be a
+separate flag for each meaning. Worth deciding deliberately rather than by accident.
+
 ### Deleting or renaming a stored key group
 
 **The problem.** `wh keys group <name> <selector>` creates a group, and nothing removes one. That
