@@ -280,9 +280,17 @@ browser. Two per-key layouts hold them:
 Confirmed from the other side too: the operator inspected the vendor site's browser storage and found
 five keys, none keyset-related, so there is nowhere else for this state to live.
 
-**Why our writes render greyed.** `wh set ap --keys f` writes F's actuation point and leaves
-`f.0xFF` at `0`, the value read for keys the UI showed outside any keyset. Writing the index
-alongside the value fixes it.
+**Why our writes may render greyed.** Two hypotheses, neither tested. The hardware session settles
+which, if either, is right; until then neither is a fact.
+
+1. **MODE touch nibble, the leading one.** A key left on nibble 0 (Global) while holding its own
+   actuation point is a state the vendor never produces, and nibble 1 has direct write evidence in
+   every captured actuation point change. `wh set ap` now promotes a `Global` key to nibble 1.
+2. **Keyset index `0xFF` left at `0`.** `wh set ap --keys f` leaves `f.0xFF` at `0`, the value read
+   for keys the UI showed outside any keyset. Weaker: `0xFF` is read 210 times and written zero
+   times across 1224 frames, and correction 1 of the Phase 2 design records that we do not know what
+   writes it, or whether anything host-side does. Writing the index alongside the value might fix
+   it, and might write a field the host is not supposed to touch.
 
 **A keyset has no name.** The UI's labels, `W,A,S,D` and `ESC`, are just the member list. Nothing on
 the board carries a name and nothing in browser storage does either, so a keyset is exactly "the keys

@@ -36,8 +36,9 @@ Nibble 1 (Single) means the key has its own actuation point. The vendor writes n
 actuation point change.
 
 `wh set ap` writes layout `0x04` alone, so it leaves a key on nibble 0 holding a private value. That
-is a state the vendor never produces, and it is why the configurator renders our changes greyed. It
-is a real inconsistency in the record, not a cosmetic one.
+is a state the vendor never produces, and it is the leading hypothesis for why the configurator
+renders our changes greyed. Leading, not established: the greying has never been traced to a cause
+on hardware. It is a real inconsistency in the record either way, not a cosmetic one.
 
 ### Correction 1: `0xFF` as the actuation point keyset index is unproven
 
@@ -203,9 +204,9 @@ which is exactly how the `0xFF` claim in correction 1 came about.
 - `wh profile` prints the active profile.
 - `wh profile <1-4>` selects it.
 
-The select encoder emits exactly `[0x70, wire_index]`. Verify the ack is `[0x00, 0x70]`, rejecting a
-reply whose sub-order byte is anything else, then re-read the profile to confirm the switch landed
-rather than trusting the ack.
+The select encoder emits exactly `[0x70, wire_index, 0xFF, 0xFF]`, four bytes, as the correction
+above records. Verify the ack's sub-order byte is `0x70`, rejecting a reply whose sub-order is
+anything else, then re-read the profile to confirm the switch landed rather than trusting the ack.
 
 No auto-backup: this is a mode switch, not a settings write. The command should say plainly that
 snapshots are per-profile, since switching profiles is what makes `restore` refuse.

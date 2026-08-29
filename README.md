@@ -235,8 +235,16 @@ Two things look like exceptions and are not:
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- `wh set ap` on an untouched key should no longer render greyed in the vendor UI.
-- `wh set ap` on a key with rapid trigger on should leave rapid trigger on.
+- `wh set ap` on an untouched key should no longer render greyed in the vendor UI. That the MODE
+  touch nibble is what causes the greying is a hypothesis, not an established cause: see
+  `docs/backlog.md`.
+- `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `wh` now checks this
+  itself: it reads every key's MODE before the write and fails the run, naming the key and both
+  values, if a key it deliberately left alone reads back changed.
+- If `wh set ap` fails part way through its write batch, expect a partial result. A key's MODE and
+  AP records can land in different frames (measured: 6 of 68 keys in a realistic mixed selection),
+  so those keys are left detached from global travel, still holding their old actuation point.
+  `wh restore --last` rolls the board back from the auto-backup taken before the write.
 - `wh profile 2` then `wh profile` should confirm the switch landed.
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.
 

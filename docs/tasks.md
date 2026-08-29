@@ -43,6 +43,15 @@ rather than as settings it recognises.
   into a selector after `wh keys list` shows it.~~
 - [x] ~~**2.9 Documentation fixes.** Corrected the `0xFF` claim, the `ap_records` comment, the seven
   parked inaccuracies below, added the no-drift invariant, and documented the new CLI surface.~~
+  - **Documentation inaccuracies, kept on record rather than deleted with the task.** Deleting the
+    list when 2.9 was ticked removed the only trace of what had been claimed fixed.
+    - `capture/README.md`, `remap-one-key`: marked fixed, still wrong. It described a re-read of
+      layout `0x00` that the capture does not contain (four frames: a `0xbd` order and its ack, one
+      `rw=0x01` write of key `0x0e` layout `0x00` value `0x003a`, and its ack). The re-read is in
+      `remap-matrix-read`. Found at the final whole-branch review and corrected there.
+    - The cause of the vendor UI greying our writes was asserted as fact in two places that
+      contradicted each other, `ops.rs` naming the MODE nibble and `docs/backlog.md` naming `0xFF`.
+      Both now read as hypotheses awaiting the hardware session. Same review.
 
 ## Backlog, not scheduled
 
