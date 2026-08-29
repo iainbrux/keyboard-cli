@@ -55,7 +55,7 @@ fn frame_lines(stdout: &str) -> Vec<String> {
 
 /// A scratch directory unique to this test and process, used as its own `XDG_CONFIG_HOME`.
 /// Sharing one config directory across tests would be harmless for `dump`, which writes
-/// nothing, but `wh keys group` writes a real `config.toml` and `backup`/`restore` rotate a
+/// nothing, but `wh keys group` writes a real `config.json` and `backup`/`restore` rotate a
 /// shared `backups/` directory, so concurrent or repeated runs would delete each other's fixtures.
 fn scratch_config_dir(tag: &str) -> std::path::PathBuf {
     let p = std::env::temp_dir().join(format!("wh-cli-it-{tag}-{}", std::process::id()));
@@ -133,7 +133,7 @@ fn key_settings_lines(
 
 /// One key's MODE-only read roundtrip, the single read `ops::rt_records`/`ops::rt_off_records`
 /// send per key (to preserve the advanced nibble), distinct from `key_settings_lines`' full
-/// four-read `read_key_settings` sequence.
+/// six-read `read_key_settings` sequence.
 fn mode_read_lines(usage: u8, mode: u16) -> Vec<String> {
     vec![
         out_line(&cmds::read_key_layout(usage, layout::MODE)),
@@ -195,7 +195,7 @@ fn global_travel_lines(travel_um: u16, press_um: u16, release_um: u16) -> Vec<St
 }
 
 /// Composes, in order, exactly the frames `snapshot_from_device` sends against the two-key
-/// board: sync, profile, global travel, matrix, then four KEY reads per key. Built with
+/// board: sync, profile, global travel, matrix, then six KEY reads per key. Built with
 /// `wh_proto::cmds` encoders, not hand-written hex, so the test breaks if an encoder changes.
 fn build_script() -> Vec<String> {
     let mut lines = Vec::new();
@@ -594,8 +594,8 @@ fn get_on_a_group_absent_from_the_board_is_rejected() {
 
 /// `wh keys list` must render a group member that has no `TABLE` entry as hex, not silently drop
 /// it: this listing is the operator's only recovery route once `SelectError::AmbiguousWithGroup`
-/// refuses to resolve a stale group. The unnamed usage has to be written into `config.toml`
-/// directly, since the CLI can only select a usage that has a name or a stored/builtin group.
+/// refuses to resolve a stale group. The unnamed usage is written into a legacy `config.toml`
+/// fixture directly, which the store still reads, rather than through `wh keys group`.
 #[test]
 fn keys_list_renders_an_unnamed_group_member_as_hex_not_dropping_it() {
     let config_home = scratch_config_dir("keys-list-unnamed");
@@ -636,7 +636,7 @@ fn keys_list_renders_an_unnamed_group_member_as_hex_not_dropping_it() {
 // --- write path: `set`, `backup`, `restore`, `selftest` -------------------------------------
 
 /// Exactly the frames `auto_backup` sends: sync, profile, global travel, matrix, then one
-/// four-read `read_key_settings` per key. Its AP/press/release values are deliberately distinct
+/// six-read `read_key_settings` per key. Its AP/press/release values are deliberately distinct
 /// from anything a write-path test writes or reads back, so reused frames couldn't pass by
 /// coincidence. `profile_idx` lets `restore`'s profile-safety tests script a board profile that
 /// matches or differs from the snapshot being restored.

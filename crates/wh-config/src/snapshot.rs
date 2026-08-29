@@ -1,4 +1,5 @@
-//! The user-facing TOML snapshot of a board's settings.
+//! The user-facing JSON snapshot of a board's settings. TOML is still read, by extension, for
+//! backups written before the format changed; nothing writes it any more.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -13,8 +14,8 @@ pub struct Snapshot {
     /// `u8`, so the UI's one-based numbering can never be confused with the wire's zero-based
     /// index. `None` means the snapshot's profile provenance is unknown (it predates profile
     /// recording), never that the board had no active profile: every board always has one.
-    /// Missing entirely from a snapshot's TOML deserializes to `None`, so old backups still
-    /// parse. Goes through `crate::profile`'s bridge functions since `wh-proto` carries no
+    /// Missing entirely from a snapshot file, JSON or pre-JSON TOML alike, deserializes to
+    /// `None`, so old backups still parse. Goes through `crate::profile`'s bridge functions since `wh-proto` carries no
     /// serde dependency.
     #[serde(
         default,
