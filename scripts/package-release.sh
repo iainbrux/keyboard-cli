@@ -17,9 +17,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="$(grep -m1 '^version' crates/wh-cli/Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+# `-n ... p` only prints a line that actually matched and substituted; a plain `s///` would pass
+# a non-matching line (for example `version.workspace = true`, if this crate ever moves to that,
+# as it already has for `edition` and `license`) through unchanged, which is non-empty and would
+# slip past a bare emptiness check below, becoming part of the archive's own file name.
+VERSION="$(grep -m1 '^version' crates/wh-cli/Cargo.toml | sed -n -E 's/^version = "(.*)"$/\1/p')"
 if [ -z "$VERSION" ]; then
-    echo "package-release: could not read a version from crates/wh-cli/Cargo.toml" >&2
+    echo "package-release: could not read a plain version = \"...\" from crates/wh-cli/Cargo.toml" \
+         "(if it now reads \"version.workspace = true\", update this script to read the version" \
+         "from the workspace Cargo.toml instead)" >&2
     exit 1
 fi
 
@@ -64,11 +70,14 @@ What's in this archive:
     LICENSE                   this project's own licence (Apache-2.0)
     NOTICE                    attribution this project's licence requires you to keep, if you
                                redistribute this archive or a derivative of it
-    THIRD_PARTY_LICENSES.md   licence texts for every third-party component compiled into wh.exe,
-                               including the Rust standard library's own runtime and the mingw-w64
-                               C runtime, not only wh's own crates.io dependencies
-    THIRD_PARTY_NOTICES.md    notices for reference material used while building wh, kept separate
-                               from what is actually compiled into the binary
+    THIRD_PARTY_LICENSES.md   licence texts for wh's own crates.io dependencies compiled into
+                               wh.exe, plus a section on the Rust standard library's own runtime and
+                               the mingw-w64 C runtime, which are not crates.io dependencies but are
+                               still compiled in; not a claim to have traced every object file the
+                               linker pulled in
+    THIRD_PARTY_NOTICES.md    notices for research/ reference material never compiled into wh.exe,
+                               except the Sparklink port, which is compiled in and is covered in
+                               THIRD_PARTY_LICENSES.md instead, not here
 
 If you redistribute wh.exe, or a modified build of it, keep this archive's LICENSE, NOTICE, and the
 two THIRD_PARTY_*.md files with it. That obligation follows the binary to whoever you give it to,
