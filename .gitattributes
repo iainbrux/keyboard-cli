@@ -1,0 +1,9 @@
+# GitHub's linguist counts every tracked file toward the repository's language bar, which made
+# research/ dominate it: 195 files of vendored third-party Vue and TypeScript against 26 files of
+# this project's own Rust. Marking it vendored leaves the files in place, keeps their licences and
+# the attribution chain intact, and stops them being reported as this project's code.
+#
+# research/ is not ours and is not built. It is reference source vendored while porting the
+# keyboard protocol, and crates/wh-proto's module docs cite research/proto/ specifically as the
+# origin of the ported files. See THIRD_PARTY_NOTICES.md.
+research/** linguist-vendored
