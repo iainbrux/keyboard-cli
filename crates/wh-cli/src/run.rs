@@ -550,19 +550,22 @@ fn verify_rt_off<T: Transport>(
     report_verification(out, "rt off", &usages, &bad)
 }
 
-/// Verifies an actuation point write: AP for every key in `usages`, MODE only for a key whose
-/// `records` include a MODE entry (`ops::ap_records` deliberately leaves `Rt`, `RtContinuous`,
-/// `Unknown`, and already-`Single` keys untouched). Catches a board that acks the write but
-/// silently drops the MODE write, leaving the key `Global` and greyed in the vendor UI.
+/// Verifies an actuation point write: AP for every key with an AP entry in `records`
+/// (`ops::ap_records` emits exactly one per key), MODE only for a key whose `records` also
+/// include a MODE entry (`Rt`, `RtContinuous`, `Unknown`, and already-`Single` keys get none).
+/// Derives the key list from `records` rather than a separate `usages` parameter, so the two
+/// can never disagree, mirroring `verify_rt`.
 fn verify_ap<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     depth: Um,
-    usages: &[u8],
     records: &[KeyRecord],
 ) -> Result<()> {
     let mut bad = Vec::new();
-    for &u in usages {
+    let mut usages = Vec::new();
+    for r in records.iter().filter(|r| r.layout == layout::AP) {
+        let u = r.key;
+        usages.push(u);
         let ks = ops::read_key_settings(s, u)?;
         let name = key_label(u);
         if ks.ap != depth {
@@ -586,7 +589,7 @@ fn verify_ap<T: Transport>(
             }
         }
     }
-    report_verification(out, &format!("ap {:.2}mm", depth.to_mm()), usages, &bad)
+    report_verification(out, &format!("ap {:.2}mm", depth.to_mm()), &usages, &bad)
 }
 
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
@@ -666,7 +669,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store)?;
                 let records = ops::set_ap(s, &usages, depth)?;
-                verify_ap(&mut out, s, depth, &usages, &records)
+                verify_ap(&mut out, s, depth, &records)
             })
         }
     }

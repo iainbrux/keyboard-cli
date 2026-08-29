@@ -219,9 +219,10 @@ pub fn set_rt_off<T: Transport>(
 ///
 /// Always writes AP. Also writes MODE, promoted to `Single`, but only when the key currently
 /// reads `Global`: that is the marker the vendor sets on every actuation point change, and the
-/// reason a value written without it renders greyed in the configurator. MODE is ordered before
-/// AP, matching the one ordering measured on hardware (`captures/ap-wasd-1.2.jsonl`); whether the
-/// device cares about intra-batch order is unmeasured, so there is no reason to diverge from it.
+/// reason a value written without it renders greyed in the configurator.
+///
+/// MODE is ordered before AP per key, matching hardware; across keys the vendor groups all MODE
+/// writes before one AP write, which we do not, and that grouping is unmeasured.
 ///
 /// `Single`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. `Rt`/`RtContinuous` matter
 /// most: an RT key still carries its own actuation point, so a depth change must not silently

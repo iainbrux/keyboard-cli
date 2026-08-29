@@ -838,14 +838,18 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // Readback verification reads all six layouts for 'w'; MODE still comes back 0x38, proving
-    // rapid trigger survived the depth change.
+    // Readback verification reads all six layouts for 'w'. Rapid trigger surviving is already
+    // proven above: the write batch carries no MODE record, pinned byte for byte by
+    // `ReplayTransport`, so nothing was written to MODE. `verify_ap` does not check MODE for this
+    // key, since there is no MODE record in the returned `records` to check it against.
     lines.extend(key_settings_lines(0x1A, readback_ap, 0x38, 500, 500, 0, 0));
     lines
 }
 
 /// `set ap --keys w --set 1.2` against a key with rapid trigger on: the write batch carries no
-/// MODE record, and the run still succeeds and verifies, including the MODE value on readback.
+/// MODE record, pinned byte for byte by `ReplayTransport`, so rapid trigger survives because
+/// nothing was written to MODE. The run still succeeds and verifies AP; MODE on readback is not
+/// checked here, since this key got no MODE record to check it against.
 #[test]
 fn set_ap_end_to_end_preserves_rapid_trigger() {
     let path = write_script(
