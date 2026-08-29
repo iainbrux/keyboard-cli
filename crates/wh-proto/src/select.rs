@@ -15,6 +15,10 @@ pub enum SelectError {
     Unknown(String, String),
     #[error("'{0}' is not a key on this device")]
     NotOnDevice(String),
+    #[error(
+        "'{0}' is both a key name and a stored group; rename the group (see `wh keys group`) to use it in a selector"
+    )]
+    AmbiguousWithGroup(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +92,17 @@ impl Selector {
                 Item::Range(a, b) => (*a..=*b).filter(in_universe).collect(),
                 Item::Name(n) => {
                     if let Some(u) = usage_for_name(n) {
+                        // A name that resolves as a key AND names a stored user group is
+                        // ambiguous, not a case where the key silently wins: a group saved
+                        // before this name became a key (e.g. task 19b added "ap"/"rt"/"play"/
+                        // "light" as board-function key names) would otherwise be silently
+                        // repointed at a single board key the next time the selector runs,
+                        // with no warning and exit 0. Refuse rather than resolve either way.
+                        // Key names still win over every name that is *not* also a stored
+                        // group; only this collision is rejected.
+                        if user_groups.contains_key(n) {
+                            return Err(SelectError::AmbiguousWithGroup(n.clone()));
+                        }
                         // A *positively* named key is a user assertion that the
                         // key exists on this device: absence is an error, not
                         // a silent filter (unlike groups, ranges, and `all`).
@@ -252,6 +267,43 @@ mod tests {
         let sel = Selector::parse("w").unwrap();
         let err = sel.resolve(&no_w, &HashMap::new()).unwrap_err();
         assert_eq!(err, SelectError::NotOnDevice("w".to_string()));
+    }
+
+    /// The regression this fix exists for (review round 1, chunk 7): a user group named "rt"
+    /// saved before task 19b added "rt" as a board-function key name. Reproduces the reviewer's
+    /// exact measurement: `groups = {"rt": [w,a,s,d]}`, `universe` includes both wasd and the new
+    /// board-function usages. A tool that writes to hardware must refuse this selector rather
+    /// than silently resolve it as either reading (the key, dropping wasd; or the group, ignoring
+    /// the key), since either choice writes somewhere other than what an old, still-valid group
+    /// definition asked for.
+    #[test]
+    fn a_name_that_is_both_a_key_and_a_stored_group_is_refused_not_silently_resolved() {
+        let mut groups = HashMap::new();
+        groups.insert(
+            "rt".to_string(),
+            vec![0x1A, 0x04, 0x16, 0x07], // w, a, s, d: legal before "rt" became a key name
+        );
+        let universe = vec![0x04, 0x07, 0x16, 0x1A, 0xD6, 0xFA, 0xFB, 0xFC];
+        let sel = Selector::parse("rt").unwrap();
+        let err = sel.resolve(&universe, &groups).unwrap_err();
+        assert_eq!(err, SelectError::AmbiguousWithGroup("rt".to_string()));
+        assert!(err.to_string().contains("rt"));
+
+        // The negated form must be refused the same way, not silently treated as a no-op or as
+        // excluding the group.
+        let sel_neg = Selector::parse("!rt").unwrap();
+        let err_neg = sel_neg.resolve(&universe, &groups).unwrap_err();
+        assert_eq!(err_neg, SelectError::AmbiguousWithGroup("rt".to_string()));
+    }
+
+    /// Key names must keep winning for every name that is *not* also a stored group: this fix
+    /// must not invert the precedence wholesale, only refuse the specific collision above.
+    #[test]
+    fn a_key_name_with_no_same_named_group_still_resolves_as_the_key() {
+        let groups = HashMap::new(); // no stored group named "rt" here
+        let universe = vec![0x04, 0x07, 0x16, 0x1A, 0xFB];
+        let sel = Selector::parse("rt").unwrap();
+        assert_eq!(sel.resolve(&universe, &groups).unwrap(), vec![0xFB]);
     }
 
     #[test]
