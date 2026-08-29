@@ -267,10 +267,13 @@ fn list_keys(store: &Store) -> Result<()> {
         let mut sorted: Vec<_> = groups.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         for (name, usages) in sorted {
-            let names: Vec<_> = usages
-                .iter()
-                .filter_map(|&u| wh_proto::keys::name_for_usage(u))
-                .collect();
+            // Review round 2, finding 3: a usage with no `TABLE` entry must still be listed, as
+            // hex (the same fallback `key_label`/`dump` already use for an unnamed key), not
+            // silently dropped. Reading a stale group's members off this output is the operator's
+            // only recovery route once finding 1's `AmbiguousWithGroup` refuses to resolve it, so
+            // a listing that silently under-reports would send them to recreate an incomplete
+            // group.
+            let names: Vec<_> = usages.iter().map(|&u| key_label(u)).collect();
             writeln!(out, "  {name:<12} {}", names.join(","))?;
         }
     }
