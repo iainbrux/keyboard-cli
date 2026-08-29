@@ -562,9 +562,9 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// The regression the reviewer found: `global_ap` reading only the first unkeyset key would
-    /// have reported `W`'s own private travel as though it were the board's global, after an
-    /// ordinary `wh set ap --keys w --set 1.0` gave `W` a value no other key shares.
+    /// `global_ap` reading only the first unkeyset key would report `W`'s own private travel as
+    /// though it were the board's global, after an ordinary `wh set ap --keys w --set 1.0` gave
+    /// `W` a value no other key shares.
     #[test]
     fn global_ap_splits_when_unkeyset_keys_disagree() {
         let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0), (0x06, 0)]);
