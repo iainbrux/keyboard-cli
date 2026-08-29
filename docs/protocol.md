@@ -160,6 +160,7 @@ parsing them as layout records produces nonsense).
 | `0xfe` | 424 | 2 | Keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set. Read and used by `wh` (Phase 2) |
 | `0xff` | 420 | 3 | Read `210` times, written `0`. Inferred as the actuation point keyset index; read and used by `wh` (Phase 2), see `docs/backlog.md` |
 
+
 The record counts above are what these ten captured scenarios happened to exercise, not each field's
 full possible range. Within the corpus: layout `0x04` (actuation point) only ever took `0, 300, 850,
 1200, 1700, 2000, 3000` (um); layout `0x08` (mode) only ever took `0, 16, 24, 56, 72`; layout `0x14`
@@ -350,3 +351,12 @@ Measured directly off the real device used for the hardware session:
 The vendor's own web configurator displays this same device's firmware as `V0.046`, not the string
 above; both are noted here because a future implementer comparing their own capture against this
 document should expect the wire string, not the UI's shorter one.
+
+## Keysets
+
+Layouts `0xFF` (actuation point) and `0xFE` (rapid trigger) hold keyset membership. Both are
+host-written, both are indices, and they are independent groupings with separate counters.
+Allocation is max plus one and never reuses a freed index.
+
+Measured on 2026-08-29 across seven capture scenarios. See `docs/keysets.md` for the write
+sequences, the delete behaviour, and what it specifies for writing them.

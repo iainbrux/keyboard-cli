@@ -269,42 +269,15 @@ out, not something to rush while one is in flight.
 
 ### Writing keyset membership, so our changes render as keysets
 
-**Measured, and this corrects an earlier wrong entry.** Keysets are stored on the board, not in the
-browser. Two per-key layouts hold them:
+**Measured in full on 2026-08-29. See `docs/keysets.md`**, which supersedes this entry and specifies
+task 2.4. In short: `0xFF` and `0xFE` are both host-written and both indices, they are independent
+groupings with separate counters, allocation is max plus one and never reuses a freed index, and a
+delete resets the value to the global before clearing membership.
 
-| Layout | Meaning | Evidence |
-|---|---|---|
-| `0xFF` | Read `210` times, written `0`, across 1224 frames. Inferred as the actuation point keyset index; not measured as a write | reads `1` for `w,a,s,d` and `2` for `esc`, matching both entries the vendor UI displayed. What `0` denotes is not established, only that it is the value read for keys the UI showed outside either keyset |
-| `0xFE` | Rapid trigger keyset membership | written `1` when an RT keyset was created on `w`, `0` when deleted |
-
-Confirmed from the other side too: the operator inspected the vendor site's browser storage and found
-five keys, none keyset-related, so there is nowhere else for this state to live.
-
-**Why our writes may render greyed.** Two hypotheses, neither tested. The hardware session settles
-which, if either, is right; until then neither is a fact.
-
-1. **MODE touch nibble, the leading one.** A key left on nibble 0 (Global) while holding its own
-   actuation point is a state the vendor never produces, and nibble 1 has direct write evidence in
-   every captured actuation point change. `wh set ap` now promotes a `Global` key to nibble 1.
-2. **Keyset index `0xFF` left at `0`.** `wh set ap --keys f` leaves `f.0xFF` at `0`, the value read
-   for keys the UI showed outside any keyset. Weaker: `0xFF` is read 210 times and written zero
-   times across 1224 frames, and correction 1 of the Phase 2 design records that we do not know what
-   writes it, or whether anything host-side does. Writing the index alongside the value might fix
-   it, and might write a field the host is not supposed to touch.
-
-**A keyset has no name.** The UI's labels, `W,A,S,D` and `ESC`, are just the member list. Nothing on
-the board carries a name and nothing in browser storage does either, so a keyset is exactly "the keys
-sharing an index" and needs no name modelling.
-
-**What is still unknown**, and one capture settles all of it: how the UI allocates the next index,
-whether it reuses a gap left by a deleted keyset or takes the maximum plus one, and whether `0xFE` is
-a boolean or an index we have only ever seen `0` and `1` of. Create two fresh actuation point keysets
-over untouched keys, delete the first, create a third, and watch `0xFF`.
-
-**An earlier version of this entry said keysets were probably browser state and the work likely
-unreachable from a CLI.** That was wrong. It came from checking layout `0xFE`, finding every key read
-zero, and generalising, when `0xFF` was sitting in the same inventory with a value distribution that
-matched the keyset count exactly.
+Two things this entry previously got wrong. `0xFF` was described as inferred from read correlation
+with no evidence anything writes it; it is written, one record per frame. And the cause of the
+configurator greying our writes was asserted as `0xFF` being left at zero; that remains an untested
+hypothesis, now ranked behind the MODE nibble one and recorded as such.
 
 ### Listing backups, and what `--last` should mean
 
@@ -415,10 +388,12 @@ These are known unknowns from the hardware session, listed so nobody re-derives 
 
 ### Unidentified commands
 
-- `0x18`, 6 frames. Suspected RGB or LED control. See the LED item above.
-- `0x2C`, 8 frames. Almost certainly SOCD: it queries by key and replies with symmetric pairs,
-  measured as W with S and A with D, matching the linked pairs visible in the vendor UI. The
-  behaviour is measured; the name is inference.
+- `0x18`, now 8 frames. Suspected RGB or LED control. See the LED item above. A fresh sample was
+  captured on 2026-08-29 in `captures/custom-value-nudge-after-restore.jsonl`.
+- ~~`0x2C`~~ **Identified 2026-08-29: SOCD.** Query is `[rw, key, 0xFF]`, reply is
+  `[status, keyA, keyB, 0, keyB, keyA]`, the pair given both ways round. Measured `w` with `s` and
+  `a` with `d`, and the ADVANCED tab carries a SOCD control holding exactly those pairs. The name is
+  no longer an inference from byte shapes. See `docs/keysets.md`.
 
 ### Unidentified sub-orders of command `0x00`
 

@@ -27,13 +27,22 @@ rather than as settings it recognises.
   change, the marker the vendor sets that our own writes previously omitted. `Single`, `Rt`,
   `RtContinuous`, and `Unknown` touch nibbles are left untouched. Covered by unit and end-to-end
   tests against replayed frames; not yet confirmed against real hardware, see `README.md`.~~
-- [ ] **2.3 The keyset capture session. [hardware]** Create two actuation point keysets over
-  untouched keys, delete the first, create a third, and watch `0xFF`. Settles three things at once:
-  whether a new index reuses a gap or takes the maximum plus one, whether `0xFE` is a boolean or an
-  index we have only ever seen `0` and `1` of, and what a delete writes.
-- [ ] **2.4 Write keyset membership. Blocked on 2.3.** Put the keys a write touches into a keyset,
-  with a way to opt out. Deliberately unspecified until 2.3 lands: designing it now would mean
-  guessing the allocation rule, which is how the `0xFF` overclaim this plan corrected came about.
+- [x] ~~**2.3 The keyset capture session.**~~ Done 2026-08-29. Seven scenarios captured against the
+  real board. `0xFF` is host-written, allocation is max plus one and never reuses a freed index, the
+  two layouts have separate counters, `0xFE` is an index and not a boolean, and a delete resets the
+  value to the global before clearing membership. Full write-up in `docs/keysets.md`.
+- [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it: two
+  independent counters, max-plus-one allocation with no gap reuse, membership written one record per
+  frame, and the create/delete orderings the vendor uses. **Scope grew:** `wh restore` must restore
+  membership too. Measured on 2026-08-29, a restore put every value back and left four keysets in
+  place, so the board no longer matched the snapshot it had just been restored from.
+- [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
+  VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
+  point is not in that record; it is what every key in no keyset holds in layout `0x04`.
+- [ ] **2.11 Stop writing zero dead zones on restore.** The vendor's `cmd 0x29` write always carries
+  `press_dead=200` and `release_dead=200`, constants in its own SDK template. The board reports both
+  as `0` on read, so `wh restore` writes `0, 0` where the vendor has only ever written `200, 200`.
+  Send the vendor's constants instead of the zeros we read back.
 - [x] ~~**2.5 `wh profile`, read and select.** `cmd 0x00` sub-order `0x70`, argument `0xFF` to read,
   a zero-based index to select.~~
 - [x] ~~**2.6 `wh backups list`, and what `--last` means.** Manual and automatic backups are now
