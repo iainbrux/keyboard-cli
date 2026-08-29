@@ -63,7 +63,7 @@ impl Snapshot {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
-    /// Retained only so the workspace builds until Task 3 moves the callers. Task 3 deletes it.
+    /// Retained only until its callers move to `to_json`. Nothing new should call it.
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }
@@ -168,11 +168,14 @@ mode_raw = 32
         assert_eq!(back, snap);
     }
 
-    /// An extension we do not recognise is treated as JSON rather than guessed at, and a TOML body
-    /// under such a name fails loudly instead of silently producing a wrong snapshot.
+    /// An unrecognised extension is parsed as JSON. Asserting a valid JSON body parses, rather than
+    /// that a bad body fails, is what makes this discriminate: a TOML default would reject it.
     #[test]
     fn from_file_text_defaults_to_json_for_an_unknown_extension() {
-        assert!(Snapshot::from_file_text(Path::new("snap.bak"), "firmware = \"x\"").is_err());
+        let snap = sample();
+        let text = snap.to_json().unwrap();
+        let back = Snapshot::from_file_text(Path::new("snap.bak"), &text).unwrap();
+        assert_eq!(back, snap);
     }
 
     #[test]
