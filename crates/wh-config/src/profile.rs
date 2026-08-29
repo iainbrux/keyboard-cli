@@ -40,6 +40,13 @@ impl ProfileNumber {
     /// UI's one-based number. Rejects anything past the board's four measured profiles instead
     /// of accepting it: a device reporting an index like `0xFE` or `0xFF` is not a device whose
     /// snapshot provenance should be trusted at all.
+    ///
+    /// Contrast `from_ui_number`, below, which takes a number that is already one-based. The two
+    /// are not interchangeable despite both taking a bare `u8` (review round 3, important 2: a
+    /// call site that used one where it meant the other, e.g. `from_wire_index(user_profile)`
+    /// where `user_profile` is already the UI's "profile 2", would silently add one and produce
+    /// profile 3, and nothing in the argument's type stops that). Call this one only for a value
+    /// that came straight off the wire, never for one that already has the UI's own numbering.
     pub fn from_wire_index(idx: u8) -> Result<Self, ProfileNumberError> {
         if idx > MAX_WIRE_INDEX {
             return Err(ProfileNumberError::WireIndexOutOfRange(idx));
@@ -50,10 +57,25 @@ impl ProfileNumber {
     /// Converts a plain one-based number (`1..=4`) directly, rejecting `0` and anything past the
     /// board's four measured profiles the same way `from_wire_index` rejects an impossible wire
     /// index. Exists so a caller that already has a one-based number in hand (`Deserialize`
-    /// below, or a test building "profile 1") never has to fake one by subtracting 1 from it and
-    /// risking an underflow panic on the boundary value 0 (review round 2, minor 4): the whole
-    /// point of this type is to remove that boundary arithmetic, not relocate it to call sites.
-    pub fn from_one_based(n: u8) -> Result<Self, ProfileNumberError> {
+    /// below, a test building "profile 1", or a future `--profile 2` CLI argument) never has to
+    /// fake a wire index by subtracting 1 from it and risking an underflow panic on the boundary
+    /// value 0 (review round 2, minor 4): the whole point of this type is to remove that boundary
+    /// arithmetic, not relocate it to call sites.
+    ///
+    /// Contrast `from_wire_index`, above, which takes the wire's own zero-based index. Wrong
+    /// usage example, the one this naming exists to make obvious rather than a bug someone finds
+    /// later:
+    /// ```
+    /// # use wh_config::profile::ProfileNumber;
+    /// # let user_profile = 2u8; // already one-based, e.g. from a --profile 2 argument
+    /// // WRONG: from_wire_index always adds one, so this produces profile 3, not profile 2.
+    /// let p = ProfileNumber::from_wire_index(user_profile);
+    /// assert_eq!(p.unwrap().one_based(), 3);
+    /// // RIGHT:
+    /// let p = ProfileNumber::from_ui_number(user_profile);
+    /// assert_eq!(p.unwrap().one_based(), 2);
+    /// ```
+    pub fn from_ui_number(n: u8) -> Result<Self, ProfileNumberError> {
         if n == 0 || n > MAX_WIRE_INDEX + 1 {
             return Err(ProfileNumberError::OneBasedOutOfRange(n));
         }
@@ -92,7 +114,7 @@ impl<'de> Deserialize<'de> for ProfileNumber {
         D: serde::Deserializer<'de>,
     {
         let n = u8::deserialize(deserializer)?;
-        Self::from_one_based(n).map_err(serde::de::Error::custom)
+        Self::from_ui_number(n).map_err(serde::de::Error::custom)
     }
 }
 
@@ -107,21 +129,32 @@ mod tests {
     }
 
     #[test]
-    fn from_one_based_accepts_the_full_range_without_underflowing() {
-        assert_eq!(ProfileNumber::from_one_based(1).unwrap().one_based(), 1);
-        assert_eq!(ProfileNumber::from_one_based(4).unwrap().one_based(), 4);
+    fn from_ui_number_accepts_the_full_range_without_underflowing() {
+        assert_eq!(ProfileNumber::from_ui_number(1).unwrap().one_based(), 1);
+        assert_eq!(ProfileNumber::from_ui_number(4).unwrap().one_based(), 4);
     }
 
     #[test]
-    fn from_one_based_rejects_zero_and_anything_past_four() {
+    fn from_ui_number_rejects_zero_and_anything_past_four() {
         assert_eq!(
-            ProfileNumber::from_one_based(0).unwrap_err(),
+            ProfileNumber::from_ui_number(0).unwrap_err(),
             ProfileNumberError::OneBasedOutOfRange(0)
         );
         assert_eq!(
-            ProfileNumber::from_one_based(5).unwrap_err(),
+            ProfileNumber::from_ui_number(5).unwrap_err(),
             ProfileNumberError::OneBasedOutOfRange(5)
         );
+    }
+
+    /// Review round 3, important 2: the two constructors take the same argument type but
+    /// different conventions, and this is the exact confusion the rename exists to make
+    /// unreachable by mistake. Pinned here as a behavioural difference, not just a doc comment:
+    /// the same input, `1`, means "profile 2" through `from_wire_index` (it is a wire index) and
+    /// "profile 1" through `from_ui_number` (it is already the UI's own number).
+    #[test]
+    fn from_wire_index_and_from_ui_number_disagree_on_the_same_input_by_design() {
+        assert_eq!(ProfileNumber::from_wire_index(1).unwrap().one_based(), 2);
+        assert_eq!(ProfileNumber::from_ui_number(1).unwrap().one_based(), 1);
     }
 
     #[test]

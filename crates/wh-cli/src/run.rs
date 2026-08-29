@@ -87,8 +87,12 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
     let profile = match wh_config::profile::ProfileNumber::from_wire_index(wire_idx) {
         Ok(p) => Some(p),
         Err(e) => {
+            // Caller-agnostic (review round 3, minor 3): this function backs `dump`, which
+            // records no snapshot at all, as well as `backup` and every write command's
+            // auto-backup, which do. The message must be true for all three, so it describes
+            // this read's own profile as unrecorded rather than claiming a snapshot exists.
             best_effort_eprintln(&format!(
-                "warning: {e}; this snapshot's profile is recorded as unknown provenance"
+                "warning: {e}; this read's profile is unrecorded (unknown provenance)"
             ));
             None
         }
@@ -796,8 +800,12 @@ fn verify_restore<T: Transport>(
 ///   settings between profiles on purpose is a real thing someone might want, but it is not what
 ///   this flag is for, and a single flag covering both this and the case below would let this,
 ///   the more dangerous mistake, through.
-/// - not recorded (an older snapshot): refuse, but `force` rescues it, since the caller is
-///   asserting something this snapshot itself cannot vouch for, not overriding a known mismatch.
+/// - not recorded: refuse, but `force` rescues it, since the caller is asserting something this
+///   snapshot itself cannot vouch for, not overriding a known mismatch. `None` covers two
+///   causes, an older snapshot from before profile recording, or one whose board reported an
+///   index outside the known range (review round 3, important 1): both are gated the same way,
+///   since neither can be compared against the board's current profile, but they are not the
+///   same claim, and the refusal message below has to say so rather than naming only the first.
 fn check_restore_profile(
     snap_profile: Option<wh_config::profile::ProfileNumber>,
     board_profile: wh_config::profile::ProfileNumber,
@@ -813,10 +821,13 @@ fn check_restore_profile(
         ),
         None if force => Ok(()),
         None => bail!(
-            "snapshot has no recorded profile (it predates profile recording), so whether it \
-             belongs to the board's current profile (profile {board_profile}) cannot be \
-             verified; pass --force to restore anyway, asserting it belongs to profile \
-             {board_profile}"
+            "snapshot has no recorded profile: either it predates profile recording, or the \
+             board it was taken from reported a profile index this build does not recognise \
+             (in which case the settings really do belong to some profile, just not one this \
+             build can name). Either way, whether it belongs to the board's current profile \
+             (profile {board_profile}) cannot be verified; pass --force to restore anyway, \
+             asserting it belongs to profile {board_profile}, which may overwrite a different \
+             profile's settings if that assertion is wrong"
         ),
     }
 }
@@ -1051,10 +1062,12 @@ mod tests {
     }
 
     /// Builds the one-based `ProfileNumber` `n` (e.g. `pn(2)` is the UI's "profile 2") for the
-    /// tests below, via `from_one_based` (review round 2, minor 4): `from_wire_index(n - 1)`
-    /// would underflow-panic on `pn(0)` instead of returning a clear error.
+    /// tests below, via `from_ui_number` (review round 2, minor 4, renamed in review round 3,
+    /// important 2): `from_wire_index(n - 1)` would underflow-panic on `pn(0)` instead of
+    /// returning a clear error, and `from_wire_index(n)` would silently mean a different
+    /// profile than `pn`'s own name promises.
     fn pn(n: u8) -> wh_config::profile::ProfileNumber {
-        wh_config::profile::ProfileNumber::from_one_based(n).unwrap()
+        wh_config::profile::ProfileNumber::from_ui_number(n).unwrap()
     }
 
     #[test]

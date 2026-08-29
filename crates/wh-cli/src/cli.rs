@@ -40,10 +40,13 @@ pub enum Cmd {
         /// Use the newest auto-backup instead of naming a file
         #[arg(long)]
         last: bool,
-        /// Restore a snapshot that predates profile recording (it has no recorded profile),
-        /// asserting it belongs to the board's current profile. Has no effect, and does not
-        /// rescue, a snapshot whose recorded profile differs from the board's: that refusal has
-        /// no override.
+        /// Restore a snapshot with no recorded profile, asserting it belongs to the board's
+        /// current profile. Covers two cases: the snapshot predates profile recording, or the
+        /// board it was taken from reported a profile index this build does not recognise (the
+        /// settings still belong to some real profile, just not one this build can name); either
+        /// way, if the assertion is wrong this can overwrite a different profile's settings. Has
+        /// no effect, and does not rescue, a snapshot whose recorded profile differs from the
+        /// board's: that refusal has no override.
         #[arg(long)]
         force: bool,
     },
