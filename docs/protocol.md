@@ -195,10 +195,10 @@ untested territory this document does not cover.
 
 **Writing an actuation point does not touch this layout at all.** `wh set ap` writes layout `0x04`
 alone. This is measured, not assumed: `docs/tasks.md` records a hardware check where a key's
-actuation point was changed with no accompanying mode write, and the key actuated at the new depth
-and read back correctly through both `wh dump` and the vendor UI. The vendor's own web app sends a
-mode write alongside every actuation-point change anyway, but it is not required for the value to
-take effect, and `wh` deliberately does not send one.
+actuation point was changed with no accompanying mode write, and the key physically actuated at the
+new depth, checked using the board's own actuation LEDs against another key at a known depth. The
+vendor's own web app sends a mode write alongside every actuation-point change anyway, but it is not
+required for the value to take effect, and `wh` deliberately does not send one.
 
 Rapid trigger is the nibble this document's earlier draft got backwards, worth stating plainly
 since the wrong answer looks plausible and fails silently. `wh` writes `3` to turn rapid trigger on
@@ -213,13 +213,24 @@ rapid trigger off as a side effect: nothing errors, and both `dump` and the vend
 as rapid-trigger-off afterward, with no indication that anything other than the actuation point was
 touched.
 
-**Nibble `0` is a trap, not a reset.** It means "follow the global travel setting", which discards
-whatever per-key actuation point layout `0x04` recorded for that key: a value this repository's own
-code once got wrong for exactly this reason. `ops::rt_off_records` exists specifically to avoid
-writing `0` when turning rapid trigger off, because doing so would silently drop the key's actuation
-point along with it. A reimplementation that wants "turn rapid trigger off, keep the actuation
-point" must write `1`; only write `0` when the intent really is to abandon the per-key actuation
-point and fall back to the global setting.
+**What writing nibble `0` does to a key's layout `0x04` value is unmeasured, and an earlier draft of
+this document stated the opposite as fact.** Nibble `0` means "follow the global travel setting",
+and the reasoning that seemed obvious was that this would discard whatever per-key actuation point
+layout `0x04` recorded for that key. The one hardware test on record points the other way:
+`docs/tasks.md` records a key sitting at nibble `0` with a custom actuation point of `0.30mm` in
+layout `0x04`, and that key physically actuated at `0.30mm`, checked against another key at the
+default `2.00mm` using the board's own actuation LEDs. A key at nibble `0` honoured its per-key
+`0x04` value in that one test, which is the opposite of what the "discards the actuation point"
+belief predicted.
+
+`wh` still declines to write nibble `0` when turning rapid trigger off, via `ops::rt_off_records`
+writing `Single` (`1`) instead of `Global` (`0`), but the honest reason is caution, not a known
+destructive effect: the vendor's own web app was observed writing nibble `1`, not `0`, when its UI
+turns rapid trigger off (removing a keyset), so matching that observed behaviour costs nothing and
+avoids writing a value nobody has watched the vendor write in that situation, whatever it actually
+does. A reimplementation that wants to match `wh` and the vendor should write `1` when turning rapid
+trigger off; writing `0` there is unexplored territory, not a known-safe reset and not a confirmed
+trap either.
 
 The high byte of the 16-bit value (bits 8..16) carries information this document does not identify
 and `wh` does not interpret. It must be preserved verbatim on every write: read the current 16-bit

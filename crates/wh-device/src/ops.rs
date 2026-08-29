@@ -164,9 +164,15 @@ pub fn rt_records<T: Transport>(
 /// read; a key with no RT to turn off has nothing for `set rt --off` to do to its mode.
 ///
 /// Measured on the real device (`captures/rt-off-w.jsonl`, task 19b chunk 3): turning RT off
-/// wrote MODE nibble 1, not 0, because nibble 0 means "ignore this key's AP register and follow
-/// the global travel setting", which would silently make a per-key actuation point inert. But
-/// that capture covers exactly one transition, an RT key with an AP going to Single; no capture
+/// wrote MODE nibble 1, not 0. Nibble 0 means "follow the global travel setting" instead of this
+/// key's own layout `0x04` value; the original reasoning here was that writing it would silently
+/// make a per-key actuation point inert, but that was never measured, and a later hardware check
+/// (`docs/tasks.md`, the touch-nibble-0 actuation test) found a key at nibble 0 honouring its own
+/// per-key actuation point, the opposite of what that reasoning predicted. What nibble 0 actually
+/// does to a key's `0x04` value is unmeasured either way. This function writes nibble 1 anyway,
+/// because that is what the vendor was observed writing in this exact situation, and matching it
+/// costs nothing regardless of which belief about nibble 0 turns out to be right. But that
+/// capture covers exactly one transition, an RT key with an AP going to Single; no capture
 /// anywhere in the ten scenarios shows a nibble-0 (Global) key being turned "off" into nibble 1,
 /// and doing that unconditionally (the first cut of this function did) detaches every non-RT key
 /// on the board from the global travel setting on a plain `wh set rt --keys all --off`, a second
