@@ -35,9 +35,9 @@ pub enum Cmd {
     },
     /// Write a snapshot back to the board
     Restore {
-        /// Snapshot file; omit with --last for the newest auto-backup
+        /// Snapshot file; omit and pass --last to use the newest stored one instead
         file: Option<std::path::PathBuf>,
-        /// Use the newest auto-backup instead of naming a file
+        /// Use the most recent snapshot in the store, whichever command took it; see `wh backups list`
         #[arg(long)]
         last: bool,
         /// Restore a snapshot with no recorded profile, asserting it belongs to the board's

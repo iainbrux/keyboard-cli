@@ -473,11 +473,10 @@ fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
-/// Takes and saves an auto-backup, recording `command` as the snapshot's origin (e.g. `set rt`,
-/// `restore`) so `wh backups list` can name what triggered it. `restore` reads the board's
-/// profile through its own separate `ops::profile` call rather than off this function's returned
-/// snapshot, so a future `--no-backup` flag or a best-effort backup here cannot silently drop the
-/// profile safety check.
+/// Takes and saves an auto-backup, recording `command` (e.g. `set rt`) as its origin. `restore`
+/// reads the board's profile through its own separate `ops::profile` call rather than off this
+/// function's returned snapshot, so a future `--no-backup` flag or a best-effort backup here
+/// cannot silently drop the profile safety check.
 fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store, command: &str) -> Result<()> {
     let mut snap = snapshot_from_device(s)?;
     snap.origin = Some(format!("auto: {command}"));
