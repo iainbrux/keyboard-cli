@@ -52,7 +52,7 @@ impl Store {
 
     /// Writes a new backup and rotates old ones away, keeping the newest `KEEP_BACKUPS`.
     ///
-    /// Filename is `<secs>.<nanos>.toml`, zero-padded to 20 and 9 digits. `list_backups` sorts
+    /// Filename is `<secs>.<nanos>.json`, zero-padded to 20 and 9 digits. `list_backups` sorts
     /// by the parsed `(secs, nanos)` key, not the raw string, so the padding is cosmetic.
     ///
     /// Content is written to a `.partial` temp file first (name paired with a process-wide
@@ -62,7 +62,7 @@ impl Store {
     /// name is taken. `hard_link` shares an inode rather than copying bytes, so publishing only
     /// after the temp content is complete, and never reusing a temp name, is what keeps a
     /// collision from silently corrupting an existing backup in place instead of just failing.
-    pub fn save_backup(&self, toml_text: &str) -> Result<PathBuf, StoreError> {
+    pub fn save_backup(&self, text: &str) -> Result<PathBuf, StoreError> {
         let dir = self.backups_dir();
         fs::create_dir_all(&dir)?;
 
@@ -80,7 +80,7 @@ impl Store {
                 Err(e) => return Err(e.into()),
             }
         };
-        if let Err(e) = std::io::Write::write_all(&mut tmp_file, toml_text.as_bytes()) {
+        if let Err(e) = std::io::Write::write_all(&mut tmp_file, text.as_bytes()) {
             drop(tmp_file);
             let _ = fs::remove_file(&tmp_path);
             return Err(e.into());
@@ -98,7 +98,7 @@ impl Store {
         let mut secs = stamp.as_secs();
         let mut nanos = stamp.subsec_nanos();
         let path = loop {
-            let candidate = dir.join(format!("{secs:020}.{nanos:09}.toml"));
+            let candidate = dir.join(format!("{secs:020}.{nanos:09}.json"));
             match fs::hard_link(&tmp_path, &candidate) {
                 Ok(()) => break candidate,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -131,10 +131,10 @@ impl Store {
     /// Sorted oldest to newest, by the parsed `(secs, nanos)` key, not by raw filename string.
     ///
     /// An entry counts as a backup only if its name does not start with `.` and it has a
-    /// `.toml` extension. Both checks are needed: `Path::extension` still reports `.toml` for a
-    /// dot-prefixed temp name like `.tmp-<pid>-<name>.toml`, so the leading-dot check catches
-    /// what the extension check alone would miss. A zero-length `.toml` file is also excluded,
-    /// since it is never a valid backup.
+    /// `.json` or `.toml` extension. Both checks are needed: `Path::extension` still reports
+    /// `.toml` for a dot-prefixed temp name like `.tmp-<pid>-<name>.toml`, so the leading-dot
+    /// check catches what the extension check alone would miss. A zero-length file is also
+    /// excluded, since it is never a valid backup.
     pub fn list_backups(&self) -> Result<Vec<PathBuf>, StoreError> {
         let dir = self.backups_dir();
         if !dir.exists() {
@@ -152,7 +152,13 @@ impl Store {
             if looks_hidden_or_temp {
                 continue;
             }
-            if path.extension().is_none_or(|e| e != "toml") {
+            // Both formats list: `.json` is what we write now, `.toml` is a Phase 1 backup that
+            // must stay restorable.
+            let ext_ok = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "json" || e == "toml");
+            if !ext_ok {
                 continue;
             }
             if entry.metadata()?.len() == 0 {
@@ -164,13 +170,15 @@ impl Store {
         Ok(v)
     }
 
-    /// `None` loads the newest backup.
-    pub fn load_backup(&self, path: Option<PathBuf>) -> Result<String, StoreError> {
+    /// `None` loads the newest backup. Returns the path too, so the caller can pick a parser
+    /// from the extension.
+    pub fn load_backup(&self, path: Option<PathBuf>) -> Result<(PathBuf, String), StoreError> {
         let p = match path {
             Some(p) => p,
             None => self.list_backups()?.pop().ok_or(StoreError::NoBackups)?,
         };
-        Ok(fs::read_to_string(p)?)
+        let text = fs::read_to_string(&p)?;
+        Ok((p, text))
     }
 
     fn config_path(&self) -> PathBuf {
@@ -263,8 +271,31 @@ mod tests {
         }
         let backups = store.list_backups().unwrap();
         assert_eq!(backups.len(), 20);
-        let newest = store.load_backup(None).unwrap();
+        let (_, newest) = store.load_backup(None).unwrap();
         assert_eq!(newest, "snap 24");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// New backups are `.json`. Pre-existing `.toml` backups still list and still load, so a
+    /// Phase 1 backup remains restorable.
+    #[test]
+    fn backups_write_json_and_still_list_toml() {
+        let dir = test_dir("backups-mixed");
+        let store = Store::at(dir.clone());
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::write(backups.join("00000000000000000001.000000000.toml"), "old").unwrap();
+
+        let written = store.save_backup("{\"new\":true}").unwrap();
+        assert_eq!(written.extension().unwrap(), "json");
+
+        let all = store.list_backups().unwrap();
+        assert_eq!(all.len(), 2, "both formats must list: {all:?}");
+        assert_eq!(all[0].extension().unwrap(), "toml", "oldest first");
+
+        let (path, text) = store.load_backup(None).unwrap();
+        assert_eq!(path.extension().unwrap(), "json");
+        assert_eq!(text, "{\"new\":true}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -391,7 +422,7 @@ mod tests {
             "year-2000",
         )
         .unwrap();
-        let newest = store.load_backup(None).unwrap();
+        let (_, newest) = store.load_backup(None).unwrap();
         assert_eq!(newest, "newest");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -424,7 +455,7 @@ mod tests {
                 "bogus old file survived rotation: {name}"
             );
         }
-        let newest = store.load_backup(None).unwrap();
+        let (_, newest) = store.load_backup(None).unwrap();
         assert_eq!(newest, "snap 24");
         let oldest_surviving = std::fs::read_to_string(&backups[0]).unwrap();
         assert_eq!(oldest_surviving, "snap 5");
@@ -451,7 +482,7 @@ mod tests {
         .unwrap();
         let backups = store.list_backups().unwrap();
         assert_eq!(backups.len(), 1);
-        let newest = store.load_backup(None).unwrap();
+        let (_, newest) = store.load_backup(None).unwrap();
         assert_eq!(newest, "genuine");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -471,7 +502,7 @@ mod tests {
         std::fs::write(dir.join("backups").join("1756000005.000000000.toml"), "").unwrap();
         let backups = store.list_backups().unwrap();
         assert_eq!(backups.len(), 1);
-        let newest = store.load_backup(None).unwrap();
+        let (_, newest) = store.load_backup(None).unwrap();
         assert_eq!(newest, "older-real");
         std::fs::remove_dir_all(&dir).ok();
     }

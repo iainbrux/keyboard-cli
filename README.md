@@ -66,7 +66,7 @@ Read the whole board configuration:
 
 ```
 wh dump
-wh dump --json
+wh dump --table
 ```
 
 Read or write rapid trigger and actuation point for a key selection:

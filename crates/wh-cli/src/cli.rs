@@ -13,9 +13,9 @@ pub struct Cli {
 pub enum Cmd {
     /// Read the full board configuration
     Dump {
-        /// Print the configuration as JSON instead of plain text
+        /// Print a human-readable table instead of JSON
         #[arg(long)]
-        json: bool,
+        table: bool,
     },
     /// Read a setting for selected keys
     Get {

@@ -63,10 +63,6 @@ impl Snapshot {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
-    /// Retained only until its callers move to `to_json`. Nothing new should call it.
-    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
-        toml::to_string_pretty(self)
-    }
     pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(s)
     }
@@ -178,71 +174,9 @@ mode_raw = 32
         assert_eq!(back, snap);
     }
 
-    #[test]
-    fn snapshot_toml_roundtrip() {
-        let snap = Snapshot {
-            firmware: "V1.2.3".into(),
-            serial: "SN1".into(),
-            taken_at: "2026-08-28T12:00:00Z".into(),
-            profile: Some(ProfileNumber::from_wire_index(0).unwrap()),
-            global: GlobalToml {
-                travel_mm: 2.0,
-                press_dead_mm: 0.2,
-                release_dead_mm: 0.2,
-            },
-            keys: vec![KeyToml {
-                name: "w".into(),
-                usage: 0x1A,
-                ap_mm: 1.2,
-                rt: true,
-                rt_press_mm: 0.5,
-                rt_release_mm: 0.5,
-                mode_raw: 0x20,
-            }],
-        };
-        let text = snap.to_toml().unwrap();
-        let back = Snapshot::from_toml(&text).unwrap();
-        assert_eq!(back, snap);
-    }
-
-    /// A `None` profile (provenance unknown) serializes with the `profile` key omitted, since
-    /// TOML has no null. Round-tripped both ways: `to_toml` must not emit a `profile` line, and
-    /// `from_toml` on the result must come back with `profile` still absent.
-    #[test]
-    fn snapshot_with_no_profile_round_trips_with_the_field_absent() {
-        let snap = Snapshot {
-            firmware: "V1.2.3".into(),
-            serial: "SN1".into(),
-            taken_at: "2026-08-28T12:00:00Z".into(),
-            profile: None,
-            global: GlobalToml {
-                travel_mm: 2.0,
-                press_dead_mm: 0.2,
-                release_dead_mm: 0.2,
-            },
-            keys: vec![KeyToml {
-                name: "w".into(),
-                usage: 0x1A,
-                ap_mm: 1.2,
-                rt: true,
-                rt_press_mm: 0.5,
-                rt_release_mm: 0.5,
-                mode_raw: 0x20,
-            }],
-        };
-        let text = snap.to_toml().unwrap();
-        assert!(
-            !text.contains("profile"),
-            "a None profile must not appear in the TOML at all: {text}"
-        );
-        let back = Snapshot::from_toml(&text).unwrap();
-        assert_eq!(back.profile, None);
-        assert_eq!(back, snap);
-    }
-
     /// The shape of a real pre-existing snapshot file: no `profile` key anywhere. Written by
-    /// hand, not round-tripped through `to_toml`, so the test proves the parser accepts it
-    /// independent of the serializer.
+    /// hand, not produced by any serializer, so the test proves the parser accepts it on its
+    /// own.
     #[test]
     fn snapshot_toml_with_no_profile_key_at_all_still_parses() {
         let text = r#"

@@ -235,7 +235,7 @@ fn dump_json_via_replay() {
     let path = write_script("dump", &build_script());
     let config_home = scratch_config_dir("dump-json");
 
-    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    let out = run_wh(&["dump"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -262,6 +262,56 @@ fn dump_json_via_replay() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `wh dump` with no flags is JSON. This is the format change: JSON is canonical, and the
+/// human table is opt-in.
+#[test]
+fn dump_with_no_flags_is_json() {
+    let path = write_script("dump-default-json", &build_script());
+    let config_home = scratch_config_dir("dump-default-json");
+
+    let out = run_wh(&["dump"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim_start().starts_with('{'),
+        "dump must default to JSON, got: {stdout}"
+    );
+    serde_json::from_str::<serde_json::Value>(&stdout).expect("dump output must parse as JSON");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The table survives behind `--table`, since nothing else renders 68 keys readably until the
+/// TUI exists.
+#[test]
+fn dump_table_flag_prints_the_human_table() {
+    let path = write_script("dump-table", &build_script());
+    let config_home = scratch_config_dir("dump-table");
+
+    let out = run_wh(&["dump", "--table"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("key"), "table header missing: {stdout}");
+    assert!(
+        !stdout.trim_start().starts_with('{'),
+        "--table must not be JSON"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `with_session` announces which transport it opened, on stderr, one line: a run believing it
 /// is a replay must never silently be a hardware write, and the reverse must never be silent
 /// either. This only exercises the replay half, since the host-built test binary never takes the
@@ -272,7 +322,7 @@ fn dump_via_replay_announces_the_replay_transport_on_stderr() {
     let path = write_script("dump-transport-announce", &build_script());
     let config_home = scratch_config_dir("dump-transport-announce");
 
-    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    let out = run_wh(&["dump"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -284,7 +334,7 @@ fn dump_via_replay_announces_the_replay_transport_on_stderr() {
         stderr.contains("transport: replay"),
         "unexpected stderr, missing the transport announcement: {stderr}"
     );
-    // Kept off stdout: `dump --json`'s output must stay valid, parseable JSON on its own.
+    // Kept off stdout: `dump`'s default JSON output must stay valid, parseable on its own.
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         serde_json::from_str::<serde_json::Value>(&stdout).is_ok(),
@@ -303,7 +353,7 @@ fn dump_text_prints_the_one_based_profile_number() {
     let path = write_script("dump-profile-text", &build_script());
     let config_home = scratch_config_dir("dump-profile-text");
 
-    let out = run_wh(&["dump"], &path, &config_home);
+    let out = run_wh(&["dump", "--table"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -325,7 +375,7 @@ fn backup_to_writes_the_profile_into_the_file() {
     let path = write_script("backup-profile", &build_script());
     let config_home = scratch_config_dir("backup-profile");
     let out_path =
-        std::env::temp_dir().join(format!("wh-backup-profile-{}.toml", std::process::id()));
+        std::env::temp_dir().join(format!("wh-backup-profile-{}.json", std::process::id()));
 
     let out = run_wh(
         &["backup", "--to", out_path.to_str().unwrap()],
@@ -340,7 +390,7 @@ fn backup_to_writes_the_profile_into_the_file() {
     );
 
     let text = std::fs::read_to_string(&out_path).unwrap();
-    let snap = wh_config::snapshot::Snapshot::from_toml(&text).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_json(&text).unwrap();
     // `build_script()` scripts the board replying with wire index 0, i.e. UI profile 1.
     assert_eq!(
         snap.profile,
@@ -377,7 +427,7 @@ fn dump_prints_a_board_function_key_by_name_not_hex() {
     let path = write_script("dump-board-func", &lines);
     let config_home = scratch_config_dir("dump-board-func");
 
-    let out = run_wh(&["dump", "--json"], &path, &config_home);
+    let out = run_wh(&["dump"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -899,10 +949,10 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// A snapshot's TOML text for one key, 'w', with a caller-chosen `ap_mm` and `profile` (one-based,
+/// A snapshot's JSON text for one key, 'w', with a caller-chosen `ap_mm` and `profile` (one-based,
 /// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
-fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
+fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
     // `profile` is one-based (matching every other profile number in this file); built via
     // `from_one_based`, not `from_wire_index(p - 1)`, which would underflow-panic on `Some(0)`.
     let profile = profile.map(|p| cmds::ProfileNumber::from_one_based(p).unwrap());
@@ -929,12 +979,12 @@ fn restore_snapshot_toml(ap_mm: f64, profile: Option<u8>) -> String {
             mode_raw: 0x0220,
         }],
     };
-    snap.to_toml().unwrap()
+    snap.to_json().unwrap()
 }
 
 fn write_snapshot(tag: &str, ap_mm: f64, profile: Option<u8>) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("wh-{tag}-{}.toml", std::process::id()));
-    std::fs::write(&path, restore_snapshot_toml(ap_mm, profile)).unwrap();
+    let path = std::env::temp_dir().join(format!("wh-{tag}-{}.json", std::process::id()));
+    std::fs::write(&path, restore_snapshot_json(ap_mm, profile)).unwrap();
     path
 }
 
@@ -1255,7 +1305,7 @@ fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
 
     let path = write_script("backup-out-of-range", &lines);
     let config_home = scratch_config_dir("backup-out-of-range");
-    let out_path = std::env::temp_dir().join(format!("wh-backup-oor-{}.toml", std::process::id()));
+    let out_path = std::env::temp_dir().join(format!("wh-backup-oor-{}.json", std::process::id()));
 
     let out = run_wh(
         &["backup", "--to", out_path.to_str().unwrap()],
@@ -1275,7 +1325,7 @@ fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
     );
 
     let text = std::fs::read_to_string(&out_path).unwrap();
-    let snap = wh_config::snapshot::Snapshot::from_toml(&text).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_json(&text).unwrap();
     assert_eq!(
         snap.profile, None,
         "an out-of-range index must record no profile, not a bogus one: {text}"
@@ -1404,10 +1454,11 @@ fn bin_wh_shim_propagates_wh_replay_and_never_touches_hardware() {
     // would be misleading isolation, since `Store::open`'s `directories::ProjectDirs` ignores it
     // on Windows and resolves `%APPDATA%\wh\config` regardless, exactly the mechanism behind a
     // real incident where a verification run believed it had isolation and wrote a real key group
-    // into the operator's live config. Safe here only because this test's `dump --json` reads
-    // and touches nothing on disk; a future test that writes needs a real `Store::open` override.
+    // into the operator's live config. Safe here only because this test's `dump` (default JSON)
+    // reads and touches nothing on disk; a future test that writes needs a real `Store::open`
+    // override.
     let out = std::process::Command::new(&shim)
-        .args(["dump", "--json"])
+        .args(["dump"])
         .env("WH_REPLAY", &path)
         .output()
         .unwrap();

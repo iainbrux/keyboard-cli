@@ -19,7 +19,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
-        Cmd::Dump { json } => dump(json),
+        Cmd::Dump { table } => dump(table),
         Cmd::Get { what } => get(what, &store),
         Cmd::Set { what } => set(what, &store),
         Cmd::Backup { to } => backup(to, &store),
@@ -42,7 +42,7 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 /// `bin/wh` must propagate `WH_REPLAY` across the WSL/Windows boundary, or this function
 /// silently opens the real keyboard instead. This line is the backstop that makes a run
 /// quietly hitting real hardware never silent, regardless of what carries the variable.
-/// Kept off stdout so `dump --json`'s parseable output stays clean.
+/// Kept off stdout so `dump`'s parseable JSON output stays clean.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
@@ -170,7 +170,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn dump(json: bool) -> Result<()> {
+fn dump(table: bool) -> Result<()> {
     // `writeln!`'s `Result` (unlike `println!`, which panics) lets an early-closing reader,
     // e.g. `wh dump | head -1`, surface as an `io::Error` that `main` recognises and exits on
     // quietly.
@@ -178,8 +178,8 @@ fn dump(json: bool) -> Result<()> {
     let mut out = stdout.lock();
     with_session(|s| {
         let snap = snapshot_from_device(s)?;
-        if json {
-            writeln!(out, "{}", serde_json::to_string_pretty(&snap)?)?;
+        if !table {
+            writeln!(out, "{}", snap.to_json()?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
             // `snapshot_from_device` degrades to `None` (warning already printed to stderr)
@@ -396,7 +396,7 @@ fn mm(v: f64) -> Result<Um> {
 /// safety check.
 fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store) -> Result<()> {
     let snap = snapshot_from_device(s)?;
-    let path = store.save_backup(&snap.to_toml()?)?;
+    let path = store.save_backup(&snap.to_json()?)?;
     best_effort_eprintln(&format!("(backed up to {})", path.display()));
     Ok(())
 }
@@ -625,7 +625,7 @@ fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     let mut out = stdout.lock();
     with_session(|s| {
         let snap = snapshot_from_device(s)?;
-        let text = snap.to_toml()?;
+        let text = snap.to_json()?;
         match to {
             Some(p) => {
                 std::fs::write(&p, &text)
@@ -790,13 +790,17 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     if file.is_some() && last {
         bail!("pass a snapshot file or --last, not both");
     }
-    let text = match (file, last) {
-        (Some(p), _) => std::fs::read_to_string(&p)
-            .with_context(|| format!("reading snapshot from {}", p.display()))?,
+    let (path, text) = match (file, last) {
+        (Some(p), _) => {
+            let text = std::fs::read_to_string(&p)
+                .with_context(|| format!("reading snapshot from {}", p.display()))?;
+            (p, text)
+        }
         (None, true) => store.load_backup(None)?,
         (None, false) => bail!("give a snapshot file or --last"),
     };
-    let snap = wh_config::snapshot::Snapshot::from_toml(&text)?;
+    let snap = wh_config::snapshot::Snapshot::from_file_text(&path, &text)
+        .with_context(|| format!("parsing snapshot {}", path.display()))?;
     // Every value is validated and the write records built before a session ever opens, so a
     // bad snapshot is refused before a single frame is sent.
     let global = snap_to_global(&snap)?;
