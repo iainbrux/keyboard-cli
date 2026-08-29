@@ -9,41 +9,143 @@ capture files from the hardware session (local only, gitignored, backed up outsi
 
 ## Hardware questions
 
-### The knob
-
-**What we know.** It adjusts system volume by default. Holding FN and turning it selects between
-profiles 1 to 4. The board has four profiles and we know how to read and select them on the wire
-(command `0x00`, sub-order `0x70`, argument `0xFF` to read and a zero-based index to select).
-
-**What we do not know.** Whether the knob can be rebound at all, and if so how that binding is
-expressed on the wire. The vendor configurator's mapping view renders the 68 keys and does not
-appear to show the knob as a bindable element.
-
-**A useful negative we already have.** The knob is *not* one of the 68 keys. The full key
-enumeration was reconstructed and every entry identified, so the knob is not addressed as a key in
-the matrix. It is either a separate control with its own command, or not configurable.
-
-**How to find out.** Capture while turning the knob, both plain and with FN held. Volume changes
-almost certainly leave over the standard HID consumer-control interface rather than the vendor
-collection we capture, so an empty capture would itself be informative. The FN combination is more
-promising: if it drives profile selection, we should see the `0x70` sub-order we already know.
-
-### The numbered LEDs beside the knob
+### The LEDs beside the knob, and setting their colour
 
 **What we know.** The top plate carries a printed scale reading 0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 1.5,
 2.0, 2.5, 3.0, 3.5 with a red mark at the end, and a row of LEDs above it. It reads as a travel
-indicator.
+indicator. **The operator reports these LEDs do change colour, so they are RGB rather than
+single-colour indicators.** That makes them a target for features, not just a thing to decode.
 
-**What we do not know.** What drives them, whether they are host-controlled or firmware-driven, and
-whether they reflect the actuation point, the rapid trigger sensitivity, or live key depth.
+**What we do not know.** What drives them, whether the colour is host-controlled or firmware-driven,
+and whether the row also tracks the actuation point, the rapid trigger sensitivity, or live key
+depth. Colour and function may be independent: a travel indicator that happens to be RGB is a
+different thing from a strip we can drive freely.
 
 **Candidate.** Command `0x18` is unmodelled, appeared 6 times in the captures, and carries a payload
-with a `7f7f` and `ff00ff00` shape that reads like colour or level data. That is a guess from byte
-patterns, nothing stronger.
+with a `7f7f` and `ff00ff00` shape. `ff00ff00` reads like a colour triple, and `7f7f` like a pair of
+half-scale values. That is a guess from byte patterns and nothing stronger, and the same guess has
+been wrong before on this project.
 
-**How to find out.** Capture while changing an actuation point and watching the LEDs, then while
-changing a rapid trigger sensitivity. If the LED row tracks one and not the other, and `0x18`
-traffic accompanies it, that is most of the answer.
+**How to find out.** Two captures, in this order.
+
+1. Change the LED colour in the vendor configurator and capture. If `0x18` carries the colour, the
+   payload should track the picker in an obvious way, and a pure red, pure green and pure blue in
+   sequence would make the byte order unmistakable.
+2. Change an actuation point, then a rapid trigger sensitivity, watching the row each time. If it
+   tracks one and not the other, that is the function question answered separately from the colour
+   one.
+
+**What it unlocks.** If the colour is host-writable per LED, the row becomes a usable output surface:
+a live actuation-point readout, a profile indicator, or anything else `wh` wants to show. That is the
+reason this is worth more than curiosity.
+
+### Are the key backlights colour-programmable, or white only?
+
+**What we know.** The board has a LIGHT key, usage `0xFC`, confirmed by measurement (remapped in the
+vendor UI and read back from the matrix). So lighting is a first-class board function with its own
+key. The board lights up.
+
+**What we do not know.** Whether the key backlights are RGB, per-key addressable, or a single-colour
+backlight with brightness and effect control only. This is genuinely open: plenty of boards in this
+class ship white-only backlighting with an RGB accent strip, which would match the knob LEDs being
+colour-capable while the keys are not.
+
+**How to find out.** Cheapest first, and most of this is looking rather than capturing.
+
+1. Look at the board with the lighting on. A white-only backlight is obvious on sight.
+2. Look at the vendor configurator's lighting section. A colour picker means RGB; brightness and
+   effect sliders alone mean it is not.
+3. Only then capture, changing colour or effect and watching for `0x18` or another unmodelled
+   command.
+
+**Why it is worth knowing before the TUI.** The planned TUI mirrors the vendor configurator one to
+one. If lighting is a tab there, we need to know what it can express before designing the tab.
+
+### How the knob is programmed
+
+**What we know.** It adjusts system volume by default. Holding FN and turning it selects between
+profiles 1 to 4. It is **not** one of the 68 keys: the full key enumeration was reconstructed and
+every entry identified, so the knob is not addressed as a key in the matrix. The vendor
+configurator's mapping view renders the 68 keys and does not appear to show the knob as a bindable
+element.
+
+**What we do not know.** What the knob sends, and whether its binding can be changed at all. The
+board has four profiles and we already know how to read and select them on the wire (command `0x00`,
+sub-order `0x70`, argument `0xFF` to read, a zero-based index to select), so if the FN combination is
+host-mediated we know exactly what to look for.
+
+**Why our existing captures cannot answer it, and this is the important part.** `wh` and the vendor
+configurator both talk to the vendor-defined HID collection, usage page `0xFFA0` usage `0x01` on VID
+`0x3879` PID `0x0806`. Volume control does not travel over that collection. It is a standard HID
+consumer-control report on a different top-level collection, which our WebHID captures never see and
+which Windows claims exclusively. So an empty capture while turning the knob is the expected result
+and tells us nothing.
+
+**Two separate questions, worth not conflating.**
+
+1. **What does the knob send?** This is device input. Answering it needs the spy described below, not
+   a configurator capture.
+2. **Can the binding be changed?** This is configuration, and it would show up in vendor traffic if
+   the configurator can do it at all. The FN combination is the promising half: if FN plus turn
+   selects a profile, and that is host-mediated rather than handled in firmware, we should see the
+   `0x70` sub-order we already know. If we see nothing, the profile switch is firmware-internal,
+   which is itself a useful answer.
+
+**How to find out.** Build the spy first. This item is blocked on it, which is why the spy is the
+higher priority of the two.
+
+### A device spy, so we can read the board directly
+
+**The idea.** A development tool that reads what the keyboard actually sends, without going through
+the vendor website and without hand-building a shim each time. Packaged as a `wh` dev feature so a
+future collaborator gets the same visibility we had to improvise.
+
+**Why it is worth building rather than improvising again.** Every protocol fact this project holds
+came from capturing the vendor configurator. That means we can only ever observe what the
+configurator chooses to do. Anything the board does on its own, key presses, the knob, board-side
+setting changes via the AP and RT keys, is invisible to us today.
+
+**It also closes a hazard we parked as unmeasurable.** `docs/tasks.md` records key `0x01` as probably
+FN, deliberately unmeasured, because confirming it means remapping FN away and FN is how you reach
+the layer that would let you undo that. A spy that reads what the board reports when FN is pressed
+answers it by observation, with nothing written and nothing to undo.
+
+**The constraint that shapes the design.** A USB HID device presents several top-level collections,
+and Windows treats them very differently:
+
+| Collection | What it carries | Can we read it? |
+|---|---|---|
+| Vendor-defined, `0xFFA0`/`0x01` | settings traffic | **Yes, already.** This is how `wh` works, and the OS does not claim it |
+| Keyboard | key presses | No, not directly. Windows opens it exclusively |
+| Consumer control | the knob's volume | No, same exclusivity |
+
+So "read the vendor traffic" and "read key presses" are two different problems, and a design that
+assumes one tool does both will fail on the second.
+
+**Three routes, roughly in order of how much they cost.**
+
+1. **Raw Input API** (`GetRawInputData` with `RIDEV_INPUTSINK`), through the `windows` crate. Gives
+   system-wide keyboard and consumer-control input, can be filtered to one device by handle, needs no
+   driver install and no administrator rights. Reports what the OS decoded rather than the raw bytes
+   on the wire, which is enough to answer "which key did the board report" and therefore enough for
+   the FN question. Recommended starting point.
+2. **USBPcap plus Wireshark.** Captures at the USB bus level, so it sees every collection including
+   the ones Windows claims, and shows the actual bytes. Needs a driver install and a reboot, and is a
+   separate tool rather than something we can package. Right answer when route 1 is not specific
+   enough, for example for the knob's exact report shape.
+3. **libusb or `rusb`.** Rejected. It requires replacing the device driver with WinUSB, which stops
+   the keyboard working as a keyboard while attached. Not acceptable for a tool an operator runs on
+   their daily board.
+
+**Scope for a first version.** A `wh spy` command that opens the vendor collection we already have
+access to and prints every inbound report decoded through the existing codec, with a raw hex line
+alongside. That alone is useful, needs no new dependency, and reuses `wh-proto` and `ReplayTransport`
+directly. Key presses via Raw Input are a second, larger step and should be judged separately once
+the first exists.
+
+**A note on scope creep.** This is a development tool, not part of the product surface. It should be
+behind a feature flag or a clearly marked dev subcommand, so it never becomes something an end user
+runs by accident against their board.
 
 ## Features
 

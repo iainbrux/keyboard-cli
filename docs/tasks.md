@@ -45,10 +45,21 @@ vendor UI rather than as settings it recognises.
 
 ### Hardware questions **[hardware]**
 
-- [ ] **The knob.** What it is bound to by default, and whether it can be rebound at all. It is not
-  one of the 68 keys, which is a useful negative we already have.
-- [ ] **The numbered LEDs beside the knob.** What drives them, and whether they track the actuation
-  point or the rapid trigger sensitivity. Command `0x18` is the candidate, on byte patterns alone.
+- [ ] **A device spy, so we can read the board directly.** Everything we know came from capturing the
+  vendor website, so we can only see what it chooses to do. A spy would show what the board sends on
+  its own. Start with `wh spy` over the vendor collection we already have access to, then Raw Input
+  for key presses. **This unblocks the knob item below, and it settles whether key `0x01` is FN by
+  observation, which we had parked as unmeasurable because confirming it means remapping FN away.**
+- [ ] **Setting the colour of the LEDs beside the knob.** They do change colour, so they are RGB and
+  usable as an output surface, not just a thing to decode. Command `0x18` is the candidate, on byte
+  patterns alone. Capture a pure red, green and blue in sequence to fix the byte order.
+- [ ] **Are the key backlights colour-programmable, or white only?** The LIGHT key (`0xFC`) is
+  confirmed, so lighting is a first-class board function. Whether it is RGB, per-key addressable, or
+  a single-colour backlight is open. Mostly answerable by looking at the board and the vendor UI
+  before any capture.
+- [ ] **How the knob is programmed.** Volume travels over the standard HID consumer-control
+  collection, not the vendor collection we capture, so our existing method cannot see it at all.
+  Blocked on the spy.
 
 ### Features
 
