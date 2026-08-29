@@ -1,4 +1,4 @@
-# `wh` — Wallhack Keyboard CLI: Design
+# `wh`: Wallhack Keyboard CLI Design
 
 **Date:** 2026-08-28
 **Status:** Approved pending user review
@@ -19,14 +19,14 @@ No public protocol documentation, vendor SDK, or third-party tooling is known to
 Verified against the user's machine on 2026-08-28:
 
 - Keyboard: **WALLHACK K-001**, USB VID `0x3879`, PID `0x0806`, connected to the Windows host.
-- Composite USB device, 4 interfaces: `MI_00` keyboard, `MI_01` mouse, `MI_02` keyboard/consumer/system-control collections, **`MI_03` vendor-defined HID** — the presumed configuration channel (and the only interface a browser's WebHID can open, consistent with the Chromium-only requirement).
+- Composite USB device, 4 interfaces: `MI_00` keyboard, `MI_01` mouse, `MI_02` keyboard/consumer/system-control collections, **`MI_03` vendor-defined HID**: the presumed configuration channel (and the only interface a browser's WebHID can open, consistent with the Chromium-only requirement).
 - Development shell is **WSL2**. The keyboard is **not visible inside WSL** (no usbipd-win installed; no `/dev/hidraw*`). Windows PowerShell is reachable from WSL for host-side probing.
 - Chrome, Edge, and Brave are installed on the Windows side. Chrome will be used for instrumented capture (`--remote-debugging-port`).
 - Rust 1.93 in WSL; no Rust toolchain on Windows; mingw-w64 cross toolchain available via apt.
 
 ## Key decisions (user-approved)
 
-1. **Runtime target: Windows binary, invoked from WSL.** Cross-compile `x86_64-pc-windows-gnu` from WSL (apt `gcc-mingw-w64-x86-64` + rustup target). A small `wh` shell shim in WSL execs the `.exe`, so the CLI works identically from the zsh prompt and from Windows Terminal. Rationale: usbipd passthrough would detach the keyboard from Windows while attached — unacceptable for the user's only keyboard.
+1. **Runtime target: Windows binary, invoked from WSL.** Cross-compile `x86_64-pc-windows-gnu` from WSL (apt `gcc-mingw-w64-x86-64` + rustup target). A small `wh` shell shim in WSL execs the `.exe`, so the CLI works identically from the zsh prompt and from Windows Terminal. Rationale: usbipd passthrough would detach the keyboard from Windows while attached, which is unacceptable for the user's only keyboard.
 2. **Sequencing: foundation first.** Phase 1 delivers protocol discovery, transport, read-back, and rapid-trigger + actuation writes. Profiles, knob, keymap, RGB, and per-profile OS binding are follow-on phases, each specced after Phase 1's decoder exists.
 3. **Discovery: static analysis first, live capture second, USB sniffing in reserve.**
 4. **Safety posture: this is the user's only keyboard.** Auto-backup before every write, read-back verification after every write, `--dry-run` on all mutating commands, explicit `wh restore`.
@@ -35,29 +35,29 @@ Verified against the user's machine on 2026-08-28:
 
 Cargo workspace, four crates. The guiding rule: every reverse-engineered byte-layout fact lives in exactly one crate (`wh-proto`), and all hardware I/O passes through one trait (`Transport`).
 
-### `wh-proto` — protocol codec (pure, no I/O)
+### `wh-proto`: protocol codec (pure, no I/O)
 
 - Types: `KeyId`, `Setting` (e.g. `RapidTrigger { sensitivity_mm }`, `ActuationPoint { depth_mm }`), `Command`, `Report`.
 - Functions: `encode(Command) -> Vec<Report>` and `decode(&[u8]) -> Result<Event>`.
 - Millimetre values are validated against device ranges discovered during RE; out-of-range values are errors here, not at the CLI layer.
 - Fully unit-testable with no hardware.
 
-### `wh-device` — transport
+### `wh-device`: transport
 
 - `trait Transport { fn write_report(...); fn read_report(...); fn get_feature(...); fn set_feature(...); }`
 - Implementations:
-  - `HidTransport` — real device via `hidapi`, opening VID `0x3879` / PID `0x0806`, vendor interface (`MI_03`, confirmed during discovery by usage page).
-  - `ReplayTransport` — serves captured traffic from `captures/*.jsonl`; used by all integration tests.
-  - `RecordingTransport` — wraps another transport, logs every report exchanged (used by `--trace` and during RE).
+  - `HidTransport`: real device via `hidapi`, opening VID `0x3879` / PID `0x0806`, vendor interface (`MI_03`, confirmed during discovery by usage page).
+  - `ReplayTransport`: serves captured traffic from `captures/*.jsonl`; used by all integration tests.
+  - `RecordingTransport`: wraps another transport, logs every report exchanged (used by `--trace` and during RE).
 - Detects exclusive-access failure (web configurator tab open in Chrome) and returns a dedicated error variant.
 
-### `wh-config` — host-side state
+### `wh-config`: host-side state
 
 - Config: `~/.config/wh/config.toml` (Linux) / `%APPDATA%\wh\config.toml` (Windows): user key groups, preferences.
 - Backups: rolling directory (keep last 20), one TOML snapshot per mutating command.
 - Profile files: TOML, human-readable, diffable.
 
-### `wh-cli` — command surface (`clap`)
+### `wh-cli`: command surface (`clap`)
 
 ```
 wh dump [--json]                         read full board config
@@ -90,22 +90,22 @@ One parser shared by every `--keys` flag:
 1. **Auto-backup:** every mutating command first reads the full board config and snapshots it to the backup dir. Only then does it write.
 2. **Read-back verification:** after writing, the setting is read back from the board. Output reports the board's actual value. A mismatch is reported as an error with both values; the backup is retained; the command exits non-zero.
 3. **`wh restore --last`** re-applies the most recent snapshot.
-4. **No-op smoke test:** `wh selftest` writes one setting to its *current* value and verifies read-back — proves the write path without changing state.
+4. **No-op smoke test:** `wh selftest` writes one setting to its *current* value and verifies read-back, proving the write path works without changing state.
 5. First-ever capture of a full config read is stored both as a golden test fixture and as backup #0.
 
-## Discovery workflow — COMPLETED 2026-08-28 (static analysis)
+## Discovery workflow: COMPLETED 2026-08-28 (static analysis)
 
 Static analysis of the terminal.wallhack.com bundle succeeded beyond expectations. Key findings (full detail to live in `docs/protocol.md`; source artifacts under `research/`):
 
 - **Transport confirmed: WebHID.** No WebUSB or Web Serial anywhere in the bundle. USB sniffing fallback is moot.
-- **The firmware platform is Sparklink Playjoy** (ODM shared with Chilkey, RK, AJAZZ, FL Esports, …), and the vendor SDK embedded in Wallhack's bundle is an obfuscated copy of **`@sparklinkplayjoy/protocol-keyboard` — public, MIT-licensed, full TypeScript source on npm**. The protocol does not need reverse-engineering from scratch; it needs porting from readable MIT source (`research/proto/package/src/`).
-- **Framing:** reportId 0, 64-byte zero-padded reports. `byte0=0x5C` magic, `byte1=len`, `byte2=cmd`, `byte3=crc` where `crc = (0x35 + 0x5C + len + cmd + lastPayloadByte) & 0xFF` — cross-validated between the deobfuscated bundle and upstream source.
+- **The firmware platform is Sparklink Playjoy** (ODM shared with Chilkey, RK, AJAZZ, FL Esports, …), and the vendor SDK embedded in Wallhack's bundle is an obfuscated copy of **`@sparklinkplayjoy/protocol-keyboard`, public, MIT-licensed, full TypeScript source on npm**. The protocol does not need reverse-engineering from scratch; it needs porting from readable MIT source (`research/proto/package/src/`).
+- **Framing:** reportId 0, 64-byte zero-padded reports. `byte0=0x5C` magic, `byte1=len`, `byte2=cmd`, `byte3=crc` where `crc = (0x35 + 0x5C + len + cmd + lastPayloadByte) & 0xFF`. Cross-validated between the deobfuscated bundle and upstream source.
 - **Values are mm × 1000, little-endian u16.** Defaults observed: 4.0 mm max travel, 2.0 mm AP, 0.1 mm RT, 0.01 mm step.
 - **Per-key settings** are 4-byte records `[hidUsage, layoutId, lo, hi]` batched under cmd `0x23`; layout IDs: `0x04` AP, `0x14` RT press, `0x15` RT release, `0x08` working mode (RT enable), `0x16/0x17` safe zone.
 - **Global AP** via cmd `0x29`. Polling rate, profiles (`setConfig`), SOCD/DKS/advanced keys, lighting, and bootloader commands are all mapped (91 command templates decoded in `research/blob.json`).
-- **The board is self-describing:** `READ_DEFKEY_MATRIX` (cmd `0x2B`) returns the full 6×21 HID-usage matrix — no per-model layout file needed. Key addressing is standard USB HID usage codes.
+- **The board is self-describing:** `READ_DEFKEY_MATRIX` (cmd `0x2B`) returns the full 6×21 HID-usage matrix, so no per-model layout file is needed. Key addressing is standard USB HID usage codes.
 - Second VID possible: bundle also matches `0x1CAA:0x0806` (and `0x1CAA:0xFFF6/FFF8` for bootloader); our board enumerates as `0x3879:0x0806`. Match on either.
-- The vendor collection is usage page `0xFFA0`, usage `0x01` — `wh-device` must select the HID interface by usage page, not by interface number.
+- The vendor collection is usage page `0xFFA0`, usage `0x01`: `wh-device` must select the HID interface by usage page, not by interface number.
 
 **Remaining live-capture step (reduced scope):** everything above is static analysis, untested against hardware. Before first write: capture the web app's actual traffic for a handful of actions (Chrome `--remote-debugging-port` + `HIDDevice.prototype` logging shim) to confirm framing/CRC/scale byte-for-byte, and store as `captures/*.jsonl` golden fixtures. Cross-check rule stands: captures are authoritative.
 
@@ -133,7 +133,7 @@ Static analysis of the terminal.wallhack.com bundle succeeded beyond expectation
 
 - **Phase 1 (this spec):** discovery harness, `wh-proto`/`wh-device` foundation, `wh dump`, `wh get/set rt`, `wh get/set ap`, backup/restore, key-selection grammar, `--pick` TUI picker.
 - **Phase 2+ (separately specced, reusing the decoder):** profiles (`wh profile select/edit/save/apply`), knob configuration, keymap remapping, RGB, OS-layout binding.
-- **Note on per-profile macOS binding:** if firmware stores OS mode as a single board-wide value, per-profile behaviour will be emulated host-side — `wh profile select 2` writes profile 2's recorded OS mode before switching. Same observable behaviour; decided in Phase 2 once discovery shows what the firmware stores.
+- **Note on per-profile macOS binding:** if firmware stores OS mode as a single board-wide value, per-profile behaviour will be emulated host-side: `wh profile select 2` writes profile 2's recorded OS mode before switching. Same observable behaviour; decided in Phase 2 once discovery shows what the firmware stores.
 
 ## Risks
 
