@@ -623,8 +623,10 @@ mod tests {
     #[test]
     fn rt_off_records_sets_touch_mode_single_preserving_advanced_nibble() {
         // current mode byte 0x37: touch Rt(3), advanced nibble 7. rt_off_records must write
-        // touch Single(1), not Global(0): see rt_off_records' own doc comment, and chunk 3 of
-        // task 19b, for why nibble 0 would silently discard this key's per-key actuation point.
+        // touch Single(1), not Global(0): see rt_off_records' own doc comment for why. In short,
+        // `captures/rt-off-w.jsonl` shows the vendor writing nibble 1, not 0, in this exact
+        // transition, and matching that observed behaviour is the reason, not a measured effect
+        // of writing nibble 0, which remains untested.
         let lines = [
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
@@ -678,10 +680,12 @@ mod tests {
 
     /// Chunk 3's own regression test: on a key with a per-key actuation point (touch mode
     /// already `Single`, i.e. not even RT-enabled from this call's perspective), turning "RT
-    /// off" again must not silently coerce it to `Global` and thereby drop that AP. This is the
-    /// exact data-loss shape measured on the real device in `captures/rt-off-w.jsonl`.
+    /// off" again must leave it at `Single`, not coerce it to `Global`. `captures/rt-off-w.jsonl`
+    /// shows the vendor itself writing nibble 1, not 0, in this exact transition; matching that
+    /// observed behaviour is the reason, not a measured effect of nibble 0, which stays
+    /// unmeasured (see `rt_off_records`' own doc comment).
     #[test]
-    fn rt_off_records_writes_single_not_global_so_the_per_key_actuation_point_survives() {
+    fn rt_off_records_leaves_an_already_single_key_at_single_not_global() {
         let lines = [
             l("out", &cmds::read_key_layout(0x1A, layout::MODE)),
             l(
