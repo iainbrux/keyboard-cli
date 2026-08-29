@@ -133,8 +133,9 @@ wh.exe` finds the literal source paths `addr2line-0.25.1`, `gimli-0.32.3`, `obje
 unwinder that implements it, covered separately below). It also finds `hashbrown-0.16.1` and
 `memchr-2.7.6`: **these are not the same copies already listed in "Every crate in the binary"**,
 which lists whichever versions `wh`'s own `Cargo.lock` resolved (`hashbrown` 0.15.5/0.17.1, `memchr`
-2.8.3); the sysroot pins its own, older versions internally, so both end up in the binary twice, at
-different versions, for different reasons.
+2.8.3); the sysroot pins its own versions internally, distinct from either of `wh`'s (older, for
+`memchr` 2.7.6 against 2.8.3; in between the two resolved for `hashbrown`, 0.16.1 against 0.15.5 and
+0.17.1), so both end up in the binary twice, at different versions, for different reasons.
 
 Per the Rust Project's own `COPYRIGHT.html` (shipped beside every toolchain, `~/.rustup/toolchains/
 */share/doc/rust/COPYRIGHT.html` on this machine): "The Rust Project is dual-licensed under Apache
@@ -143,14 +144,24 @@ crates above, is listed explicitly: "License: Apache-2.0 OR MIT, Copyright: 2014
 Copyright: The Rust Project Developers." The same document lists `addr2line`, `gimli`, `object`, and
 `rustc-demangle` individually among its out-of-tree dependencies, each `Apache-2.0 OR MIT`. `std`,
 `core`, `alloc`, `compiler_builtins`, and `panic_unwind` are themselves in-tree Rust Project source,
-also `Apache-2.0 OR MIT`, `Copyright: The Rust Project Developers`. `miniz_oxide` and `adler2` are
-part of the same `library/backtrace` dependency graph as the crates confirmed above, also each
-`Apache-2.0 OR MIT` (`adler2` additionally offers 0BSD, a strictly more permissive third option this
-project has no need to elect).
+also `Apache-2.0 OR MIT`, `Copyright: The Rust Project Developers`, **with one named exception**:
+`library/core/src/unicode/unicode_data.rs` is `License: Unicode-3.0, Copyright: 1991-2024 Unicode,
+Inc`, per that same `COPYRIGHT.html`'s own list of in-tree exceptions, and is confirmed compiled in,
+not merely possible in general: `strings` on the released binary finds
+`_ZN4core7unicode12unicode_data10alphabetic7OFFSETS`, `..._data11conversions8to_lower`,
+`..._data11white_space14WHITESPACE_MAP`, `..._data14case_ignorable7OFFSETS`, and
+`..._data15grapheme_extend7OFFSETS`. No separate notice is needed for it: `unicode-ident` (see above)
+already carries the Unicode-3.0 text into this document, reproduced below along with its own entry;
+this paragraph exists to name the exception rather than let the surrounding "also Apache-2.0 OR MIT"
+read as covering that one file too, which it does not. `miniz_oxide` and `adler2` are part of the
+same `library/backtrace` dependency graph as the crates confirmed above, also each `Apache-2.0 OR
+MIT` (`adler2` additionally offers 0BSD, a strictly more permissive third option this project has no
+need to elect).
 
-The licence bodies are the same generic Apache-2.0 and MIT texts already reproduced above as Text 1
-and Text 2; nothing here needs its own copy of either. What differs per component is only the
-copyright holder, named above for each.
+The licence bodies (other than the named Unicode-3.0 exception, covered by `unicode-ident`'s own
+entry) are the same generic Apache-2.0 and MIT texts already reproduced above as Text 1 and Text 2;
+nothing here needs its own copy of either. What differs per component is only the copyright holder,
+named above for each.
 
 ### The mingw-w64 C runtime
 
@@ -277,62 +288,74 @@ GCC RUNTIME LIBRARY EXCEPTION
 
 Version 3.1, 31 March 2009
 
-Copyright (c) 2009 Free Software Foundation, Inc. <https://fsf.org/>
+Copyright (C) 2009 Free Software Foundation, Inc. <http://fsf.org/>
 
-Everyone is permitted to copy and distribute verbatim copies of this license document, but changing
-it is not allowed.
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
 
-This GCC Runtime Library Exception ("Exception") is an additional permission under section 7 of the
-GNU General Public License, version 3 ("GPLv3"). It applies to a given file (the "Runtime Library")
-that bears a notice placed by the copyright holder of the file stating that the file is governed by
-GPLv3 along with this Exception.
+This GCC Runtime Library Exception ("Exception") is an additional
+permission under section 7 of the GNU General Public License, version
+3 ("GPLv3"). It applies to a given file (the "Runtime Library") that
+bears a notice placed by the copyright holder of the file stating that
+the file is governed by GPLv3 along with this Exception.
 
-When you use GCC to compile a program, GCC may combine portions of certain GCC header files and
-runtime libraries with the compiled program. The purpose of this Exception is to allow compilation
-of non-GPL (including proprietary) programs to use, in this way, the header files and runtime
-libraries covered by this Exception.
+When you use GCC to compile a program, GCC may combine portions of
+certain GCC header files and runtime libraries with the compiled
+program. The purpose of this Exception is to allow compilation of
+non-GPL (including proprietary) programs to use, in this way, the
+header files and runtime libraries covered by this Exception.
 
 0. Definitions.
 
-A file is an "Independent Module" if it either requires the Runtime Library for execution after a
-Compilation Process, or makes use of an interface provided by the Runtime Library, but is not
-otherwise based on the Runtime Library.
+A file is an "Independent Module" if it either requires the Runtime
+Library for execution after a Compilation Process, or makes use of an
+interface provided by the Runtime Library, but is not otherwise based
+on the Runtime Library.
 
-"GCC" means a version of the GNU Compiler Collection, with or without modifications, governed by
-version 3 (or a specified later version) of the GNU General Public License (GPL) with the option of
-using any subsequent versions published by the FSF.
+"GCC" means a version of the GNU Compiler Collection, with or without
+modifications, governed by version 3 (or a specified later version) of
+the GNU General Public License (GPL) with the option of using any
+subsequent versions published by the FSF.
 
-"GPL-compatible Software" is software whose conditions of propagation, modification and use would
-permit combination with GCC in accord with the license of GCC.
+"GPL-compatible Software" is software whose conditions of propagation,
+modification and use would permit combination with GCC in accord with
+the license of GCC.
 
-"Target Code" refers to output from any compiler for a real or virtual target processor
-architecture, in executable form or suitable for input to an assembler, loader, linker and/or
-execution phase. Notwithstanding that, Target Code does not include data in any format that is used
-as a compiler intermediate representation, or used for producing a compiler intermediate
-representation.
+"Target Code" refers to output from any compiler for a real or virtual
+target processor architecture, in executable form or suitable for
+input to an assembler, loader, linker and/or execution
+phase. Notwithstanding that, Target Code does not include data in any
+format that is used as a compiler intermediate representation, or used
+for producing a compiler intermediate representation.
 
-The "Compilation Process" transforms code entirely represented in non-intermediate languages
-designed for human-written code, and/or in Java Virtual Machine byte code, into Target Code. Thus,
-for example, use of source code generators and preprocessors need not be considered part of the
-Compilation Process, since the Compilation Process can be understood as starting with the output of
-the generators or preprocessors.
+The "Compilation Process" transforms code entirely represented in
+non-intermediate languages designed for human-written code, and/or in
+Java Virtual Machine byte code, into Target Code. Thus, for example,
+use of source code generators and preprocessors need not be considered
+part of the Compilation Process, since the Compilation Process can be
+understood as starting with the output of the generators or
+preprocessors.
 
-A Compilation Process is "Eligible" if it is done using GCC, alone or with other GPL-compatible
-software, or if it is done without using any work based on GCC. For example, using non-GPL-compatible
-Software to optimize any GCC intermediate representations would not qualify as an Eligible
-Compilation Process.
+A Compilation Process is "Eligible" if it is done using GCC, alone or
+with other GPL-compatible software, or if it is done without using any
+work based on GCC. For example, using non-GPL-compatible Software to
+optimize any GCC intermediate representations would not qualify as an
+Eligible Compilation Process.
 
 1. Grant of Additional Permission.
 
-You have permission to propagate a work of Target Code formed by combining the Runtime Library with
-Independent Modules, even if such propagation would otherwise violate the terms of GPLv3, provided
-that all Target Code was generated by Eligible Compilation Processes. You may then convey such a
-combination under terms of your choice, consistent with the licensing of the Independent Modules.
+You have permission to propagate a work of Target Code formed by
+combining the Runtime Library with Independent Modules, even if such
+propagation would otherwise violate the terms of GPLv3, provided that
+all Target Code was generated by Eligible Compilation Processes. You
+may then convey such a combination under terms of your choice,
+consistent with the licensing of the Independent Modules.
 
 2. No Weakening of GCC Copyleft.
 
-The availability of this Exception does not imply any general presumption that third-party software
-is unaffected by the copyleft requirements of the license of GCC.
+The availability of this Exception does not imply any general
+presumption that third-party software is unaffected by the copyleft
+requirements of the license of GCC.
 ```
 
 Checked for completeness: `strings target/x86_64-pc-windows-gnu/release/wh.exe | grep -i 'general
@@ -445,12 +468,15 @@ those permissive options applies; both texts are reproduced so the notice is com
 ## Licence texts
 
 Deduplicated: 50 distinct texts cover the crates above. No copyright line, holder, or condition was
-altered in any of them. They are reproduced with each line's leading and trailing whitespace
-normalised (stripped) rather than strictly verbatim: the generator that produced this section strips
-that whitespace, which loses centring and indentation on a handful of texts (for example, Text 1's
-own "Apache License" title line is centred and indented in the upstream file; the substance below it
-is unaffected). One file whose line endings were CRLF was also normalised to LF when merged into this
-document. Neither affects any text's legal content.
+altered in any of them, and this is not a claim that only a handful of characters changed overall:
+the generator that produced this section strips each whole text as one block, which only ever
+touches that text's first line (removing leading whitespace there) and its last line (removing
+trailing whitespace there); every other line, including indentation and centring in the middle of a
+text, is untouched. Text 1 is the concrete example: its "Apache License" title line lost the
+centring and indentation the upstream file gives it, but the very next line, "Version 2.0, January
+2004", still carries its own original indentation, because stripping the block as a whole only ever
+reaches its first and last lines. One file whose line endings were CRLF was also normalised to LF
+when merged into this document. None of this affects any text's legal content.
 
 ### Text 1
 

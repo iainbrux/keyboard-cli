@@ -129,9 +129,9 @@ The crates.io dependencies `wh` builds against are **not** covered by the entrie
 their own file: `THIRD_PARTY_LICENSES.md`, which lists all 90 crates linked into the released
 `wh.exe` from the crates.io dependency graph, plus a separate section for the Rust standard
 library's own runtime and the mingw-w64 C runtime, neither of which is a crates.io dependency and so
-neither would show up from a dependency-graph walk alone. Licence texts are reproduced with each
-line's leading and trailing whitespace normalised, not byte-for-byte verbatim; that file's own
-"Licence texts" section explains exactly what that means.
+neither would show up from a dependency-graph walk alone. Each licence text is reproduced with only
+its own first and last line's leading and trailing whitespace stripped, not altered line by line;
+that file's own "Licence texts" section explains exactly what that means and why.
 
 That file exists because publishing a binary distributes those crates in compiled form, which makes
 their notice requirements live. An earlier version of this file stated that no such obligation was
