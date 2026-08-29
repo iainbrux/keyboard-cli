@@ -113,6 +113,18 @@ pub fn write_key_records(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
         .collect()
 }
 
+/// The same records, but one per report instead of batched.
+///
+/// Measured: the vendor batches every value layout up to the 14-record limit, and writes keyset
+/// membership (`0xff`, `0xfe`) strictly one record per frame, never batched, in every capture that
+/// touches it. This exists so membership can match that without callers hand-rolling the chunking.
+pub fn write_key_records_singly(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
+    records
+        .iter()
+        .map(|r| write_key_records(std::slice::from_ref(r))[0])
+        .collect()
+}
+
 /// cmdLayout with rw=read: single [key, layout, 0, 0] record.
 pub fn read_key_layout(key: u8, layout_id: u8) -> [u8; REPORT_LEN] {
     frame(cmd::KEY, &[RW_READ, key, layout_id, 0, 0]).expect("5 bytes")
@@ -494,6 +506,30 @@ mod tests {
         assert_eq!(&frames[0][5..9], &[0x04, layout::RT_PRESS, 0xF4, 0x01]);
         // second frame: 1 + 6*4 = 25
         assert_eq!(frames[1][1], 25);
+    }
+
+    /// Membership must go one record per frame. A batched write here would be a silent
+    /// divergence from every capture that writes `0xff` or `0xfe`.
+    #[test]
+    fn write_key_records_singly_emits_one_frame_per_record() {
+        let recs = vec![
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_AP,
+                value: 6,
+            },
+            KeyRecord {
+                key: 0x0A,
+                layout: layout::KEYSET_AP,
+                value: 6,
+            },
+        ];
+        let frames = write_key_records_singly(&recs);
+        assert_eq!(frames.len(), 2, "one frame per record, never batched");
+        for (f, r) in frames.iter().zip(&recs) {
+            assert_eq!(f[1], 5, "rw byte plus exactly one 4-byte record");
+            assert_eq!(&f[4..9], &[RW_WRITE, r.key, r.layout, r.value as u8, 0]);
+        }
     }
 
     #[test]
