@@ -74,17 +74,37 @@ pub fn group(m: &Membership) -> Vec<Keyset> {
     keysets
 }
 
-/// The next index to allocate: the highest live membership value plus one, or `1` when no key
-/// holds any. `u16::MAX` is a valid *output* (reached when the highest live value is
-/// `u16::MAX - 1`); only allocating *past* it, when `u16::MAX` is already live, errors instead of
-/// wrapping to `0`.
-pub fn next_index(m: &Membership) -> Result<u16, DeviceError> {
-    let max = m.entries.iter().map(|&(_, v)| v).filter(|&v| v != 0).max();
-    match max {
-        None => Ok(1),
-        Some(u16::MAX) => Err(DeviceError::KeysetIndexExhausted),
-        Some(v) => Ok(v + 1),
+/// A keyset index and the layout it was allocated from, so an index taken from one counter
+/// cannot be written to the other layout without `plan` or `global_ap`/`global_rt` catching it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeysetIndex {
+    pub kind: Kind,
+    pub value: u16,
+}
+
+impl KeysetIndex {
+    /// The value that clears membership (`0`) for `kind`, named so a caller doesn't have to
+    /// spell out the zero itself.
+    pub fn clear(kind: Kind) -> Self {
+        KeysetIndex { kind, value: 0 }
     }
+}
+
+/// The next index to allocate: the highest live membership value plus one, or `1` when no key
+/// holds any, carrying `m`'s own kind forward. `u16::MAX` is a valid *output* (reached when the
+/// highest live value is `u16::MAX - 1`); only allocating *past* it, when `u16::MAX` is already
+/// live, errors instead of wrapping to `0`.
+pub fn next_index(m: &Membership) -> Result<KeysetIndex, DeviceError> {
+    let max = m.entries.iter().map(|&(_, v)| v).filter(|&v| v != 0).max();
+    let value = match max {
+        None => 1,
+        Some(u16::MAX) => return Err(DeviceError::KeysetIndexExhausted),
+        Some(v) => v + 1,
+    };
+    Ok(KeysetIndex {
+        kind: m.kind,
+        value,
+    })
 }
 
 /// What an operation does to a key's touch nibble. Internal representation only: a `Change` is
@@ -136,12 +156,24 @@ pub struct Change {
 
 impl Change {
     /// An actuation point operation: set every member's `0x04` to `value`. MODE is not owned by
-    /// this operation, so it rewrites at whatever the key already reads; chain
-    /// `promoting_global` if a `Global` key should be promoted to `Single` first.
+    /// this operation, so it rewrites at whatever the key already reads. Use
+    /// `ap_promoting_global` instead if a `Global` key should be promoted to `Single` first.
     pub fn ap(value: Um) -> Self {
         Change {
             kind: Kind::Ap,
             touch: TouchChange::Keep,
+            ap: Some(value),
+            rt: None,
+        }
+    }
+
+    /// An actuation point operation that also promotes a key still following global travel from
+    /// `Global` to `Single`. Whether the vendor does this is unmeasured; the promotion is the
+    /// non-destructive default rather than leaving a key silently detached from global travel.
+    pub fn ap_promoting_global(value: Um) -> Self {
+        Change {
+            kind: Kind::Ap,
+            touch: TouchChange::PromoteGlobalToSingle,
             ap: Some(value),
             rt: None,
         }
@@ -179,13 +211,10 @@ impl Change {
         }
     }
 
-    /// Promotes `Global` to `Single`, meant to chain onto `Change::ap`, for a key that still
-    /// follows global travel. Unmeasured whether the vendor does this on a fresh actuation point
-    /// keyset; kept as the non-destructive default rather than leaving a key silently detached
-    /// from global travel with no record of the promotion.
-    pub fn promoting_global(mut self) -> Self {
-        self.touch = TouchChange::PromoteGlobalToSingle;
-        self
+    /// Which kind of keyset this operation belongs to, so a caller can check it against a
+    /// `KeysetIndex` before pairing them, the way `plan` itself does.
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 }
 
@@ -215,9 +244,10 @@ impl WritePlan {
 }
 
 /// Reads every key in `usages`, applies `change`, and builds the plan. Sends only reads, so a
-/// caller can dry run. `membership` is `Some(index)` to write that index, to the layout
-/// `change`'s own kind picks, to every key in `usages` (`0` clears); `None` leaves membership
-/// untouched.
+/// caller can dry run. `membership` is `Some(index)` to write that index to every key in
+/// `usages` (`KeysetIndex::clear` clears); `None` leaves membership untouched. Errors, before
+/// sending anything, if `membership`'s kind doesn't match `change`'s: an index allocated from
+/// one counter must never be written to the other layout.
 ///
 /// Reads all six of `read_key_settings`'s layouts per key, though only four feed
 /// `value_records`: the other two land in `before`'s `ap_keyset`/`rt_keyset`, so a caller can
@@ -235,8 +265,17 @@ pub fn plan<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
     change: &Change,
-    membership: Option<u16>,
+    membership: Option<KeysetIndex>,
 ) -> Result<WritePlan, DeviceError> {
+    if let Some(idx) = membership {
+        if idx.kind != change.kind {
+            return Err(DeviceError::KeysetKindMismatch {
+                expected: change.kind,
+                found: idx.kind,
+            });
+        }
+    }
+
     let mut value_records = Vec::new();
     let mut before = Vec::with_capacity(usages.len());
 
@@ -291,12 +330,12 @@ pub fn plan<T: Transport>(
     // Every key in `usages` gets a membership record, even one already at `index`: whether the
     // vendor skips such a key is unmeasured, and an unconditional rewrite is non-destructive.
     let membership_records = match membership {
-        Some(index) => usages
+        Some(idx) => usages
             .iter()
             .map(|&u| KeyRecord {
                 key: u,
-                layout: change.kind.layout(),
-                value: index,
+                layout: idx.kind.layout(),
+                value: idx.value,
             })
             .collect(),
         None => Vec::new(),
@@ -352,7 +391,7 @@ fn summarize<T: PartialEq>(values: Vec<T>) -> Global<T> {
 }
 
 /// The board's actuation point outside any keyset: layout `0x04` read from every key `m` holds
-/// no membership for.
+/// no membership for. Errors if `m` isn't `Kind::Ap` membership.
 ///
 /// The vendor's own method for finding this is unmeasured: it reads `0x04` from five fixed keys
 /// (`0x29`, `0xfa`, `0x31`, `0x28`, `0x52`) at the head of every capture, one of which was in a
@@ -363,6 +402,12 @@ pub fn global_ap<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
 ) -> Result<Global<Um>, DeviceError> {
+    if m.kind != Kind::Ap {
+        return Err(DeviceError::KeysetKindMismatch {
+            expected: Kind::Ap,
+            found: m.kind,
+        });
+    }
     let mut values = Vec::new();
     for &(usage, membership) in &m.entries {
         if membership != 0 {
@@ -374,12 +419,18 @@ pub fn global_ap<T: Transport>(
 }
 
 /// The global rapid trigger sensitivity, read the same way from `0x14`/`0x15` of every key `m`
-/// holds no rapid trigger membership for. See `global_ap` for the same honest limit: the
-/// vendor's own method is unmeasured.
+/// holds no rapid trigger membership for. Errors if `m` isn't `Kind::Rt` membership. See
+/// `global_ap` for the same honest limit: the vendor's own method is unmeasured.
 pub fn global_rt<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
 ) -> Result<Global<(Um, Um)>, DeviceError> {
+    if m.kind != Kind::Rt {
+        return Err(DeviceError::KeysetKindMismatch {
+            expected: Kind::Rt,
+            found: m.kind,
+        });
+    }
     let mut values = Vec::new();
     for &(usage, membership) in &m.entries {
         if membership != 0 {
@@ -458,25 +509,64 @@ mod tests {
     #[test]
     fn next_index_with_no_members_is_one() {
         let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0)]);
-        assert_eq!(next_index(&m).unwrap(), 1);
+        assert_eq!(
+            next_index(&m).unwrap(),
+            KeysetIndex {
+                kind: Kind::Ap,
+                value: 1
+            }
+        );
     }
 
     #[test]
     fn next_index_is_max_plus_one() {
         let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 2)]);
-        assert_eq!(next_index(&m).unwrap(), 3);
+        assert_eq!(
+            next_index(&m).unwrap(),
+            KeysetIndex {
+                kind: Kind::Ap,
+                value: 3
+            }
+        );
     }
 
     #[test]
     fn next_index_skips_a_freed_gap_rather_than_filling_it() {
         let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 2), (0x06, 4)]);
-        assert_eq!(next_index(&m).unwrap(), 5);
+        assert_eq!(
+            next_index(&m).unwrap(),
+            KeysetIndex {
+                kind: Kind::Ap,
+                value: 5
+            }
+        );
     }
 
     #[test]
     fn next_index_reaches_u16_max_as_a_valid_output() {
         let m = membership(Kind::Ap, &[(0x04, u16::MAX - 1)]);
-        assert_eq!(next_index(&m).unwrap(), u16::MAX);
+        assert_eq!(
+            next_index(&m).unwrap(),
+            KeysetIndex {
+                kind: Kind::Ap,
+                value: u16::MAX
+            }
+        );
+    }
+
+    /// `next_index` must carry the `Membership`'s own kind forward, not default to `Kind::Ap`:
+    /// every other test in this block uses a `Kind::Ap` membership, so none of them could catch
+    /// a `KeysetIndex` that always reported `Ap` regardless of what was asked.
+    #[test]
+    fn next_index_carries_the_memberships_own_kind() {
+        let m = membership(Kind::Rt, &[(0x04, 1)]);
+        assert_eq!(
+            next_index(&m).unwrap(),
+            KeysetIndex {
+                kind: Kind::Rt,
+                value: 2
+            }
+        );
     }
 
     #[test]
@@ -523,7 +613,7 @@ mod tests {
     // -- read_membership --
 
     #[test]
-    fn read_membership_reads_each_usage_for_the_given_kind_layout() {
+    fn read_membership_reads_the_rt_layout_for_kind_rt() {
         let mut lines = Vec::new();
         lines.extend(read_reply(0x04, layout::KEYSET_RT, 1));
         lines.extend(read_reply(0x05, layout::KEYSET_RT, 0));
@@ -531,6 +621,20 @@ mod tests {
         let got = read_membership(&mut s, &[0x04, 0x05], Kind::Rt).unwrap();
         assert_eq!(got.kind, Kind::Rt);
         assert_eq!(got.entries, vec![(0x04, 1), (0x05, 0)]);
+        assert!(s.into_inner().finished());
+    }
+
+    /// `ReplayTransport` matches the outgoing frame byte for byte, so this fails if
+    /// `read_membership` asked for any layout byte but `0xFF`, the actuation point one.
+    #[test]
+    fn read_membership_reads_the_ap_layout_for_kind_ap() {
+        let mut lines = Vec::new();
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 3));
+        lines.extend(read_reply(0x05, layout::KEYSET_AP, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let got = read_membership(&mut s, &[0x04, 0x05], Kind::Ap).unwrap();
+        assert_eq!(got.kind, Kind::Ap);
+        assert_eq!(got.entries, vec![(0x04, 3), (0x05, 0)]);
         assert!(s.into_inner().finished());
     }
 
@@ -579,15 +683,78 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
+    /// Reads `0x04` from every key in a rapid trigger `Membership` would be a bug wearing a
+    /// working test: rejected before any frame is sent, not just before the count is trusted.
+    #[test]
+    fn global_ap_rejects_a_rapid_trigger_membership() {
+        let m = membership(Kind::Rt, &[(0x04, 1), (0x05, 0)]);
+        let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
+        let err = global_ap(&mut s, &m).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DeviceError::KeysetKindMismatch {
+                    expected: Kind::Ap,
+                    found: Kind::Rt
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(s.into_inner().finished());
+    }
+
     #[test]
     fn global_rt_agrees_when_every_unkeyset_key_reads_the_same_value() {
-        let m = membership(Kind::Rt, &[(0x04, 1), (0x05, 0)]);
+        // Two keys outside a keyset, not one: with only one, reading just the first is
+        // indistinguishable from reading all of them, which is the coverage gap this replaces.
+        let m = membership(Kind::Rt, &[(0x04, 1), (0x05, 0), (0x06, 0)]);
         let mut lines = read_reply(0x05, layout::RT_PRESS, 100);
         lines.extend(read_reply(0x05, layout::RT_RELEASE, 150));
+        lines.extend(read_reply(0x06, layout::RT_PRESS, 100));
+        lines.extend(read_reply(0x06, layout::RT_RELEASE, 150));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         assert_eq!(
             global_rt(&mut s, &m).unwrap(),
             Global::Agreed((Um(100), Um(150)))
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The `global_ap` split regression, mirrored for rapid trigger sensitivity: reading only
+    /// the first unkeyset key would report one key's own sensitivity as though every unkeyset
+    /// key agreed.
+    #[test]
+    fn global_rt_splits_when_unkeyset_keys_disagree() {
+        let m = membership(Kind::Rt, &[(0x04, 0), (0x05, 0), (0x06, 0)]);
+        let mut lines = read_reply(0x04, layout::RT_PRESS, 50);
+        lines.extend(read_reply(0x04, layout::RT_RELEASE, 60));
+        lines.extend(read_reply(0x05, layout::RT_PRESS, 100));
+        lines.extend(read_reply(0x05, layout::RT_RELEASE, 150));
+        lines.extend(read_reply(0x06, layout::RT_PRESS, 100));
+        lines.extend(read_reply(0x06, layout::RT_RELEASE, 150));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        assert_eq!(
+            global_rt(&mut s, &m).unwrap(),
+            Global::Split(vec![((Um(100), Um(150)), 2), ((Um(50), Um(60)), 1)])
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The `global_ap` rejection, mirrored: an actuation point `Membership` into `global_rt`.
+    #[test]
+    fn global_rt_rejects_an_actuation_point_membership() {
+        let m = membership(Kind::Ap, &[(0x04, 1), (0x05, 0)]);
+        let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
+        let err = global_rt(&mut s, &m).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DeviceError::KeysetKindMismatch {
+                    expected: Kind::Rt,
+                    found: Kind::Ap
+                }
+            ),
+            "got {err:?}"
         );
         assert!(s.into_inner().finished());
     }
@@ -600,7 +767,11 @@ mod tests {
         let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let change = Change::ap(Um(2000));
-        let plan = plan(&mut s, &[0x1A], &change, Some(3)).unwrap();
+        let idx = KeysetIndex {
+            kind: Kind::Ap,
+            value: 3,
+        };
+        let plan = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap();
         assert_eq!(plan.value_records, vec![]);
         assert_eq!(
             plan.membership_records,
@@ -770,7 +941,11 @@ mod tests {
         let lines = settings_script(0x1A, 2000, 0x30, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let change = Change::rt_on(Um(100), Um(150));
-        let plan = plan(&mut s, &[0x1A], &change, Some(2)).unwrap();
+        let idx = KeysetIndex {
+            kind: Kind::Rt,
+            value: 2,
+        };
+        let plan = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap();
         assert_eq!(plan.value_records, vec![]);
         assert_eq!(
             plan.membership_records,
@@ -779,6 +954,30 @@ mod tests {
                 layout: layout::KEYSET_RT,
                 value: 2
             }]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// A rapid trigger `Change` paired with an actuation point `KeysetIndex` must be rejected,
+    /// and rejected before any frame is sent: the empty script would reject any send at all.
+    #[test]
+    fn plan_rejects_membership_from_the_wrong_kind() {
+        let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
+        let change = Change::rt_on(Um(100), Um(150));
+        let idx = KeysetIndex {
+            kind: Kind::Ap,
+            value: 3,
+        };
+        let err = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DeviceError::KeysetKindMismatch {
+                    expected: Kind::Rt,
+                    found: Kind::Ap
+                }
+            ),
+            "got {err:?}"
         );
         assert!(s.into_inner().finished());
     }
@@ -904,7 +1103,7 @@ mod tests {
         // touch Global(0), advanced 7, high 0x02: 0x0207. Promotion changes only the nibble.
         let lines = settings_script(0x1A, 2000, 0x0207, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let change = Change::ap(Um(2000)).promoting_global();
+        let change = Change::ap_promoting_global(Um(2000));
         let p = plan(&mut s, &[0x1A], &change, None).unwrap();
         assert_eq!(
             p.value_records,

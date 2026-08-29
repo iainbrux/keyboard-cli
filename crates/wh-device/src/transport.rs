@@ -1,3 +1,4 @@
+use crate::keyset::Kind;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +30,12 @@ pub enum DeviceError {
     /// index left to hand out.
     #[error("cannot allocate a new keyset index: u16::MAX is already in use")]
     KeysetIndexExhausted,
+    /// A caller passed membership or an index for the wrong keyset kind, e.g. an actuation
+    /// point `Membership` into `global_rt`, or an index allocated from one counter written
+    /// through a `plan` for the other. A caller error, caught before any frame is sent, not
+    /// anything the device said.
+    #[error("keyset kind mismatch: expected {expected:?}, got {found:?}")]
+    KeysetKindMismatch { expected: Kind, found: Kind },
     // `source` isn't interpolated into the message: thiserror wires it into
     // `Error::source()`, and `main.rs`'s anyhow `{e:#}` already walks that chain, so the
     // cause text would otherwise print twice.
