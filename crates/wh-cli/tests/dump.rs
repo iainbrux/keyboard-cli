@@ -325,7 +325,7 @@ fn dump_table_flag_prints_the_human_table() {
 }
 
 /// The table's two new columns: `apks` and `rtks`, printing the raw keyset value ('w' has AP
-/// keyset 1) or `-` for no keyset (both of 'a's, and 'w's RT keyset).
+/// keyset 1) or `-` for the value read outside any keyset (both of 'a's, and 'w's RT keyset).
 #[test]
 fn dump_table_prints_the_keyset_columns() {
     let path = write_script("dump-table-keyset", &build_script());

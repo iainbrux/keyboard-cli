@@ -81,8 +81,9 @@ pub(crate) fn key_label(usage: u8) -> String {
         .unwrap_or_else(|| format!("0x{usage:02X}"))
 }
 
-/// Renders a raw keyset value for display: `0` (no keyset) as `-`, anything else as its decimal
-/// index verbatim, since whether the wire value is a boolean or an index is unmeasured.
+/// Renders a raw keyset value for display: `0`, the value read outside any keyset, as `-`,
+/// anything else as its decimal index verbatim, since whether the wire value is a boolean or an
+/// index is unmeasured.
 fn keyset_display(v: u16) -> String {
     if v == 0 {
         "-".to_string()
@@ -92,7 +93,8 @@ fn keyset_display(v: u16) -> String {
 }
 
 /// The `" keyset N"` / `" keyset none"` suffix `wh get ap`/`wh get rt` appends, from the raw
-/// keyset value: `0` means no keyset, anything else is printed as its decimal index verbatim.
+/// keyset value: `0`, the value read outside any keyset, prints as "none"; anything else prints
+/// as its decimal index verbatim.
 fn keyset_suffix(v: u16) -> String {
     if v == 0 {
         " keyset none".to_string()

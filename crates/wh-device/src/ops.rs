@@ -12,7 +12,8 @@ pub struct KeySettings {
     pub mode: Mode,
     pub rt_press: Um,
     pub rt_release: Um,
-    /// Raw layout `0xFF` and `0xFE` values, uninterpreted. 0 means the key is in no keyset.
+    /// Raw layout `0xFF` and `0xFE` values, uninterpreted. `0` is the value read for keys the
+    /// vendor UI showed outside any keyset.
     pub ap_keyset: u16,
     pub rt_keyset: u16,
 }

@@ -274,15 +274,15 @@ browser. Two per-key layouts hold them:
 
 | Layout | Meaning | Evidence |
 |---|---|---|
-| `0xFF` | Actuation point keyset index. `0` means the key is in none | reads `1` for `w,a,s,d` and `2` for `esc`, matching both entries the vendor UI displayed |
+| `0xFF` | Read `210` times, written `0`, across 1224 frames. Inferred as the actuation point keyset index; not measured as a write | reads `1` for `w,a,s,d` and `2` for `esc`, matching both entries the vendor UI displayed. What `0` denotes is not established, only that it is the value read for keys the UI showed outside either keyset |
 | `0xFE` | Rapid trigger keyset membership | written `1` when an RT keyset was created on `w`, `0` when deleted |
 
 Confirmed from the other side too: the operator inspected the vendor site's browser storage and found
 five keys, none keyset-related, so there is nowhere else for this state to live.
 
 **Why our writes render greyed.** `wh set ap --keys f` writes F's actuation point and leaves
-`f.0xFF = 0`, so the board holds a per-key value belonging to no keyset and the UI shows it as an
-orphan. Writing the index alongside the value fixes it.
+`f.0xFF` at `0`, the value read for keys the UI showed outside any keyset. Writing the index
+alongside the value fixes it.
 
 **A keyset has no name.** The UI's labels, `W,A,S,D` and `ESC`, are just the member list. Nothing on
 the board carries a name and nothing in browser storage does either, so a keyset is exactly "the keys
@@ -300,36 +300,34 @@ matched the keyset count exactly.
 
 ### Listing backups, and what `--last` should mean
 
-**The problem.** There is no `wh backups list`, and a manual `wh backup` is indistinguishable from the
-automatic one every write takes before it writes. So `wh restore --last` means "undo the last
-command", not "return to where I started".
+**Resolved, shipped as `docs/tasks.md` 2.6.** `wh backups list` exists now and names what took each
+snapshot. Kept for the history below.
+
+**The problem, as it stood before 2.6.** `wh backup` was indistinguishable from the automatic backup
+every write takes before it writes, and there was no way to list either. So `wh restore --last` meant
+"undo the last command", not "return to where I started".
 
 **How it showed up.** During the hardware session the sequence was: manual backup, `set rt`, `set ap`,
 `restore --last`. That restored the auto-backup taken immediately before `set ap`, which already had
 the rapid trigger change in it. The tool named the snapshot it used and restored it exactly, and 68
 keys verified, but it briefly read as a restore bug.
 
-**What it needs.** At minimum a way to list backups with their timestamps and a marker for manual
-versus automatic. Possibly `--last` should prefer the last manual backup, or there should be a
-separate flag for each meaning. Worth deciding deliberately rather than by accident.
+**What shipped.** `wh backups list` shows each snapshot's timestamp and origin, naming the exact
+command that took it (`manual`, `set rt`, `restore`, and so on). `--last` still means "the most
+recent snapshot, whatever took it": a deliberate decision, not an oversight, so it stays predictable
+across commands.
 
 ### Deleting or renaming a stored key group
 
-**The problem.** `wh keys group <name> <selector>` creates a group, and nothing removes one. That
-became visible when four board-function key names (`ap`, `rt`, `play`, `light`) were added to the key
-table: a group created under one of those names before the change is now refused by the selector,
-correctly, because a bare name that is both a key and a stored group is ambiguous and writing to the
-wrong key on hardware is unacceptable. But the operator's only recovery is to read the group's
-members off `wh keys list` and retype them under a new name, because `wh keys group` cannot delete
-and cannot rename.
+**Resolved, shipped as `docs/tasks.md` 2.7.** `wh keys ungroup` and `wh keys rename` exist now. Kept
+for the history below.
 
-**What it needs.** A delete, and probably a rename. The awkward part is that a group whose name
-collides is exactly the one you most want to remove, and any command that takes the group's name as a
-selector will hit the same ambiguity guard, so the delete has to address the group by name in a
-position that is unambiguously a group, not a selector.
-
-**Deliberately deferred.** It is a new CLI surface, and it was found during a task of protocol
-corrections where adding one would have been unreviewed scope creep.
+**The problem, as it stood before 2.7.** `wh keys group <name> <selector>` creates a group, and
+nothing removed one. That became visible when four board-function key names (`ap`, `rt`, `play`,
+`light`) were added to the key table: a group created under one of those names before the change was
+refused by the selector, correctly, because a bare name that is both a key and a stored group is
+ambiguous and writing to the wrong key on hardware is unacceptable. But the operator's only recovery
+was to read the group's members off `wh keys list` and retype them under a new name.
 
 ### A loading spinner on CLI commands
 
@@ -443,8 +441,9 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   trigger change and **never once observed non-zero**. Purpose unknown.
 - `0x19`, 700 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
   Purpose unknown.
-- `0xFF` is the **actuation point keyset index** and `0xFE` the **rapid trigger keyset membership**.
-  Both measured; see the keyset entry above.
+- `0xFE` is the **rapid trigger keyset membership**, measured from write evidence. `0xFF` is
+  **inferred** as the actuation point keyset index, from read correlation only: read `210` times,
+  written `0`. See the keyset entry above.
 
 ### One key identity still inferred
 

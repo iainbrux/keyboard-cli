@@ -62,7 +62,9 @@ about the error names the browser.
 
 ## Commands
 
-Read the whole board configuration:
+Read the whole board configuration. The default is JSON; `--table` prints a human-readable table,
+now with two extra columns, `apks` and `rtks`, for each key's raw actuation point and rapid trigger
+keyset value (`-` for the value read outside any keyset):
 
 ```
 wh dump
@@ -80,12 +82,24 @@ wh get ap --keys wasd
 wh set ap --keys wasd --set 1.2
 ```
 
+`wh get rt`/`wh get ap` also print the key's raw keyset value as a suffix, `keyset N` or
+`keyset none`.
+
 Key selectors accept comma-separated names, contiguous runs typed as one word (`wasd`), ranges
-(`a-f`), negation (`all,!space`), and user-defined groups (`wh keys group fps "w,a,s,d,space"`,
-then `--keys fps`). `wh keys list` shows every known key name and stored group. A range is a range
-over `wh-proto`'s own key table, not the physical layout, so `f1-f12` parses but resolves to nothing
-on this board: the K-001 is 68 keys with no F row, and `wh keys list` is the source of truth for
-what actually exists to select.
+(`a-f`), negation (`all,!space`), user-defined groups (`wh keys group fps "w,a,s,d,space"`, then
+`--keys fps`), and a hex usage for a key with no name (`0x01`, as `wh keys list` prints it, typed
+back into any selector). `wh keys list` shows every known key name and stored group. A range is a
+range over `wh-proto`'s own key table, not the physical layout, so `f1-f12` parses but resolves to
+nothing on this board: the K-001 is 68 keys with no F row, and `wh keys list` is the source of truth
+for what actually exists to select.
+
+Manage stored groups:
+
+```
+wh keys group fps "w,a,s,d,space"
+wh keys ungroup fps
+wh keys rename fps arrows
+```
 
 Pick keys interactively instead of naming them, on any `get`/`set` subcommand:
 
@@ -93,12 +107,27 @@ Pick keys interactively instead of naming them, on any `get`/`set` subcommand:
 wh set rt --pick --set 0.5
 ```
 
-Back up and restore a full snapshot:
+Back up and restore a full snapshot. Backups are written as JSON now; older TOML backups are still
+read, by file extension:
 
 ```
-wh backup --to my-profile.toml
-wh restore my-profile.toml
+wh backup --to my-profile.json
+wh restore my-profile.json
 wh restore --last
+```
+
+List stored backups, oldest first, each with its timestamp and what took it (`manual`, `set rt`,
+`restore`, and so on):
+
+```
+wh backups list
+```
+
+Read or select the active profile, 1 to 4:
+
+```
+wh profile
+wh profile 2
 ```
 
 A self-test that exercises a real write/read round trip without changing anything on the board:
@@ -146,16 +175,18 @@ line of defence for exactly that if the first one is ever wrong.
 
 A snapshot recorded by `wh backup` (or the automatic backup every write command takes first)
 contains: global travel and its press/release dead zones, actuation point and rapid trigger
-press/release depth for every physical key, the raw per-key mode value, and, since Phase 1, the
-profile the board was on when the snapshot was taken.
+press/release depth for every physical key, the raw per-key mode value, each key's raw actuation
+point and rapid trigger keyset value, and, since Phase 1, the profile the board was on when the
+snapshot was taken. Snapshots are written as JSON; older TOML backups are still read.
 
 Each key's `rt` field in the snapshot file is informational only, a human-readable summary of the
 raw mode value at the moment the snapshot was taken. `wh restore` never reads it; it writes the raw
-mode value back verbatim. Hand-editing `rt = false` in a snapshot file before restoring it does not
+mode value back verbatim. Hand-editing `"rt": false` in a snapshot file before restoring it does not
 turn rapid trigger off, and `wh restore` will report success and a verified readback while doing
 exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
 change what a restore writes, change the settings on the board and take a fresh backup, not the
-`rt` field in an old one.
+`rt` field in an old one. The keyset fields are informational the same way: `wh restore` ignores
+them entirely, since keyset membership is not yet something `wh` writes (see `docs/tasks.md`).
 
 **It does not contain**, and `wh restore` cannot bring back:
 
@@ -185,6 +216,29 @@ not share an override:
 If you need to undo a change to remapping, SOCD, lighting, or anything else in the list above, use
 the board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
 configurator; `wh` does not implement either.
+
+## No drift: `wh` caches no device state
+
+Every `wh` command reads live over HID. There is no local cache of the board's settings, which is
+why `wh` cannot show a stale value the way the web configurator sometimes can: there is nothing
+cached to go stale.
+
+Two things look like exceptions and are not:
+
+- `set rt`, `set ap`, and `selftest` each read a key's current settings, then write back a change
+  built from that read. Between the read and the write, the board could in principle be changed by
+  hand (or by another tool); that is a real read-modify-write window, not `wh` caching anything.
+- A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
+  doing its job, not drift.
+
+## Hardware verification still outstanding
+
+These are built and tested against replay scripts, not yet confirmed on the real board:
+
+- `wh set ap` on an untouched key should no longer render greyed in the vendor UI.
+- `wh set ap` on a key with rapid trigger on should leave rapid trigger on.
+- `wh profile 2` then `wh profile` should confirm the switch landed.
+- A full `wh dump` should be timed: it now issues six reads per key rather than four.
 
 ## Protocol
 

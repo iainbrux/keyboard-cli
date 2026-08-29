@@ -43,16 +43,17 @@ pub struct KeyToml {
     pub usage: u8,
     pub ap_mm: f64,
     /// Informational only, derived from `mode_raw` when the snapshot was taken. `wh restore`
-    /// writes `mode_raw` back verbatim and never reads this field, so hand-editing `rt` changes
-    /// only what tooling prints about the key, not what gets restored. To change whether a key
-    /// restores with rapid trigger on, edit `mode_raw` (its low byte's high nibble) instead.
+    /// never reads it, and `wh dump` builds its own snapshot from a live read rather than a
+    /// stored file, so hand-editing a stored file's `rt` changes nothing any command does or
+    /// prints. Edit `mode_raw` (its low byte's high nibble) to change what restores.
     pub rt: bool,
     pub rt_press_mm: f64,
     pub rt_release_mm: f64,
     /// Raw Layout_Mode value, restored verbatim so advanced-key modes survive.
     pub mode_raw: u16,
-    /// Keyset membership as read from layouts 0xFF and 0xFE. 0 means no keyset. Defaulted so
-    /// snapshots taken before these fields existed still load. `wh restore` ignores them.
+    /// Keyset membership as read from layouts 0xFF and 0xFE. `0` is the value read for keys
+    /// outside any keyset. Defaulted so snapshots taken before these fields existed still load.
+    /// `wh restore` ignores them.
     #[serde(default)]
     pub ap_keyset: u16,
     #[serde(default)]

@@ -56,7 +56,7 @@ nonsense.
 | `0x17` | 1858 | 1 | **always `0`**, same |
 | `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 424 | 2 | keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set |
-| `0xff` | 420 | 3 | unidentified. Only ever `0`, `1` or `2` |
+| `0xff` | 420 | 3 | read `210` times, written `0`. Only ever `0`, `1` or `2`. See `docs/backlog.md` for the read-correlation inference |
 
 The counts above are what these ten captured scenarios happened to exercise, not the fields'
 possible ranges: layout `0x04` (actuation point) only ever took `0, 300, 850, 1200, 1700, 2000,
