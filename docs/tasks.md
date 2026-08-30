@@ -65,6 +65,22 @@ rather than as settings it recognises.
   outside a keyset sits at nibble `2`, so `wh set rt --keys all --off` now writes all 68 keys where
   it previously wrote none. That is vendor-consistent, but it means this gap is reached far more
   often than it was.
+
+  **Two things to settle before implementing, both found by review.** First, `global_rt` returns
+  three variants and this task says only "the sensitivities come from `global_rt`". What a `Split`
+  or a `NoneOutsideAKeyset` should do is undecided, and the obvious "unwrap or default" lands on
+  `Um(0)`, which would write `0x14 = 0, 0x15 = 0`, a value the vendor has never been observed
+  writing. Second, `keyset::plan`'s skip rule is all-four-records-or-none, so a key at touch nibble
+  `0` whose sensitivities differ from the global gets a MODE record written at its unchanged
+  nibble-0 value. `ops::rt_off_records` refuses to send nibble 0 at all, deliberately, because what
+  it does to a key's actuation point is unmeasured. Routing this task through `plan` as written
+  would start sending it. Neither is a defect in `plan`; both are decisions this task has to make.
+
+  Measured in the same review, and settling an earlier doubt: the vendor **does** reset the
+  sensitivities on a per-key rapid trigger off. `rt-off-w.jsonl` shows W going from 500/500 to the
+  global 100/100. `ops::rt_off_records` writes MODE alone and leaves the private value in place, so
+  it is the one that diverges; routing through `Change::rt_off` removes a divergence rather than
+  creating one.
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
