@@ -1,5 +1,5 @@
-use crate::keyset::Kind;
 use std::time::Duration;
+use wh_proto::cmds::KeysetKind;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceError {
@@ -35,7 +35,10 @@ pub enum DeviceError {
     /// through a `plan` for the other. A caller error, caught before any frame is sent, not
     /// anything the device said.
     #[error("keyset kind mismatch: expected {expected:?}, got {found:?}")]
-    KeysetKindMismatch { expected: Kind, found: Kind },
+    KeysetKindMismatch {
+        expected: KeysetKind,
+        found: KeysetKind,
+    },
     // `source` isn't interpolated into the message: thiserror wires it into
     // `Error::source()`, and `main.rs`'s anyhow `{e:#}` already walks that chain, so the
     // cause text would otherwise print twice.

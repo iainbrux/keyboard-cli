@@ -87,6 +87,25 @@ pub mod layout {
     pub const KEYSET_RT: u8 = 0xFE;
 }
 
+/// Which of the two independent keyset groupings a layout or index belongs to. Re-exported from
+/// `wh_device::keyset` as `Kind`, which is the name callers use; it lives here because it does
+/// no I/O and its only method maps to the two `layout` constants above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeysetKind {
+    Ap,
+    Rt,
+}
+
+impl KeysetKind {
+    /// `layout::KEYSET_AP` (0xFF) or `layout::KEYSET_RT` (0xFE).
+    pub fn layout(self) -> u8 {
+        match self {
+            KeysetKind::Ap => layout::KEYSET_AP,
+            KeysetKind::Rt => layout::KEYSET_RT,
+        }
+    }
+}
+
 /// MaxPack from constants/byte.ts.
 pub const MAX_RECORDS_PER_REPORT: usize = 14;
 

@@ -8,22 +8,9 @@ use crate::transport::{DeviceError, Transport};
 use wh_proto::cmds::{self, layout, KeyRecord, Mode, TouchMode};
 use wh_proto::value::Um;
 
-/// Which of the two independent groupings a keyset belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Ap,
-    Rt,
-}
-
-impl Kind {
-    /// `layout::KEYSET_AP` (0xFF) or `layout::KEYSET_RT` (0xFE).
-    pub fn layout(self) -> u8 {
-        match self {
-            Kind::Ap => layout::KEYSET_AP,
-            Kind::Rt => layout::KEYSET_RT,
-        }
-    }
-}
+/// Which of the two independent groupings a keyset belongs to. Lives in `wh_proto::cmds` as
+/// `KeysetKind`, since it does no I/O; re-exported here under the short name callers use.
+pub use wh_proto::cmds::KeysetKind as Kind;
 
 /// One keyset: the index its members hold, and the keys holding it, in the order given.
 #[derive(Debug, Clone, PartialEq)]
