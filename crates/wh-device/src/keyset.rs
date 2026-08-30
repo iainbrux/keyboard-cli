@@ -33,12 +33,24 @@ pub struct Keyset {
 }
 
 /// Every key's membership for one layout, and which layout that is. The two layouts have
-/// separate counters (`docs/keysets.md`), so keeping `kind` alongside the entries stops a
-/// caller from feeding actuation point membership into a rapid trigger allocation by accident.
+/// separate counters (`docs/keysets.md`); fields are private and the only way to build one is
+/// `read_membership`, so a caller can never pair one layout's entries with the other's kind.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Membership {
-    pub kind: Kind,
-    pub entries: Vec<(u8, u16)>,
+    kind: Kind,
+    entries: Vec<(u8, u16)>,
+}
+
+impl Membership {
+    /// Which layout `entries` was read from.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+    /// Each key's raw membership value for `kind`'s layout, in the order `read_membership` read
+    /// them.
+    pub fn entries(&self) -> &[(u8, u16)] {
+        &self.entries
+    }
 }
 
 /// Reads every key in `usages` for one layout, `0xFF` or `0xFE` depending on `kind`.
@@ -74,12 +86,13 @@ pub fn group(m: &Membership) -> Vec<Keyset> {
     keysets
 }
 
-/// A keyset index and the layout it was allocated from, so an index taken from one counter
-/// cannot be written to the other layout without `plan` or `global_ap`/`global_rt` catching it.
+/// A keyset index and the layout it was allocated from. Fields are private: the only ways to
+/// get one are `next_index`, which reads `kind` off the `Membership` it computed over, and
+/// `KeysetIndex::clear`, so an index can never be relabelled to the other layout after the fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeysetIndex {
-    pub kind: Kind,
-    pub value: u16,
+    kind: Kind,
+    value: u16,
 }
 
 impl KeysetIndex {
@@ -87,6 +100,14 @@ impl KeysetIndex {
     /// spell out the zero itself.
     pub fn clear(kind: Kind) -> Self {
         KeysetIndex { kind, value: 0 }
+    }
+    /// The layout this index was allocated from, or cleared for.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+    /// The raw index value.
+    pub fn value(&self) -> u16 {
+        self.value
     }
 }
 
@@ -155,25 +176,26 @@ pub struct Change {
 }
 
 impl Change {
-    /// An actuation point operation: set every member's `0x04` to `value`. MODE is not owned by
-    /// this operation, so it rewrites at whatever the key already reads. Use
-    /// `ap_promoting_global` instead if a `Global` key should be promoted to `Single` first.
+    /// An actuation point operation: set every member's `0x04` to `value`, promoting a `Global`
+    /// key to `Single` first. Matches `ops::ap_records`, which promotes on every actuation point
+    /// change; whether the vendor promotes for a keyset specifically is unmeasured, but shipped,
+    /// non-destructive behaviour is the default here. Use `ap_keeping_touch` for the rare
+    /// operation that must not move a key off global travel.
     pub fn ap(value: Um) -> Self {
         Change {
             kind: Kind::Ap,
-            touch: TouchChange::Keep,
+            touch: TouchChange::PromoteGlobalToSingle,
             ap: Some(value),
             rt: None,
         }
     }
 
-    /// An actuation point operation that also promotes a key still following global travel from
-    /// `Global` to `Single`. Whether the vendor does this is unmeasured; the promotion is the
-    /// non-destructive default rather than leaving a key silently detached from global travel.
-    pub fn ap_promoting_global(value: Um) -> Self {
+    /// An actuation point operation that does not promote: MODE rewrites at whatever the key
+    /// already reads, `Global` included.
+    pub fn ap_keeping_touch(value: Um) -> Self {
         Change {
             kind: Kind::Ap,
-            touch: TouchChange::PromoteGlobalToSingle,
+            touch: TouchChange::Keep,
             ap: Some(value),
             rt: None,
         }
@@ -767,10 +789,9 @@ mod tests {
         let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let change = Change::ap(Um(2000));
-        let idx = KeysetIndex {
-            kind: Kind::Ap,
-            value: 3,
-        };
+        // Obtained the way a real caller would, through `next_index`, not a bare literal: a
+        // membership with max 2 allocates 3.
+        let idx = next_index(&membership(Kind::Ap, &[(0x99, 2)])).unwrap();
         let plan = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap();
         assert_eq!(plan.value_records, vec![]);
         assert_eq!(
@@ -941,10 +962,8 @@ mod tests {
         let lines = settings_script(0x1A, 2000, 0x30, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let change = Change::rt_on(Um(100), Um(150));
-        let idx = KeysetIndex {
-            kind: Kind::Rt,
-            value: 2,
-        };
+        // Obtained through `next_index`: a membership with max 1 allocates 2.
+        let idx = next_index(&membership(Kind::Rt, &[(0x99, 1)])).unwrap();
         let plan = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap();
         assert_eq!(plan.value_records, vec![]);
         assert_eq!(
@@ -964,10 +983,7 @@ mod tests {
     fn plan_rejects_membership_from_the_wrong_kind() {
         let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
         let change = Change::rt_on(Um(100), Um(150));
-        let idx = KeysetIndex {
-            kind: Kind::Ap,
-            value: 3,
-        };
+        let idx = next_index(&membership(Kind::Ap, &[(0x99, 2)])).unwrap();
         let err = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap_err();
         assert!(
             matches!(
@@ -1099,11 +1115,11 @@ mod tests {
     }
 
     #[test]
-    fn plan_promoting_global_preserves_advanced_nibble_and_high_byte() {
+    fn plan_ap_promotes_global_to_single_preserving_advanced_nibble_and_high_byte() {
         // touch Global(0), advanced 7, high 0x02: 0x0207. Promotion changes only the nibble.
         let lines = settings_script(0x1A, 2000, 0x0207, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let change = Change::ap_promoting_global(Um(2000));
+        let change = Change::ap(Um(2000));
         let p = plan(&mut s, &[0x1A], &change, None).unwrap();
         assert_eq!(
             p.value_records,
@@ -1129,6 +1145,44 @@ mod tests {
                     value: 150
                 },
             ]
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The swapped-back regression: `ap_keeping_touch` must leave a `Global` key `Global`, not
+    /// promote it, or the two constructors' touch rules have traded places again.
+    #[test]
+    fn plan_ap_keeping_touch_does_not_promote_a_global_key() {
+        // touch Global(0), advanced 7, high 0x02: 0x0207.
+        let lines = settings_script(0x1A, 2000, 0x0207, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::ap_keeping_touch(Um(2500));
+        let p = plan(&mut s, &[0x1A], &change, None).unwrap();
+        assert_eq!(
+            p.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::MODE,
+                    value: 0x0207,
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 2500
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 100
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ],
+            "MODE must ride along unchanged (still Global), only AP differs"
         );
         assert!(s.into_inner().finished());
     }
