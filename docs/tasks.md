@@ -81,6 +81,15 @@ rather than as settings it recognises.
   global 100/100. `ops::rt_off_records` writes MODE alone and leaves the private value in place, so
   it is the one that diverges; routing through `Change::rt_off` removes a divergence rather than
   creating one.
+- [ ] **2.14 Decide what `wh set ap` emits, before the CLI is written.** The same intent is now
+  expressible two ways with different frames, measured: for a key at MODE `0x10` and AP 1000 with a
+  target of 2000, `ops::ap_records` emits `[AP]` alone while `keyset::plan` with `Change::ap` emits
+  `[MODE, AP, RT_PRESS, RT_RELEASE]`, rewriting MODE at the value it just read and rewriting both
+  sensitivities. Both are defensible: `keyset::plan` implements the vendor's measured template for
+  keyset operations, and `ap_records` documents its own divergence. The trap is that one subcommand
+  would emit one shape with a keyset and another without. Pick deliberately and say which in the
+  code, rather than letting the CLI discover it.
+
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
