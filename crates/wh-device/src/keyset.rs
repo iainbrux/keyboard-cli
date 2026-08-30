@@ -76,8 +76,8 @@ pub fn group(m: &Membership) -> Vec<Keyset> {
 }
 
 /// A keyset index and the layout it was allocated from. Fields are private: the only ways to
-/// get one are `next_index`, which reads `kind` off the `Membership` it computed over, and
-/// `KeysetIndex::clear`, so an index can never be relabelled to the other layout after the fact.
+/// get one are `next_index`, `KeysetIndex::clear`, and `KeysetIndex::restoring`, so an index can
+/// never be relabelled to the other layout after the fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeysetIndex {
     kind: Kind,

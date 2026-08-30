@@ -12,8 +12,8 @@ Complete. See the Done section.
 
 ## Phase 2
 
-Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.13
-added from what the hardware sessions measured. The objective
+Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.14
+added from what the hardware sessions and the reviews measured. The objective
 is close to 1:1 interoperability between the CLI and terminal.wallhack.com. Keysets come first,
 because they are the one thing that makes our writes render as loose overrides in the vendor UI
 rather than as settings it recognises.
@@ -56,10 +56,9 @@ rather than as settings it recognises.
   the configurator still lists it in a keyset. That file's read sweep does not cover `0xFE`, so
   whether `W` was in a keyset beforehand is unmeasured; what is measured is that the write is sent
   unconditionally. Implement by routing `ops::set_rt_off` through `keyset::plan` with
-  `Change::rt_off(press, release)` and `Some(KeysetIndex::clear(Kind::Rt))` rather than by hand. The
-  sensitivities
-  come from `keyset::global_rt`, which reports whether the keys outside a keyset agree rather than
-  trusting one of them, and refuses a `Membership` of the wrong kind.
+  `Change::rt_off(press, release)` and `Some(KeysetIndex::clear(Kind::Rt))` rather than by hand.
+  The sensitivities come from `keyset::global_rt`, which reports whether the keys outside a keyset
+  agree rather than trusting one of them, and refuses a `Membership` of the wrong kind.
 
   Related, from the same review: on a board with the global rapid trigger switch on, every key
   outside a keyset sits at nibble `2`, so `wh set rt --keys all --off` now writes all 68 keys where
@@ -70,11 +69,10 @@ rather than as settings it recognises.
   three variants and this task says only "the sensitivities come from `global_rt`". What a `Split`
   or a `NoneOutsideAKeyset` should do is undecided, and the obvious "unwrap or default" lands on
   `Um(0)`, which would write `0x14 = 0, 0x15 = 0`, a value the vendor has never been observed
-  writing. Second, `keyset::plan`'s skip rule is all-four-records-or-none, so a key at touch nibble
-  `0` whose sensitivities differ from the global gets a MODE record written at its unchanged
-  nibble-0 value. `ops::rt_off_records` refuses to send nibble 0 at all, deliberately, because what
-  it does to a key's actuation point is unmeasured. Routing this task through `plan` as written
-  would start sending it. Neither is a defect in `plan`; both are decisions this task has to make.
+  writing. That one is still open. Second, and now closed: `keyset::plan` used to send a MODE
+  record at an unchanged nibble-0 value, which `ops::rt_off_records` refuses to do. `plan` no longer
+  emits one at all, measured against 618 MODE write records in the corpus of which none is at
+  nibble 0, so routing this task through `plan` no longer introduces that write.
 
   Measured in the same review, and settling an earlier doubt: the vendor **does** reset the
   sensitivities on a per-key rapid trigger off. `rt-off-w.jsonl` shows W going from 500/500 to the
@@ -86,8 +84,10 @@ rather than as settings it recognises.
   target of 2000, `ops::ap_records` emits `[AP]` alone while `keyset::plan` with `Change::ap` emits
   `[MODE, AP, RT_PRESS, RT_RELEASE]`, rewriting MODE at the value it just read and rewriting both
   sensitivities. Both are defensible: `keyset::plan` implements the vendor's measured template for
-  keyset operations, and `ap_records` documents its own divergence. The trap is that one subcommand
-  would emit one shape with a keyset and another without. Pick deliberately and say which in the
+  keyset operations, and `ap_records` documents its own divergence. There is now a third shape:
+  `Change::ap_keeping_touch` on a key still following global travel emits `[AP, RT_PRESS,
+  RT_RELEASE]`, since `plan` no longer writes a nibble-0 MODE record. The trap is that one
+  subcommand would emit one shape with a keyset and another without. Pick deliberately and say which in the
   code, rather than letting the CLI discover it.
 
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
