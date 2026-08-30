@@ -40,14 +40,16 @@ impl Membership {
     }
 }
 
-/// Reads every key in `usages` for one layout, `0xFF` or `0xFE` depending on `kind`.
+/// Reads the board's own key matrix, then one layout, `0xFF` or `0xFE` depending on `kind`, for
+/// every key it reports. Whole-board by construction: a caller cannot pass a partial view, which
+/// would let `next_index` allocate an index a key outside that view already holds.
 pub fn read_membership<T: Transport>(
     s: &mut Session<T>,
-    usages: &[u8],
     kind: Kind,
 ) -> Result<Membership, DeviceError> {
+    let usages = ops::read_matrix(s)?;
     let mut entries = Vec::with_capacity(usages.len());
-    for &u in usages {
+    for u in usages {
         let v = ops::read_layout_value(s, u, kind.layout())?;
         entries.push((u, v));
     }
@@ -88,6 +90,12 @@ impl KeysetIndex {
     pub fn clear(kind: Kind) -> Self {
         KeysetIndex { kind, value: 0 }
     }
+    /// An index taken from a recorded snapshot rather than allocated. `wh restore` needs this:
+    /// a snapshot's indices can include gaps allocation never reuses (`docs/keysets.md`), so
+    /// `next_index` can never reproduce one. Every other caller wants `next_index`.
+    pub fn restoring(kind: Kind, value: u16) -> Self {
+        KeysetIndex { kind, value }
+    }
     /// The layout this index was allocated from, or cleared for.
     pub fn kind(&self) -> Kind {
         self.kind
@@ -127,8 +135,8 @@ enum TouchChange {
     RapidTrigger,
     /// Turns rapid trigger off: `RtGlobal` (2), `Rt` (3) and `RtContinuous` (4) become `Single`.
     /// Every other nibble, including `Global` and any `Unknown`, is left exactly as read. This
-    /// agrees with `ops::rt_off_records`, both built from the same measured nibble-2-to-1 and
-    /// nibble-3-to-1 transitions.
+    /// agrees with `ops::rt_off_records` on the nibble mapping and, since `plan` never emits an
+    /// unchanged nibble-0 MODE record, on never sending one either.
     Off,
 }
 
@@ -177,8 +185,9 @@ impl Change {
         }
     }
 
-    /// An actuation point operation that does not promote: MODE rewrites at whatever the key
-    /// already reads, `Global` included.
+    /// An actuation point operation that does not promote: a `Global` key stays `Global`. No
+    /// MODE record is sent for it either way: `plan` never writes touch nibble 0, and this
+    /// constructor's whole point is not to move a key off it.
     pub fn ap_keeping_touch(value: Um) -> Self {
         Change {
             kind: Kind::Ap,
@@ -264,7 +273,9 @@ impl WritePlan {
 /// than the whole board, so this is two extra reads per selected key, not per key on the board.
 ///
 /// Per key, MODE, AP, RT_PRESS and RT_RELEASE are read, the target computed, and either all four
-/// are written or none, matching the vendor's own all-or-nothing template.
+/// are written or none, matching the vendor's own all-or-nothing template, except MODE itself is
+/// dropped from that four when it would only echo an unchanged touch nibble 0 back: the vendor
+/// has never been observed writing that nibble (measured over 618 write records, every capture).
 ///
 /// Two deliberate divergences from the vendor: layouts `0x16`/`0x17` are never written, since we
 /// have never read them and a constant would be an invented value; and records are emitted
@@ -311,11 +322,17 @@ pub fn plan<T: Transport>(
             || target_press != settings.rt_press
             || target_release != settings.rt_release
         {
-            value_records.push(KeyRecord {
-                key: u,
-                layout: layout::MODE,
-                value: new_mode_value,
-            });
+            // The vendor has never once written touch nibble 0 (measured across every capture):
+            // omit a MODE record that would only echo an unchanged nibble-0 value back.
+            let unchanged_at_global =
+                new_mode_value == cur_mode_value && new_touch == TouchMode::Global;
+            if !unchanged_at_global {
+                value_records.push(KeyRecord {
+                    key: u,
+                    layout: layout::MODE,
+                    value: new_mode_value,
+                });
+            }
             value_records.push(KeyRecord {
                 key: u,
                 layout: layout::AP,
@@ -506,6 +523,27 @@ mod tests {
         lines
     }
 
+    /// The `ops::read_matrix` script for up to six usages, one per row-pair column, in the
+    /// order `read_matrix` reports them. Fewer than six leaves the remaining columns empty.
+    fn matrix_lines(usages: &[u8]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (i, &(a, b)) in [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)].iter().enumerate() {
+            let req = cmds::read_defkey_rows(a, b);
+            let mut payload = vec![0u8; 45];
+            payload[1] = a;
+            if let Some(&u) = usages.get(i * 2) {
+                payload[2] = u;
+            }
+            payload[23] = b;
+            if let Some(&u) = usages.get(i * 2 + 1) {
+                payload[24] = u;
+            }
+            lines.push(l("out", &req));
+            lines.push(l("in", &rf(cmds::cmd::DEFKEY, &payload)));
+        }
+        lines
+    }
+
     fn membership(kind: Kind, entries: &[(u8, u16)]) -> Membership {
         Membership {
             kind,
@@ -623,11 +661,11 @@ mod tests {
 
     #[test]
     fn read_membership_reads_the_rt_layout_for_kind_rt() {
-        let mut lines = Vec::new();
+        let mut lines = matrix_lines(&[0x04, 0x05]);
         lines.extend(read_reply(0x04, layout::KEYSET_RT, 1));
         lines.extend(read_reply(0x05, layout::KEYSET_RT, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let got = read_membership(&mut s, &[0x04, 0x05], Kind::Rt).unwrap();
+        let got = read_membership(&mut s, Kind::Rt).unwrap();
         assert_eq!(got.kind, Kind::Rt);
         assert_eq!(got.entries, vec![(0x04, 1), (0x05, 0)]);
         assert!(s.into_inner().finished());
@@ -637,13 +675,32 @@ mod tests {
     /// `read_membership` asked for any layout byte but `0xFF`, the actuation point one.
     #[test]
     fn read_membership_reads_the_ap_layout_for_kind_ap() {
-        let mut lines = Vec::new();
+        let mut lines = matrix_lines(&[0x04, 0x05]);
         lines.extend(read_reply(0x04, layout::KEYSET_AP, 3));
         lines.extend(read_reply(0x05, layout::KEYSET_AP, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let got = read_membership(&mut s, &[0x04, 0x05], Kind::Ap).unwrap();
+        let got = read_membership(&mut s, Kind::Ap).unwrap();
         assert_eq!(got.kind, Kind::Ap);
         assert_eq!(got.entries, vec![(0x04, 3), (0x05, 0)]);
+        assert!(s.into_inner().finished());
+    }
+
+    /// Proves the matrix is actually read, not assumed: these usages appear in no other test in
+    /// this file, so a `read_membership` that assumed a hard-coded key list would send the wrong
+    /// requests and `ReplayTransport` would reject them.
+    #[test]
+    fn read_membership_covers_whatever_the_live_matrix_reports() {
+        let usages = [0x50u8, 0x51, 0x52, 0x53, 0x54, 0x55];
+        let mut lines = matrix_lines(&usages);
+        for &u in &usages {
+            lines.extend(read_reply(u, layout::KEYSET_AP, 0));
+        }
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let got = read_membership(&mut s, Kind::Ap).unwrap();
+        assert_eq!(
+            got.entries.iter().map(|&(u, _)| u).collect::<Vec<_>>(),
+            usages.to_vec()
+        );
         assert!(s.into_inner().finished());
     }
 
@@ -964,6 +1021,34 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
+    /// `wh restore` writes an index a live allocation could never produce: a snapshot recorded
+    /// index 4 while the board now has 5 as its highest live value, so `next_index` would return
+    /// 6, never 4. `KeysetIndex::restoring` is the only way to send the gap value anyway.
+    #[test]
+    fn plan_writes_a_gap_index_next_index_would_never_allocate() {
+        let m = membership(Kind::Ap, &[(0x99, 5)]);
+        assert_eq!(
+            next_index(&m).unwrap().value(),
+            6,
+            "confirms 4 really is a gap, not what allocation would give here"
+        );
+
+        let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::ap(Um(2000));
+        let idx = KeysetIndex::restoring(Kind::Ap, 4);
+        let plan = plan(&mut s, &[0x1A], &change, Some(idx)).unwrap();
+        assert_eq!(
+            plan.membership_records,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_AP,
+                value: 4
+            }]
+        );
+        assert!(s.into_inner().finished());
+    }
+
     /// A rapid trigger `Change` paired with an actuation point `KeysetIndex` must be rejected,
     /// and rejected before any frame is sent: the empty script would reject any send at all.
     #[test]
@@ -1140,7 +1225,8 @@ mod tests {
     /// promote it, or the two constructors' touch rules have traded places again.
     #[test]
     fn plan_ap_keeping_touch_does_not_promote_a_global_key() {
-        // touch Global(0), advanced 7, high 0x02: 0x0207.
+        // touch Global(0), advanced 7, high 0x02: 0x0207. AP differs, MODE would only echo the
+        // unchanged nibble-0 value back, so it must be absent, not sent as a fourth record.
         let lines = settings_script(0x1A, 2000, 0x0207, 100, 150, 0, 0);
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
         let change = Change::ap_keeping_touch(Um(2500));
@@ -1148,11 +1234,6 @@ mod tests {
         assert_eq!(
             p.value_records,
             vec![
-                KeyRecord {
-                    key: 0x1A,
-                    layout: layout::MODE,
-                    value: 0x0207,
-                },
                 KeyRecord {
                     key: 0x1A,
                     layout: layout::AP,
@@ -1169,7 +1250,42 @@ mod tests {
                     value: 150
                 },
             ],
-            "MODE must ride along unchanged (still Global), only AP differs"
+            "no MODE record: the key stays Global, and the vendor never writes nibble 0"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The nibble-0 omission is a rule of `plan` itself, not something specific to
+    /// `Change::ap_keeping_touch`: a key at touch Global that `Change::rt_off` leaves at Global
+    /// (its own rule never touches that nibble) still gets no MODE record when only its
+    /// sensitivity differs.
+    #[test]
+    fn plan_omits_a_nibble_0_mode_record_when_only_rt_differs_and_touch_stays_global() {
+        // touch Global(0), advanced 5, high 0: 0x05.
+        let lines = settings_script(0x1A, 2000, 0x05, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = Change::rt_off(Um(200), Um(150));
+        let p = plan(&mut s, &[0x1A], &change, None).unwrap();
+        assert_eq!(
+            p.value_records,
+            vec![
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::AP,
+                    value: 2000
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_PRESS,
+                    value: 200
+                },
+                KeyRecord {
+                    key: 0x1A,
+                    layout: layout::RT_RELEASE,
+                    value: 150
+                },
+            ],
+            "no MODE record: touch stays Global, only the press sensitivity differs"
         );
         assert!(s.into_inner().finished());
     }
