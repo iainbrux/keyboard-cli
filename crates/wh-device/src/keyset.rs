@@ -236,22 +236,61 @@ impl Change {
     }
 }
 
-/// The records one operation writes, plus what was on the board before it.
+/// The records one operation writes, plus what was on the board before it. Fields are private,
+/// constructed only by `plan`: a hand-built `WritePlan` would let `apply` send a forged record
+/// none of `plan`'s own checks ever saw, which is exactly the read-modify-write invariant this
+/// module exists to protect.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WritePlan {
-    /// Value records, batched normally by `cmds::write_key_records`.
-    pub value_records: Vec<KeyRecord>,
-    /// Membership records, written one per frame.
-    pub membership_records: Vec<KeyRecord>,
-    /// Each key's settings as read before the write, in `usages` order, so a caller can verify
-    /// every key including ones that got no records.
-    pub before: Vec<KeySettings>,
+    value_records: Vec<KeyRecord>,
+    membership_records: Vec<KeyRecord>,
+    before: Vec<KeySettings>,
 }
 
 impl WritePlan {
+    /// Value records, packed per key below the 14-record report limit.
+    pub fn value_records(&self) -> &[KeyRecord] {
+        &self.value_records
+    }
+    /// Membership records, written one per frame.
+    pub fn membership_records(&self) -> &[KeyRecord] {
+        &self.membership_records
+    }
+    /// Each key's settings as read before the write, in `usages` order, so a caller can verify
+    /// every key including ones that got no records.
+    pub fn before(&self) -> &[KeySettings] {
+        &self.before
+    }
+
     /// Frames in send order: the value batches, then one frame per membership record.
+    ///
+    /// Value records are packed key by key, never splitting one key's group (at most 4 records,
+    /// 3 when its MODE record is the nibble-0 omission) across a report boundary: a batch takes
+    /// whole groups until the next one would not fit, then starts a new frame. This is a further
+    /// deliberate divergence from the vendor, which batches layout-major; it strictly improves
+    /// partial-failure behaviour, since a failure between frames can now only ever land on a key
+    /// boundary, never inside one key's own MODE/AP pair.
     pub fn frames(&self) -> Vec<[u8; 64]> {
-        let mut frames = cmds::write_key_records(&self.value_records);
+        let mut frames = Vec::new();
+        let mut batch: Vec<KeyRecord> = Vec::new();
+        let mut i = 0;
+        while i < self.value_records.len() {
+            let key = self.value_records[i].key;
+            let mut j = i + 1;
+            while j < self.value_records.len() && self.value_records[j].key == key {
+                j += 1;
+            }
+            let group = &self.value_records[i..j];
+            if !batch.is_empty() && batch.len() + group.len() > cmds::MAX_RECORDS_PER_REPORT {
+                frames.extend(cmds::write_key_records(&batch));
+                batch.clear();
+            }
+            batch.extend_from_slice(group);
+            i = j;
+        }
+        if !batch.is_empty() {
+            frames.extend(cmds::write_key_records(&batch));
+        }
         frames.extend(cmds::write_key_records_singly(&self.membership_records));
         frames
     }
@@ -274,13 +313,15 @@ impl WritePlan {
 ///
 /// Per key, MODE, AP, RT_PRESS and RT_RELEASE are read, the target computed, and either all four
 /// are written or none, matching the vendor's own all-or-nothing template, except MODE itself is
-/// dropped from that four when it would only echo an unchanged touch nibble 0 back: the vendor
-/// has never been observed writing that nibble (measured over 618 write records, every capture).
+/// dropped from that four when it would only echo an unchanged touch nibble 0 back: nibble 0
+/// means "follow global travel", so writing it unchanged would be a semantic change, not an echo.
 ///
-/// Two deliberate divergences from the vendor: layouts `0x16`/`0x17` are never written, since we
-/// have never read them and a constant would be an invented value; and records are emitted
-/// key-major rather than the vendor's layout-major order, the same divergence `ops::ap_records`
-/// documents, so a mid-batch failure stops at a few keys rather than every key selected.
+/// Deliberate divergences from the vendor: layouts `0x16`/`0x17` are never written, since we
+/// have never read them and a constant would be an invented value; records are emitted key-major
+/// rather than the vendor's layout-major order, the same divergence `ops::ap_records` documents,
+/// so a mid-batch failure stops at a few keys rather than every key selected; and `frames()`
+/// packs whole per-key groups rather than the vendor's own layout-major batching, so a failure
+/// can only ever land on a key boundary, never inside one key's own records.
 pub fn plan<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -322,8 +363,8 @@ pub fn plan<T: Transport>(
             || target_press != settings.rt_press
             || target_release != settings.rt_release
         {
-            // The vendor has never once written touch nibble 0 (measured across every capture):
-            // omit a MODE record that would only echo an unchanged nibble-0 value back.
+            // Nibble 0 means "follow global travel": writing it unchanged would be a semantic
+            // change, not an echo, which is why `ops::rt_off_records` refuses it too.
             let unchanged_at_global =
                 new_mode_value == cur_mode_value && new_touch == TouchMode::Global;
             if !unchanged_at_global {
@@ -1145,8 +1186,9 @@ mod tests {
 
     // -- plan: advanced nibble and high byte survive every touch change --
     //
-    // Each case forces a MODE record to be emitted (either the touch nibble itself changes, or
-    // AP changes alongside an unchanged MODE) and asserts the whole four-record vector, so a
+    // Each case forces a value record to be emitted (the touch nibble changes, or AP changes
+    // alongside an unchanged MODE) and asserts the full record list: four when MODE moves or
+    // stays at a non-zero nibble, three (MODE absent) when it would only echo nibble 0 back. A
     // variant that wrongly emits nothing, or corrupts the high byte only where touch is
     // unchanged, fails rather than passing silently.
 
@@ -1402,48 +1444,48 @@ mod tests {
         assert!(!p.value_records.is_empty());
     }
 
-    // -- plan: MODE and AP never split across a report boundary --
+    // -- WritePlan::frames: no key's records split across a report boundary --
 
-    /// Measured elsewhere that AP and RT_PRESS *do* split across a report boundary; this pins
-    /// only that MODE and AP, the pair the vendor is never observed sending un-paired, do not.
+    /// Before the nibble-0 omission, every key contributed exactly four records, so a key's
+    /// MODE always sat at an even index and could never land on offset 13 of a 14-record report:
+    /// the pairing held by parity, not by construction. A uniform fixture cannot exercise the
+    /// mixed 3-and-4-record case that broke it, which is why this replaces that fixture rather
+    /// than keeping it alongside a weaker one.
+    ///
+    /// Eight keys: the first at touch `Global` (its MODE omitted, 3 records) and seven at touch
+    /// `Rt`, which `Change::rt_off` moves to `Single` (4 records each), all with sensitivities
+    /// differing from the target. 31 value records, packed by hand here into the three batches
+    /// `frames()` must produce: 11 (3+4+4), 12 (4+4+4), 8 (4+4), never splitting a key's group.
     #[test]
-    fn plan_never_splits_a_keys_mode_and_ap_across_a_report_boundary() {
-        // 20 keys, 4 records each once every key differs: 80 records over 14-record reports
-        // crosses several boundaries (at 14, 28, 42, 56, 70).
-        let usages: Vec<u8> = (0x04u8..0x18).collect();
-        assert_eq!(usages.len(), 20);
-        let mut lines = Vec::new();
-        for &u in &usages {
-            lines.extend(settings_script(u, 1000, 0x18, 100, 150, 0, 0));
+    fn frames_never_splits_a_keys_records_across_a_report_boundary_with_mixed_group_sizes() {
+        let usages: Vec<u8> = (0x04u8..0x0C).collect();
+        assert_eq!(usages.len(), 8);
+        let mut lines = settings_script(usages[0], 2000, 0x05, 100, 150, 0, 0);
+        for &u in &usages[1..] {
+            lines.extend(settings_script(u, 2000, 0x35, 100, 150, 0, 0));
         }
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let change = Change::ap(Um(9999));
+        let change = Change::rt_off(Um(200), Um(250));
         let p = plan(&mut s, &usages, &change, None).unwrap();
         assert!(s.into_inner().finished());
+
+        let vr = p.value_records();
         assert_eq!(
-            p.value_records.len(),
-            usages.len() * 4,
-            "every key must differ (ap 1000 -> 9999) and get all four records"
+            vr.len(),
+            31,
+            "3 (Global, MODE omitted) + 7 * 4 (Rt, MODE included)"
         );
 
-        let frame_of = |i: usize| i / cmds::MAX_RECORDS_PER_REPORT;
-        for &u in &usages {
-            let mode_i = p
-                .value_records
-                .iter()
-                .position(|r| r.key == u && r.layout == layout::MODE)
-                .unwrap();
-            let ap_i = p
-                .value_records
-                .iter()
-                .position(|r| r.key == u && r.layout == layout::AP)
-                .unwrap();
-            assert_eq!(
-                frame_of(mode_i),
-                frame_of(ap_i),
-                "key {u:#04x}: MODE and AP landed in different frames"
-            );
-        }
+        let expected = vec![
+            cmds::write_key_records(&vr[0..11])[0],
+            cmds::write_key_records(&vr[11..23])[0],
+            cmds::write_key_records(&vr[23..31])[0],
+        ];
+        assert_eq!(
+            p.frames(),
+            expected,
+            "each batch must be exactly one key group run, never a group split across two"
+        );
     }
 
     // -- WritePlan::frames --
