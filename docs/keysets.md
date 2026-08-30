@@ -80,10 +80,17 @@ most important rule in this document, and the global rapid trigger captures meas
 one frame set: a sensitivity change rewrote layout `0x04` for every key with that key's own value,
 `2000` for sixty of them, `2050` for `W`, `S` and `X`, `300` for `D` and `M`, `3000` for `ESC`.
 
+**One exception, measured: an actuation point keyset value change promotes MODE from `Global` to
+`Single`.** In `ks-value-ap`, `W` and `S` read `0x18` and were written `0x18`, but `X` read `0x0000`
+and was written `0x0010`. An earlier draft of this document read that frame pair as two different
+existing values being rewritten, and recorded MODE as unchanged for this operation. It is not: one
+is a rewrite and the other is a promotion. The vendor does not leave a member of an actuation point
+keyset following global travel.
+
 | Operation | Owns | Rewritten unchanged |
 |---|---|---|
 | Create an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
-| Change a keyset's value | `0x04` to the new value | MODE, `0x14`, `0x15` |
+| Change a keyset's value | `0x04` to the new value, and MODE `Global` to `Single` | `0x14`, `0x15` |
 | Delete an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
 | Create a rapid trigger keyset | MODE touch nibble to `3`, `0x14`/`0x15` to the global sensitivity | `0x04` |
 | Delete a rapid trigger keyset | MODE touch nibble to `1`, `0x14`/`0x15` to the global sensitivity | `0x04` |

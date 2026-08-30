@@ -12,7 +12,7 @@ Complete. See the Done section.
 
 ## Phase 2
 
-Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.14
+Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.16
 added from what the hardware sessions and the reviews measured. The objective
 is close to 1:1 interoperability between the CLI and terminal.wallhack.com. Keysets come first,
 because they are the one thing that makes our writes render as loose overrides in the vendor UI
@@ -84,11 +84,47 @@ rather than as settings it recognises.
   target of 2000, `ops::ap_records` emits `[AP]` alone while `keyset::plan` with `Change::ap` emits
   `[MODE, AP, RT_PRESS, RT_RELEASE]`, rewriting MODE at the value it just read and rewriting both
   sensitivities. Both are defensible: `keyset::plan` implements the vendor's measured template for
-  keyset operations, and `ap_records` documents its own divergence. There is now a third shape:
+  keyset operations, and `ap_records` documents its own divergence. There is a third shape:
   `Change::ap_keeping_touch` on a key still following global travel emits `[AP, RT_PRESS,
-  RT_RELEASE]`, since `plan` no longer writes a nibble-0 MODE record. The trap is that one
-  subcommand would emit one shape with a keyset and another without. Pick deliberately and say which in the
-  code, rather than letting the CLI discover it.
+  RT_RELEASE]`, since `plan` no longer writes a nibble-0 MODE record.
+
+  **Partly settled by measurement, 2026-08-30.** `ks-value-ap` shows the vendor promoting a member
+  from `Global` to `Single` during a keyset value change: `X` read MODE `0x0000` and was written
+  `0x0010`, alongside `W` and `S` which read and were written `0x18`. So the third shape is not
+  vendor behaviour for a keyset operation, and `Change::ap`'s promotion is the measured choice
+  rather than merely the non-destructive default. What remains open is the non-keyset path: whether
+  `wh set ap` on a key in no keyset emits `ap_records`' `[AP]` alone or the full template.
+
+- [ ] **2.15 Decide what `global_ap` returning `Split` or `NoneOutsideAKeyset` should do.** Task
+  2.13 records this for `global_rt` only, but `global_ap` has the same three-variant return and is
+  the value source for both `wh keyset create ap` and `wh keyset delete ap`, which resets members to
+  the global. It is one command away from mattering: on the current board `global_ap` returns
+  `Agreed(2.00mm)` from the 57 keys outside any keyset, and a single `wh set ap --keys w --set 1.0`
+  makes it `Split`. Blocks the keyset CLI.
+
+- [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
+  non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
+  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. It is measured, see 2.14.
+  - `keyset.rs` `frames()` claims a per-key group is at most 4 records. That is a property of
+    `plan`'s output, not of `frames()`: `plan` takes a bare `&[u8]` with no dedup, and a repeated
+    usage produces a 16-record group that does split. Unreachable through the CLI, since both
+    `Selector::resolve` and `read_matrix` dedupe.
+  - `keyset.rs` `value_records()` says the slice is "packed per key below the 14-record limit". It
+    is flat and unpacked; packing happens in `frames()`, and a batch of exactly 14 is reachable.
+  - `keyset.rs` `plan`'s divergence list presents itself as complete and omits one: the vendor
+    writes MODE twice per key per operation, we write it once.
+  - `keyset.rs` says the vendor reads `0x04` from five fixed keys "at the head of every capture".
+    Five of the 27 contain no `0x04` read at all.
+  - `ops.rs` says the vendor writes MODE `0x18` on every actuation point change. True of the Phase 1
+    capture it was written from; across all 27 the values are `{0x10: 154, 0x18: 40, 0x20: 376,
+    0x28: 24, 0x30: 12, 0x38: 10, 0x48: 2}`. The load-bearing half, that the vendor rewrites MODE
+    where `ap_records` sends nothing, still holds over 469 measured echoes.
+  - `ops.rs` still says a hypothesis "stays a hypothesis until the hardware session tests it". The
+    session ran on 2026-08-29 and the answer is in `docs/keysets.md`.
+  - `keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped the
+    measurement. Both should stand: 618 MODE write records across the corpus, none at nibble 0.
+  - `wh set rt --set` is a third pair of routes to one intent with different frames, alongside the
+    two recorded in 2.13 and 2.14. `plan` matches the vendor here and `ops::rt_records` diverges.
 
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
