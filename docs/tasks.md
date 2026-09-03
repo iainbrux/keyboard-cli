@@ -206,11 +206,11 @@ rather than as settings it recognises.
     unreachable. Reasoning, not measurement: `plan` emits value records only when MODE or a value
     moved, so if the value did not move then MODE did, and the branch above catches it. Either
     delete the branch and its doc bullet or find the case that reaches it.
-  - `mode_change`'s comment justifies printing a `TouchMode` through `{:?}` by a precedent in
-    `dump` that does not exist. `dump` prints `on`/`off` and a raw `mode_raw`; this announcement is
-    the only place in `wh` that shows an operator a touch mode name. On an unknown nibble it prints
-    `mode Unknown(7) to Rt`, Rust tuple-variant syntax in operator-facing output. The behaviour is
-    right and matches `ops::rt_records`; the comment is false and the string is rough.
+  - ~~`mode_change`'s comment justified printing a `TouchMode` through `{:?}` by a precedent in
+    `dump` that does not exist.~~ Closed: the comment now says `dump` prints `on`/`off` and a raw
+    `mode_raw` instead, that this announcement is the only place in `wh` that names a touch mode to
+    the operator, and that an unknown nibble prints rough Rust tuple-variant syntax matching
+    `ops::rt_records`'s own reporting. The behaviour itself was already right and is unchanged.
   - `announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s. Safe inside
     `create` by construction and pinned there by three fixtures, but it is the last surviving
     instance of the pattern four rounds were spent removing. Recorded in the plan as a warning to
