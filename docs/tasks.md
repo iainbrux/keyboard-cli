@@ -252,14 +252,21 @@ rather than as settings it recognises.
   ceases to exist; a keyset only partly selected survives with its remaining members.
 
   It wanted a test rather than a comment because the wrong implementations are plausible and all
-  passed the suite that existed at the time. A reader who generalises the `Keep` case to "if every
-  losing keyset is wholly consumed, keep the lowest index" writes a different product that destroys
-  a board differently, with a green suite otherwise. Closed by
+  passed the suite that existed at the time. Closed by
   `set_ap_over_a_selection_spanning_two_keysets_merges_them_into_a_new_index` in
-  `crates/wh-cli/tests/dump.rs`, built from `keyset_list_ap_groups_members_by_index`'s starting
-  shape: `w,a` wholly consuming keyset 1 and `s` wholly consuming keyset 2, plus a free key `d`
-  riding along. It drives `wh set ap` over all four and pins both losing lines and the freshly
-  allocated index, `3`, never a reuse of `1` or `2`.
+  `crates/wh-cli/tests/dump.rs`, over a board where `w,a` wholly consume keyset 1 and `s` wholly
+  consumes keyset 2, with two selections in the one test: `w,a,s,d` (a free key `d` riding along)
+  and `w,a,s` alone (exactly the union of the two losing keysets, nothing free). Both pin the same
+  freshly allocated index, `3`, never a reuse of `1` or `2`, and the losing lines for both keysets.
+
+  Two rewrites this closes, found by review. The one the task originally named, "if every losing
+  keyset is wholly consumed, keep the lowest index" with no further condition, was already caught
+  by other fixtures before this test existed, redundant here. The one that survived the first
+  version of this test, "...confined to the multi-keyset case, `total taken == usages.len()` still
+  required," reuses index 1 for `w,a,s,d` and is caught by the free-key selection; a third, nearer
+  neighbour, dropping the `total == usages.len()` guard's effect by choosing a selection where it
+  is still satisfied without a free key (`w,a,s` alone), falls through to the same `Keep` and is
+  caught only by the second selection.
 
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
