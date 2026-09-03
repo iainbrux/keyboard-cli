@@ -424,9 +424,10 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   trigger change and **never once observed non-zero**. Purpose unknown.
 - `0x19`, 700 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
   Purpose unknown.
-- `0xFE` is the **rapid trigger keyset membership**, measured from write evidence. `0xFF` is
-  **inferred** as the actuation point keyset index, from read correlation only: read `210` times,
-  written `0`. See the keyset entry above.
+- `0xFE` is the **rapid trigger keyset membership** and `0xFF` the **actuation point keyset index**,
+  both host-written and measured, not inferred: read `210` times and written `0` in this ten-capture
+  session, then written directly in the wider 27-capture corpus. See the keyset entry above and
+  `docs/keysets.md`.
 
 ### One key identity still inferred
 
