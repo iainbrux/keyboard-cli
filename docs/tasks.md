@@ -98,10 +98,14 @@ rather than as settings it recognises.
   between a keyset path and a non-keyset one: the frames do not vary with membership, so the CLI
   does not have to know before choosing what to send. Write-up in `docs/keysets.md`.
 
-  **One thing inside this stays unmeasured and is not made measured by ticking the task.** No
-  capture in the corpus shows the vendor promoting MODE from `0` on an actuation point change
-  *outside* a keyset. All three promotions in 3696 frames are keyset operations. `Change::ap`
-  promotes there anyway, which is what `ops::ap_records` already ships under 2.2, and 2.2's
+  **One thing inside this stays unmeasured and is not made measured by ticking the task.** The MODE
+  promotion from `Global` to `Single` on an actuation point change is real and reproduces exactly,
+  but whether it is specific to keyset members is not measured. `ks-value-ap` never reads `0xFF`,
+  and the only in-era membership read has `X` free while showing `W` and `S` at a value they had
+  moved off by the time of that capture, so both readings fit the frames. An earlier version of this
+  entry said all three promotions in 3696 frames are keyset operations; that was resolving an
+  ambiguity in the document's own favour, and the verification pass caught it. `Change::ap` promotes
+  unconditionally either way, which is what `ops::ap_records` already ships under 2.2, and 2.2's
   hardware verification is still the thing that confirms it.
 
 - [x] ~~**2.15 Decide what `global_ap` returning `Split` or `NoneOutsideAKeyset` should do.**~~
@@ -124,9 +128,9 @@ rather than as settings it recognises.
 
 - [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
   non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
-  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. It is measured inside a
-    keyset (`ks-value-ap`, `X` from `0x0000` to `0x0010`) and unmeasured outside one. Say which,
-    see 2.14.
+  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. The promotion is measured
+    (`ks-value-ap`, `X` from `0x0000` to `0x0010`); whether it depends on keyset membership is not.
+    Say which, see 2.14.
   - `keyset.rs` `frames()` claims a per-key group is at most 4 records. That is a property of
     `plan`'s output, not of `frames()`: `plan` takes a bare `&[u8]` with no dedup, and a repeated
     usage produces a 16-record group that does split. Unreachable through the CLI, since both
@@ -147,6 +151,33 @@ rather than as settings it recognises.
     measurement. Both should stand: 618 MODE write records across the corpus, none at nibble 0.
   - `wh set rt --set` is a third pair of routes to one intent with different frames, alongside the
     two recorded in 2.13 and 2.14. `plan` matches the vendor here and `ops::rt_records` diverges.
+
+- [ ] **2.17 What the `docs/keysets.md` verification pass found that touches code. Read before
+  writing 2.4b.** An adversarial pass on 2026-09-03 checked every measured claim in that document
+  against the frames: 61 confirmed, 29 findings, 8 of them flatly wrong. The document is now
+  rewritten. Three findings change what the CLI should do rather than only what the document says.
+
+  - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
+    any other non-owned layout: `100` in all 580 keyset-era write records, `0` in all 38 Phase 1
+    ones, matching what each capture reads. `keyset::plan` never writes them, and its stated reason,
+    that a constant would be an invented value, turns out to be right for a reason it did not know.
+    If 2.4b ever adds them, read them per key. Hard-coding `100` would write `100` over `0` on a
+    board that has never held a keyset.
+  - **Template step 1 is a two-record cap, not one frame per distinct value.** Of 162 MODE-only
+    write frames, 147 carry two records and 15 carry one, and none carries more. The vendor splits
+    one value across two frames and puts two values in one. `frames()` packs whole per-key groups up
+    to 14 records, so it already diverges here; the divergence is defensible, but it is now a
+    measured one rather than a match, and the comment in `keyset.rs` should say so.
+  - **The global rapid trigger skip is not measured as a membership test.** None of the four global
+    captures reads `0xFE`. The two skipped keys are simultaneously the members of `0xFE=2` and the
+    only two keys at MODE nibble `3`, so the frames cannot separate the two rules. Worse, `u` and
+    `i` held `0xFE=1` at the last membership read and were written rather than skipped. Anything in
+    the CLI that skips on membership is choosing one of two readings, and should say which.
+
+  The remaining 26 findings are in the document. The ones worth knowing while writing the CLI: the
+  allocation of `0xFF=9` is unexplained by any frame and is no longer offered as evidence for max
+  plus one, indices are reused after a delete rather than being monotonic, and the vendor does not
+  always batch two members of one create into the same frame.
 
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
