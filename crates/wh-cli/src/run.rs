@@ -850,21 +850,27 @@ fn profile_cmd(number: Option<u8>) -> Result<()> {
     })
 }
 
-/// The `_` arm is temporary: it stands in for `create`/`set`/`delete` until a later task
-/// replaces it with their real handlers.
+/// `Create`/`Set`/`Delete` are named explicitly, not matched by `_`, so a renamed or added
+/// `KeysetWhat` variant is a compile error here rather than a silent "not yet implemented".
+/// Decided before `with_session` opens the device, since the vendor HID collection is exclusive.
 fn keyset_cmd(what: crate::cli::KeysetWhat) -> Result<()> {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    with_session(|s| match what {
-        crate::cli::KeysetWhat::List { kind } => match kind {
-            Some(k) => crate::keyset::list(&mut out, s, crate::keyset::kind_of(k)),
-            None => {
-                crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Ap)?;
-                crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Rt)
-            }
-        },
-        _ => bail!("not yet implemented"),
-    })
+    use crate::cli::KeysetWhat;
+    match what {
+        KeysetWhat::List { kind } => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| match kind {
+                Some(k) => crate::keyset::list(&mut out, s, crate::keyset::kind_of(k)),
+                None => {
+                    crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Ap)?;
+                    crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Rt)
+                }
+            })
+        }
+        KeysetWhat::Create { .. } => bail!("not yet implemented"),
+        KeysetWhat::Set { .. } => bail!("not yet implemented"),
+        KeysetWhat::Delete { .. } => bail!("not yet implemented"),
+    }
 }
 
 fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {

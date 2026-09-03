@@ -24,9 +24,8 @@ fn reply(cmd: u8, payload: &[u8]) -> [u8; 64] {
 }
 
 /// A scratch directory unique to this test and process, used as its own `XDG_CONFIG_HOME`.
-/// Sharing one config directory across tests would be harmless for `dump`, which writes
-/// nothing, but `wh keys group` writes a real `config.json` and `backup`/`restore` rotate a
-/// shared `backups/` directory, so concurrent or repeated runs would delete each other's fixtures.
+/// `wh keyset list` never touches the config store, but `run_wh` always sets one, so each test
+/// still gets its own rather than racing another test's over the same path.
 fn scratch_config_dir(tag: &str) -> std::path::PathBuf {
     let p = std::env::temp_dir().join(format!("wh-cli-it-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
@@ -35,7 +34,7 @@ fn scratch_config_dir(tag: &str) -> std::path::PathBuf {
 
 /// A DEFKEY reply payload for one row pair: `[rw, row_a, 21 usages, row_b, 21 usages]`, with
 /// at most the first column of each row populated. `None` leaves a row empty (no keys), which
-/// is what the second and third row pairs of this two-key board need.
+/// is what the third row pair of this four-key board needs.
 fn defkey_payload(row_a: u8, row_b: u8, a_col0: Option<u8>, b_col0: Option<u8>) -> Vec<u8> {
     let mut payload = vec![0u8; 45];
     payload[1] = row_a;
@@ -67,39 +66,6 @@ fn matrix_lines() -> Vec<String> {
     lines
 }
 
-/// One key's [AP, MODE, RT_PRESS, RT_RELEASE, KEYSET_AP, KEYSET_RT] roundtrips, in the exact
-/// order `ops::read_key_settings` sends them.
-fn key_settings_lines(
-    usage: u8,
-    ap: u16,
-    mode: u16,
-    rt_press: u16,
-    rt_release: u16,
-    ap_keyset: u16,
-    rt_keyset: u16,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    for (layout_id, value) in [
-        (layout::AP, ap),
-        (layout::MODE, mode),
-        (layout::RT_PRESS, rt_press),
-        (layout::RT_RELEASE, rt_release),
-        (layout::KEYSET_AP, ap_keyset),
-        (layout::KEYSET_RT, rt_keyset),
-    ] {
-        lines.push(out_line(&cmds::read_key_layout(usage, layout_id)));
-        let payload = [
-            0x00,
-            usage,
-            layout_id,
-            (value & 0xFF) as u8,
-            (value >> 8) as u8,
-        ];
-        lines.push(in_line(&reply(cmds::cmd::KEY, &payload)));
-    }
-    lines
-}
-
 fn write_script(tag: &str, lines: &[String]) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("wh-{tag}-{}.jsonl", std::process::id()));
     std::fs::write(&path, lines.join("\n")).unwrap();
@@ -121,7 +87,8 @@ fn run_wh(
 
 /// One `read_layout_value` roundtrip: a single-record read request for `usage`/`layout`, and the
 /// reply carrying `value`. Built from `cmds::read_key_layout` and the same reply shape
-/// `ops::read_layout_value` parses, matching what `keyset::read_membership` actually sends.
+/// `ops::read_layout_value` parses, matching what `keyset::read_membership` and `keyset::list`
+/// actually send.
 fn layout_read_lines(usage: u8, layout: u8, value: u16) -> Vec<String> {
     vec![
         out_line(&cmds::read_key_layout(usage, layout)),
@@ -139,7 +106,7 @@ fn layout_read_lines(usage: u8, layout: u8, value: u16) -> Vec<String> {
 }
 
 /// `wh keyset list ap` groups the board's 0xFF values into keysets and prints each one's members
-/// by name. The script gives four keys, two of them at index 1 and one at index 2, so a
+/// by name. The script gives four keys, two of them at index 1 and one at index 2, so an
 /// implementation that printed every non-zero key as its own keyset would fail here.
 #[test]
 fn keyset_list_ap_groups_members_by_index() {
@@ -147,9 +114,11 @@ fn keyset_list_ap_groups_members_by_index() {
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 0)] {
         lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
     }
-    // one read_key_settings per keyset, for the value column
-    lines.extend(key_settings_lines(0x1A, 2000, 0x0018, 100, 100, 1, 0));
-    lines.extend(key_settings_lines(0x16, 1200, 0x0018, 100, 100, 2, 0));
+    // one AP read per member of each keyset, for the value column: w and a agree at 2.00mm, s is
+    // the only member of keyset 2.
+    lines.extend(layout_read_lines(0x1A, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x04, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x16, layout::AP, 1200));
     let script = write_script("keyset-list-ap", &lines);
     let out = run_wh(
         &["keyset", "list", "ap"],
@@ -191,4 +160,102 @@ fn keyset_list_says_none_when_no_key_holds_a_keyset() {
 
     std::fs::remove_file(script).unwrap();
     let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-empty"));
+}
+
+/// The disagreement case: two members of the same keyset read different actuation points.
+/// `wh keyset list` must show the disagreement, not print one member's value as though both
+/// agreed, which is exactly the defect this test guards against.
+#[test]
+fn keyset_list_ap_shows_a_disagreement_instead_of_one_members_value() {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x1A, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x04, layout::AP, 1200));
+    let script = write_script("keyset-list-ap-disagree", &lines);
+    let out = run_wh(
+        &["keyset", "list", "ap"],
+        &script,
+        &scratch_config_dir("keyset-list-ap-disagree"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("1 disagree: w at 2.00mm, a at 1.20mm"),
+        "got: {text}"
+    );
+    assert!(
+        !text.contains("1 2.00mm  w,a"),
+        "must not print one member's value as though both agreed: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-ap-disagree"));
+}
+
+/// `Kind::Rt`'s own formatting: press/release, distinct from the ap column's bare millimetres.
+#[test]
+fn keyset_list_rt_formats_press_and_release() {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 0u16), (0x04, 0), (0x16, 5), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::RT_PRESS, 250));
+    lines.extend(layout_read_lines(0x16, layout::RT_RELEASE, 310));
+    let script = write_script("keyset-list-rt", &lines);
+    let out = run_wh(
+        &["keyset", "list", "rt"],
+        &script,
+        &scratch_config_dir("keyset-list-rt"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("5 0.25/0.31mm  s"), "got: {text}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-rt"));
+}
+
+/// `wh keyset list` with no kind argument lists ap then rt, each its own full membership read:
+/// `wh` caches nothing, so the two kinds are two independent passes over the board.
+#[test]
+fn keyset_list_with_no_kind_lists_ap_then_rt() {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 0), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x1A, layout::AP, 2000));
+    lines.extend(matrix_lines());
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
+    }
+    let script = write_script("keyset-list-both", &lines);
+    let out = run_wh(
+        &["keyset", "list"],
+        &script,
+        &scratch_config_dir("keyset-list-both"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let ap_at = text.find("ap keysets:").expect("ap heading missing");
+    let rt_at = text.find("rt keysets:").expect("rt heading missing");
+    assert!(ap_at < rt_at, "ap heading must come before rt: {text}");
+    assert!(text.contains("1 2.00mm  w"), "got: {text}");
+    assert!(text.contains("rt keysets: none"), "got: {text}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-both"));
 }
