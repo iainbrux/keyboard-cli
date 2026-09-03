@@ -632,80 +632,25 @@ Expected: FAIL, "not yet implemented".
 
 - [ ] **Step 2: Implement `create`**
 
-```rust
-/// Creates a keyset over `usages` at the global value, or at an explicit one. Announces which
-/// existing keysets lose members first: a create overwrites its members' values with the global
-/// rather than carrying them in, so the operator sees what is about to go.
-pub(crate) fn create<T: Transport>(
-    out: &mut impl Write,
-    s: &mut Session<T>,
-    kind: Kind,
-    usages: &[u8],
-    value: Option<Um>,
-    rt: Option<(Um, Um)>,
-) -> Result<CreatePlan> {
-    let m = keyset::read_membership(s, kind)?;
-    let index = keyset::next_index(&m)?;
-    let change = match kind {
-        Kind::Ap => {
-            let v = match value {
-                Some(v) => v,
-                None => global_ap_or_bail(s, &m, "--value")?,
-            };
-            keyset::Change::ap(v)
-        }
-        Kind::Rt => {
-            let (p, r) = match rt {
-                Some(v) => v,
-                None => global_rt_or_bail(s, &m, "--press and --release")?,
-            };
-            keyset::Change::rt_on(p, r)
-        }
-    };
-    let losing = losing_members(&keyset::group(&m), usages);
-    announce_steal(out, kind, &losing, index.value())?;
-    let plan = keyset::plan(s, usages, &change, Some(index))?;
-    Ok(CreatePlan { index, plan })
-}
+**This step's code block has been removed rather than corrected.** It showed an `announce_steal`
+with no values, a `create` that announced before building the plan, and a `verify_membership`
+checking membership alone. Task 2 shipped none of those, and a later task copying the block would
+reintroduce three defects the reviews already caught. The interfaces that shipped are in this
+task's **Interfaces** section above; use those.
 
-/// Existing keysets that would lose members to a create over `usages`, as (index, the members
-/// it loses), ascending by index.
-fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
-    sets.iter()
-        .filter_map(|ks| {
-            let taken: Vec<u8> = ks
-                .members
-                .iter()
-                .copied()
-                .filter(|u| usages.contains(u))
-                .collect();
-            (!taken.is_empty()).then(|| (ks.index, taken))
-        })
-        .collect()
-}
+What `create` must do, in this order:
 
-pub(crate) fn announce_steal(
-    out: &mut impl Write,
-    kind: Kind,
-    losing: &[(u16, Vec<u8>)],
-    new_index: u16,
-) -> std::io::Result<()> {
-    writeln!(out, "{} keyset {new_index}: creating", kind_name(kind))?;
-    for (index, taken) in losing {
-        let names: Vec<String> = taken.iter().map(|&u| key_label(u)).collect();
-        writeln!(out, "  keyset {index} loses {}", names.join(","))?;
-    }
-    Ok(())
-}
-
-pub(crate) struct CreatePlan {
-    pub index: keyset::KeysetIndex,
-    pub plan: keyset::WritePlan,
-}
-```
-
-The `run.rs` arm calls `create`, then either prints `plan.frames()` on `--dry-run` or takes an
-auto-backup and calls `apply` followed by the verification in step 4.
+1. `read_membership(s, kind)` over the whole board, so allocation cannot see a partial view.
+2. `next_index(&m)`.
+3. Resolve the value: `--value` (with `--press`/`--release` overriding it for `Kind::Rt`) if given,
+   else the global through `global_ap_or_bail`/`global_rt_or_bail`, which refuse a `Split` rather
+   than voting.
+4. Build the plan, so that each key's pre-write settings are available.
+5. Announce, naming both what each stolen key currently holds and what is about to replace it. A
+   create overwrites its members' values with the global rather than carrying them in, and this
+   line is the operator's only warning.
+6. `auto_backup`, then `apply`. The backup exists before the write, never after.
+7. Verify: re-read every key and check **both** its membership and its value.
 
 - [ ] **Step 3: Write the failing test for the refusal**
 
