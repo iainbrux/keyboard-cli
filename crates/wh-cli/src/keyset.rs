@@ -586,7 +586,7 @@ mod tests {
         let err = resolve_index(&sets, 2).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no keyset 2"), "got: {msg}");
-        assert!(msg.contains('1') && msg.contains('3'), "got: {msg}");
+        assert!(msg.contains("the board has 1, 3"), "got: {msg}");
     }
 
     #[test]

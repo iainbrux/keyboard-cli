@@ -2449,7 +2449,7 @@ fn keyset_delete_ap_end_to_end_catches_a_membership_that_never_cleared_on_the_se
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The rollback caveat is a suffix note on `delete`, which does write membership, not the
+/// The rollback caveat is a prefix note on `delete`, which does write membership, not the
 /// outermost message: the mismatch itself must stay the final `error:` line, since a caveat
 /// printed as the headline would read as though it were the actual failure.
 #[test]
