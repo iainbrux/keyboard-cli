@@ -15,7 +15,8 @@ use wh_proto::value::Um;
 pub fn run(cli: Cli) -> Result<()> {
     // Opened once here: `Store::open` only resolves a path, so it is cheap even for commands
     // that never read it. Every command that needs one takes this `&Store` instead of reaching
-    // for the config directory again; `Dump` and `Profile` touch no config at all.
+    // for the config directory again; `Dump`, `Profile`, `Selftest`, and `Keyset` touch no
+    // config at all.
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),

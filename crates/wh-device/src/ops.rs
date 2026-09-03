@@ -71,7 +71,7 @@ pub fn read_key_settings<T: Transport>(
 /// Reads one key's layout value, rejecting a reply that doesn't echo back the same key and
 /// layout id asked for. `Session::roundtrip` matches only on the command byte (0x23 for every
 /// per-key read and write ack), so a stale reply could otherwise apply key A's value to key B.
-/// Public: the single-layout read the keyset CLI verifies and lists through.
+/// Public: the single-layout read the keyset CLI lists through.
 pub fn read_layout_value<T: Transport>(
     s: &mut Session<T>,
     usage: u8,

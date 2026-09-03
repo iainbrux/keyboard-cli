@@ -134,8 +134,10 @@ fn keyset_list_ap_groups_members_by_index() {
     assert!(text.contains("1 2.00mm  w,a"), "got: {text}");
     assert!(text.contains("2 1.20mm  s"), "got: {text}");
     assert!(
-        !text.contains("d"),
-        "key d holds 0 and is in no keyset: {text}"
+        !text
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .any(|tok| tok == "d"),
+        "key d must not appear as a member name, it holds 0 and is in no keyset: {text}"
     );
 
     std::fs::remove_file(script).unwrap();
@@ -258,4 +260,43 @@ fn keyset_list_with_no_kind_lists_ap_then_rt() {
 
     std::fs::remove_file(script).unwrap();
     let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-both"));
+}
+
+/// A rapid trigger keyset whose members share press but differ on release. Equal press forces the
+/// comparison onto the whole pair, not press alone, the shape a partial `wh set rt` write leaves.
+/// Output-assertion lever: reading fewer frames than scripted here produces no later frame
+/// mismatch (there is nothing scripted after it), so only the printed text can catch it.
+#[test]
+fn keyset_list_rt_shows_a_disagreement_when_only_release_differs() {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 7u16), (0x04, 7), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    lines.extend(layout_read_lines(0x1A, layout::RT_PRESS, 200));
+    lines.extend(layout_read_lines(0x1A, layout::RT_RELEASE, 150));
+    lines.extend(layout_read_lines(0x04, layout::RT_PRESS, 200));
+    lines.extend(layout_read_lines(0x04, layout::RT_RELEASE, 300));
+    let script = write_script("keyset-list-rt-disagree", &lines);
+    let out = run_wh(
+        &["keyset", "list", "rt"],
+        &script,
+        &scratch_config_dir("keyset-list-rt-disagree"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("7 disagree: w at 0.20/0.15mm, a at 0.20/0.30mm"),
+        "got: {text}"
+    );
+    assert!(
+        !text.contains("0.20/0.15mm  w,a"),
+        "must not print one member's pair as though both agreed: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-rt-disagree"));
 }

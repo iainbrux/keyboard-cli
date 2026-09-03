@@ -115,8 +115,8 @@ fn split_message_str(what: &str, shown: &[(String, usize)], flag: &str) -> Strin
 
 /// Lists one kind's keysets with their members and value. Every member is read and compared: an
 /// agreeing keyset prints its one value, a disagreeing one names each distinct value and which
-/// keys hold it. `wh` never picks a winner here, the same refusal `global_ap`/`global_rt` apply
-/// to the board's global value.
+/// keys hold it, matching the refusal `global_ap` and `global_rt` already apply to the board's
+/// global value.
 pub(crate) fn list<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -146,9 +146,7 @@ fn keyset_line<T: Transport>(s: &mut Session<T>, kind: Kind, ks: &Keyset) -> Res
             for &u in &ks.members {
                 values.push((u, Um(ops::read_layout_value(s, u, layout::AP)?)));
             }
-            Ok(agreement_line(&values, |v: Um| {
-                format!("{:.2}mm", v.to_mm())
-            }))
+            agreement_line(&values, |v: Um| format!("{:.2}mm", v.to_mm()))
         }
         Kind::Rt => {
             let mut values = Vec::with_capacity(ks.members.len());
@@ -157,21 +155,29 @@ fn keyset_line<T: Transport>(s: &mut Session<T>, kind: Kind, ks: &Keyset) -> Res
                 let release = Um(ops::read_layout_value(s, u, layout::RT_RELEASE)?);
                 values.push((u, (press, release)));
             }
-            Ok(agreement_line(&values, |(p, r): (Um, Um)| {
+            agreement_line(&values, |(p, r): (Um, Um)| {
                 format!("{:.2}/{:.2}mm", p.to_mm(), r.to_mm())
-            }))
+            })
         }
     }
 }
 
 /// Renders one keyset's members and their values: every member's name if they agree, or, if they
 /// do not, each distinct value with the names of the keys holding it. Never a single member's
-/// value passed off as the whole keyset's, which is exactly the defect this replaces.
-fn agreement_line<V: PartialEq + Copy>(members: &[(u8, V)], fmt: impl Fn(V) -> String) -> String {
-    let first = members[0].1;
+/// value passed off as the whole keyset's, which is exactly the defect this replaces. Errors on
+/// an empty slice rather than indexing it: `keyset::group` never builds a memberless `Keyset`
+/// today, but that invariant lives in a different crate, not here.
+fn agreement_line<V: PartialEq + Copy>(
+    members: &[(u8, V)],
+    fmt: impl Fn(V) -> String,
+) -> Result<String> {
+    let first = match members.first() {
+        Some(&(_, v)) => v,
+        None => bail!("keyset has no members to compare"),
+    };
     if members.iter().all(|&(_, v)| v == first) {
         let names: Vec<String> = members.iter().map(|&(u, _)| key_label(u)).collect();
-        return format!("{}  {}", fmt(first), names.join(","));
+        return Ok(format!("{}  {}", fmt(first), names.join(",")));
     }
     let mut groups: Vec<(V, Vec<u8>)> = Vec::new();
     for &(u, v) in members {
@@ -187,7 +193,7 @@ fn agreement_line<V: PartialEq + Copy>(members: &[(u8, V)], fmt: impl Fn(V) -> S
             format!("{} at {}", names.join(","), fmt(v))
         })
         .collect();
-    format!("disagree: {}", parts.join(", "))
+    Ok(format!("disagree: {}", parts.join(", ")))
 }
 
 #[cfg(test)]
