@@ -93,6 +93,36 @@ range over `wh-proto`'s own key table, not the physical layout, so `f1-f12` pars
 nothing on this board: the K-001 is 68 keys with no F row, and `wh keys list` is the source of truth
 for what actually exists to select.
 
+Manage keysets, the vendor's per-key groupings for actuation point (`ap`) and rapid trigger (`rt`)
+settings (`0xFF` and `0xFE` on the wire, independent of each other):
+
+```
+wh keyset list
+wh keyset list ap
+wh keyset create ap --keys u,i,o,p --value 1.5
+wh keyset create rt --keys j,k,l --press 0.3 --release 0.5
+wh keyset set ap 3 --value 1.2
+wh keyset delete ap 3
+```
+
+`wh keyset list` with no kind lists both; naming one lists only that one, each keyset shown with its
+index, value, and member keys. `wh keyset set` changes an existing keyset's value in place and never
+touches membership; only `create`, `delete`, and `wh set ap` below move a key into or out of one.
+`create` and `delete` both take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the
+board's current global value and is required only when the keys outside every keyset disagree on it,
+or when none are left outside one.
+
+**Creating a keyset overwrites its members' values with the board's global, not with their own.**
+`wh keyset create ap --keys u,i,o,p` sets `u`, `i`, `o` and `p` to the board's current actuation
+point, discarding whatever each one held before. This is measured vendor behaviour, not a choice
+`wh` made.
+
+**`wh set ap` run over part of an existing keyset splits it into a new one, and says so.** Given
+`wh set ap --keys w,s --set 1.5` where `w` and `s` sit inside a keyset with `a` and `d`, `wh`
+allocates a new keyset index, moves `w` and `s` into it, and enrols any selected key that was in no
+keyset at all alongside them, printing what it did before writing anything. This splitting is
+inferred from the vendor's own web UI, not measured from any capture (`docs/keysets.md`).
+
 Manage stored groups:
 
 ```
@@ -138,12 +168,13 @@ wh selftest
 
 ## A safety note before you write anything
 
-`wh set`, `wh restore`, and `wh selftest` write to the physical keyboard. `wh set rt` and `wh set ap`
-accept `--dry-run` (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports
-a real run would send, and sends nothing. Use it to check a command before it touches hardware,
-especially the first time you type a new key selector. `wh restore` and `wh selftest` have no
-`--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
-only ever rewrites a setting to the value it already read.
+`wh set`, `wh keyset create|set|delete`, `wh restore`, and `wh selftest` write to the physical
+keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete` accept `--dry-run`
+(`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports a real run would
+send, and sends nothing. Use it to check a command before it touches hardware, especially the first
+time you type a new key selector. `wh restore` and `wh selftest` have no `--dry-run`; `wh restore`
+takes its own auto-backup before writing (see below), and `wh selftest` only ever rewrites a setting
+to the value it already read.
 
 Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
 `keyset list|create|set|delete`, `profile`) names which transport it opened, on stderr, one line,

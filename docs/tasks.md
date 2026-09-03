@@ -51,7 +51,9 @@ rather than as settings it recognises.
   list|create|set|delete`, `wh set ap` on a key already in a keyset splits it into a new keyset
   automatically and tells the user it did so, and `wh restore` writes membership back too (its own
   gap: `KeysetIndex::restoring` reproduces a snapshot's index, including one allocation would never
-  produce, since `next_index`'s max-plus-one rule cannot).
+  produce, since `next_index`'s max-plus-one rule cannot). `ops::ap_records` and `ops::set_ap`
+  remain in the tree, exercised only by their own unit tests: `wh set ap` moved onto
+  `keyset::plan`/`Change::ap` (2.14), so `run.rs` no longer calls either. Documented in `README.md`.
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
