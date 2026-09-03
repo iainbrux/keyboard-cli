@@ -214,6 +214,16 @@ rather than as settings it recognises.
   - `verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
     create. Cannot affect what is checked, which was proven by deleting the label and watching every
     other parameter go dead. A small enum would make it unforgeable.
+  - `verify_restore`'s value and mode comparison is unpinned: replacing its whole condition with
+    `if false` leaves the workspace green. So is its per-key coverage: `keys.iter().take(1)` also
+    leaves it green, because the one mismatch fixture puts its fault on the first key. Both are
+    correct today and defended by nothing.
+  - `wh restore` never checks the snapshot's key usages against the board's live matrix, so a
+    snapshot from a different matrix writes values and membership to usages the board may not have.
+    Worse than cosmetic, because `verify_restore` reads back the snapshot's usages rather than the
+    board's, so a phantom usage the firmware echoes is reported as verified rather than refused.
+    Fixing it needs a policy decision (refuse, skip, or gate on a flag), a live matrix read inside
+    the session, and a restructure of restore's build-everything-before-sending order.
   - The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
     point create now asserts that `0xFE` is untouched, and the converse. `docs/keysets.md`'s
     separate-counters finding makes that the right assumption, and it is the only one of the six

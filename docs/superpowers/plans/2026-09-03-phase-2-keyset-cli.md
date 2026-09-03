@@ -1176,8 +1176,16 @@ is exercised rather than always empty.
 
 - [ ] **Step 4: Build the membership records in `run.rs`**
 
-`RestoreKey` gains `ap_keyset: u16` and `rt_keyset: u16`, populated in `validate_restore_keys` from
-`KeyToml`'s existing fields. Add:
+**The shape given here was wrong and destroyed data. Do not copy it.** It said `RestoreKey` gains
+`ap_keyset: u16` and `rt_keyset: u16` populated from `KeyToml`'s existing fields, which default to
+`0` when absent. That makes a snapshot predating the fields indistinguishable from a board that read
+zero, so restoring an older backup wrote zero to every key and dissolved every keyset on the board
+while printing "verified". The review drove it.
+
+**The invariant: a snapshot that never recorded membership must not be able to assert one.** Absent
+has to stay distinguishable from zero all the way to the wire, so a key whose membership the file
+does not know gets no membership record and no membership comparison, and the operator is told how
+many keys were skipped for that reason. Add:
 
 ```rust
 /// Membership records for a restore, actuation point first then rapid trigger, each built
