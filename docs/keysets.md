@@ -218,6 +218,23 @@ Measured four ways:
   `,` only a MODE change. Both got the full template. `N` was at rapid trigger with its own settings
   beforehand, so it was probably stolen from another keyset, but which index it held is never read.
 
+### Changing a value over part of a keyset, an operator observation
+
+**Not measured, and not from any capture.** On 2026-09-03 the operator drove the vendor
+configurator directly and reported, with screenshots, that selecting a set of keys which included
+two existing members of a `W,A,S,D` keyset and giving them a value produced a **new** keyset
+containing the whole selection, leaving the original with its remaining members. The corpus
+contains no frames for this: no capture in the 27 files shows the vendor splitting a keyset.
+
+This is recorded here because `wh set ap` implements that behaviour and every other statement about
+it in the repository pointed at this document for its source. It is an observation of the
+configurator's interface, one step weaker than the frame measurements above and two steps weaker
+than a capture. It is the only support for the rule, so if it is wrong the rule is wrong.
+
+There is one piece of evidence in the corpus that cuts the other way, recorded in the promotion
+section above: on one reading of `ks-value-ap`, the vendor wrote no `0xFF` record on a mixed
+selection, which is the case `wh` now splits. That reading is not settled either.
+
 ### A new keyset starts at the global value
 
 Creating a keyset does not carry its members' existing values in. An actuation point keyset starts
