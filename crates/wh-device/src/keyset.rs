@@ -106,6 +106,33 @@ impl KeysetIndex {
     }
 }
 
+/// Membership records for keys that each carry their own index, which `plan` cannot express: it
+/// writes one index to every key it is given. `wh restore` is the only caller, since a snapshot's
+/// indices can include gaps allocation never reuses. Errors if the entries mix kinds, so one
+/// layout's index can never be written to the other's layout.
+pub fn membership_records(entries: &[(u8, KeysetIndex)]) -> Result<Vec<KeyRecord>, DeviceError> {
+    let Some((_, first)) = entries.first() else {
+        return Ok(Vec::new());
+    };
+    let kind = first.kind;
+    for (_, idx) in entries {
+        if idx.kind != kind {
+            return Err(DeviceError::KeysetKindMismatch {
+                expected: kind,
+                found: idx.kind,
+            });
+        }
+    }
+    Ok(entries
+        .iter()
+        .map(|&(key, idx)| KeyRecord {
+            key,
+            layout: kind.layout(),
+            value: idx.value,
+        })
+        .collect())
+}
+
 /// The next index to allocate: the highest live membership value plus one, or `1` when no key
 /// holds any, carrying `m`'s own kind forward. `u16::MAX` is a valid *output* (reached when the
 /// highest live value is `u16::MAX - 1`); only allocating *past* it, when `u16::MAX` is already
@@ -1109,6 +1136,49 @@ mod tests {
             "got {err:?}"
         );
         assert!(s.into_inner().finished());
+    }
+
+    // -- membership_records --
+
+    /// Mixing an actuation point index with a rapid trigger one in one call must error rather
+    /// than writing one layout's index into the other layout, which would silently move keys
+    /// between groupings.
+    #[test]
+    fn membership_records_refuses_mixed_kinds() {
+        let entries = [
+            (0x1Au8, KeysetIndex::restoring(Kind::Ap, 1)),
+            (0x04, KeysetIndex::restoring(Kind::Rt, 1)),
+        ];
+        assert!(matches!(
+            membership_records(&entries),
+            Err(DeviceError::KeysetKindMismatch { .. })
+        ));
+    }
+
+    /// Every record carries its own key's index and the layout its kind names.
+    #[test]
+    fn membership_records_carries_one_index_per_key() {
+        let entries = [
+            (0x1Au8, KeysetIndex::restoring(Kind::Ap, 3)),
+            (0x04, KeysetIndex::restoring(Kind::Ap, 0)),
+        ];
+        let r = membership_records(&entries).unwrap();
+        assert_eq!(
+            r[0],
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_AP,
+                value: 3
+            }
+        );
+        assert_eq!(
+            r[1],
+            KeyRecord {
+                key: 0x04,
+                layout: layout::KEYSET_AP,
+                value: 0
+            }
+        );
     }
 
     // -- apply_touch, the internal touch-nibble rule --

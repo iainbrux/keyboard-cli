@@ -53,8 +53,8 @@ pub struct KeyToml {
     /// Raw Layout_Mode value, restored verbatim so advanced-key modes survive.
     pub mode_raw: u16,
     /// Keyset membership as read from layouts 0xFF and 0xFE. `0` is the value read for keys
-    /// outside any keyset. Defaulted so snapshots taken before these fields existed still load.
-    /// `wh restore` ignores them.
+    /// outside any keyset. Defaulted so snapshots taken before these fields existed still load;
+    /// on such a snapshot `wh restore` writes `0`, taking every key out of any keyset it holds.
     #[serde(default)]
     pub ap_keyset: u16,
     #[serde(default)]

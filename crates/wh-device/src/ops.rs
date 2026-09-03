@@ -383,20 +383,27 @@ pub fn set_profile<T: Transport>(
     Ok(got)
 }
 
-/// Writes a whole snapshot back to the board: global travel first, then every per-key record.
-/// Global travel goes first so a restore that fails partway through the per-key batch still
+/// Writes a whole snapshot back to the board: the global record, then every key's values
+/// batched, then membership one record per frame, last. That ordering is the vendor's and is
+/// measured (`docs/keysets.md`); batching membership with the values would be a divergence for
+/// no gain. Global travel goes first so a restore that fails partway through the rest still
 /// leaves the board's overall travel consistent with what was intended.
 pub fn restore_all<T: Transport>(
     s: &mut Session<T>,
     global: &cmds::GlobalTravel,
     records: &[KeyRecord],
+    membership: &[KeyRecord],
 ) -> Result<(), DeviceError> {
     s.roundtrip(&cmds::write_global_travel(
         global.travel,
         global.press_dead,
         global.release_dead,
     ))?;
-    write_records(s, records)
+    write_records(s, records)?;
+    for frame in cmds::write_key_records_singly(membership) {
+        s.roundtrip(&frame)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1559,10 +1566,11 @@ mod tests {
         assert!(set_profile(&mut s, target).is_err());
     }
 
-    /// Writes the global travel DB record first, then the per-key batch(es), no SAVE
-    /// afterwards, mirroring `set_rt`/`set_ap`'s own script shape above.
+    /// Writes the global travel DB record first, then the per-key batch(es), then membership one
+    /// record per frame last, no SAVE afterwards, mirroring `set_rt`/`set_ap`'s own script shape
+    /// above.
     #[test]
-    fn restore_all_writes_global_travel_then_key_batches_and_sends_no_save() {
+    fn restore_all_writes_global_travel_then_key_batches_then_membership_last_and_sends_no_save() {
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
@@ -1613,9 +1621,16 @@ mod tests {
             },
         ];
 
+        let membership = vec![KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 3,
+        }];
+
         let db_write =
             cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
         let batches = cmds::write_key_records(&recs);
+        let membership_frames = cmds::write_key_records_singly(&membership);
 
         let mut lines = vec![
             l("out", &db_write),
@@ -1625,18 +1640,22 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        // Script ends right after the key batches: a SAVE order afterwards would be rejected.
+        for f in &membership_frames {
+            lines.push(l("out", f));
+            lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
+        }
+        // Script ends right after the membership frame: a SAVE order afterwards would be rejected.
 
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        restore_all(&mut s, &global, &recs).unwrap();
+        restore_all(&mut s, &global, &recs, &membership).unwrap();
         assert!(s.into_inner().finished());
     }
 
     #[test]
     fn restore_all_skips_key_batch_when_there_are_no_records() {
-        // Only the global travel write should reach the wire; an empty `records` produces no
-        // key batch frames. Pins the resulting wire behaviour, not a specific early-return
-        // branch in `write_records`.
+        // Only the global travel write should reach the wire; empty `records` and `membership`
+        // produce no key batch frames and no membership frames. Pins the resulting wire
+        // behaviour, not a specific early-return branch in `write_records`.
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
@@ -1650,7 +1669,7 @@ mod tests {
         ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        restore_all(&mut s, &global, &[]).unwrap();
+        restore_all(&mut s, &global, &[], &[]).unwrap();
         assert!(s.into_inner().finished());
     }
 }

@@ -735,15 +735,11 @@ fn keyset_create_ap_end_to_end_backs_up_writes_and_verifies() {
         stdout.contains("ap keyset create: 2 keys verified"),
         "got: {stdout}"
     );
-    // `create` always writes membership, so the restore-coverage warning must fire here too, on
-    // a clean success, not only after a readback mismatch: a create is exactly as unrecoverable
-    // through `wh restore --last` as a split is.
+    // `create` always writes membership, but `wh restore` writes membership back too now, so the
+    // old restore-coverage warning must not print, on a clean success any more than on failure.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains(
-            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
-             would restore values but leave membership as this write left it"
-        ),
+        !stderr.contains("wh restore does not yet write keyset membership"),
         "got: {stderr}"
     );
 
@@ -2517,9 +2513,9 @@ fn keyset_delete_ap_end_to_end_catches_a_membership_that_never_cleared_on_the_se
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The rollback caveat is a prefix note on `delete`, which does write membership, not the
-/// outermost message: the mismatch itself must stay the final `error:` line, since a caveat
-/// printed as the headline would read as though it were the actual failure.
+/// The mismatch itself must stay the final `error:` line on `delete`, which does write
+/// membership, and the retired restore-coverage caveat must not have come back as some other
+/// line pushed ahead of it.
 #[test]
 fn keyset_delete_ap_mismatch_keeps_the_readback_failure_as_the_headline() {
     let lines = delete_ap_write_script(Readback {
@@ -2532,24 +2528,9 @@ fn keyset_delete_ap_mismatch_keeps_the_readback_failure_as_the_headline() {
     let out = run_wh(&["keyset", "delete", "ap", "1"], &script, &config_home);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    // Exact text, not just "a note exists somewhere": a broken continuation (a doubled or
-    // missing space where the message wraps) would still satisfy a substring-only check.
     assert!(
-        err.contains(
-            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
-             would restore values but leave membership as this write left it"
-        ),
+        !err.contains("wh restore does not yet write keyset membership"),
         "got: {err}"
-    );
-    let note_at = err
-        .find("note: wh restore does not yet write keyset membership")
-        .expect("the rollback caveat must be present on delete");
-    let error_at = err
-        .find("error: readback mismatch")
-        .expect("the mismatch must still be reported");
-    assert!(
-        note_at < error_at,
-        "the caveat must precede the headline, not replace it: {err}"
     );
     let last_line = err.lines().last().unwrap_or("");
     assert!(

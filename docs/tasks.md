@@ -42,16 +42,16 @@ rather than as settings it recognises.
   gap closed everywhere else a mode value's rapid trigger state gets named, including `wh-cli`'s
   `keyset.rs` `mode_fault`, `raw_mode_rt_on`'s eventual successor once `wh set ap` moved onto
   `keyset::plan`.
-- [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it completely
-  from fifteen capture scenarios: one write template shared by every operation, values always
-  before membership, membership one record per frame and always last, non-owned layouts rewritten at
-  each key's current value, the whole template written only when an owned value differs, max-plus-one
-  allocation from live membership with no gap reuse, and a new keyset taking the global value rather
-  than its members'. Creating a keyset over a key already in one steals it. **Scope grew:**
-  `wh restore` must restore membership too. Measured on 2026-08-29, a restore put every value back
-  and left four keysets in place, so the board no longer matched the snapshot it had just been
-  restored from. CLI surface agreed: `wh keyset list|create|set|delete`, and `wh set ap` on a key
-  already in a keyset splits it into a new keyset automatically, telling the user it did so.
+- [x] ~~**2.4 Write keyset membership.**~~ `docs/keysets.md` specified it completely from fifteen
+  capture scenarios: one write template shared by every operation, values always before membership,
+  membership one record per frame and always last, non-owned layouts rewritten at each key's current
+  value, the whole template written only when an owned value differs, max-plus-one allocation from
+  live membership with no gap reuse, and a new keyset taking the global value rather than its
+  members'. Creating a keyset over a key already in one steals it. CLI surface shipped: `wh keyset
+  list|create|set|delete`, `wh set ap` on a key already in a keyset splits it into a new keyset
+  automatically and tells the user it did so, and `wh restore` writes membership back too (its own
+  gap: `KeysetIndex::restoring` reproduces a snapshot's index, including one allocation would never
+  produce, since `next_index`'s max-plus-one rule cannot).
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes

@@ -683,20 +683,7 @@ pub(crate) fn verify_write_as<T: Transport>(
             ));
         }
     }
-    let result = crate::run::report_verification(out, what, &usages, &bad);
-    // A prefix note, not the outer context: the mismatch itself must stay the headline `error:`
-    // line `main` prints, not be pushed behind a caveat, on failure. Printed on success too now:
-    // a successful split is exactly as unrestorable as a failed one, and saying nothing then was
-    // the gap that let a `wh set ap` split go unrecoverable with no warning at all. Raised
-    // whenever `plan` wrote membership, which every one of `create`, `set ap`'s split path, and
-    // `delete` can now do; `set` never does, and never reaches here with a non-empty check.
-    if !plan.membership_records().is_empty() {
-        crate::run::best_effort_eprintln(
-            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
-             would restore values but leave membership as this write left it",
-        );
-    }
-    result
+    crate::run::report_verification(out, what, &usages, &bad)
 }
 
 #[cfg(test)]

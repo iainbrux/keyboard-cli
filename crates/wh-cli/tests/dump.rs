@@ -1613,12 +1613,11 @@ fn auto_backup_lines_wasd(
 
 /// The non-dry-run sibling of `set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split`:
 /// the same board and selection, but driving the real write, auto-backup, and readback
-/// verification, not just the preview. Also pins the fix for the sharpest edge this feature
-/// introduces: `wh restore` does not restore keyset membership, so a **successful** split is
-/// exactly as unrecoverable through `wh restore --last` as a failed one, and the warning saying so
-/// must fire here too, not only when verification has already failed.
+/// verification, not just the preview. `wh restore` now writes membership too, so a split no
+/// longer needs a warning that it is unrecoverable; this pins the negative, that the old warning
+/// does not print any more, rather than leaving that regression uncovered.
 #[test]
-fn set_ap_end_to_end_splits_a_keyset_and_warns_restore_wont_cover_it() {
+fn set_ap_end_to_end_splits_a_keyset_and_prints_no_stale_restore_warning() {
     let mut lines = matrix_lines_wasd(); // resolve_keys
     lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 1), (0x07, 1)] {
@@ -1719,13 +1718,10 @@ fn set_ap_end_to_end_splits_a_keyset_and_warns_restore_wont_cover_it() {
         "unexpected stdout: {stdout}"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // The unrecoverability warning must fire on a successful split too, not only a failed one:
-    // `wh restore --last` still would not put w and s back in keyset 1 after this.
+    // The old warning claimed `wh restore` could not cover a split. `wh restore` writes
+    // membership now, so the claim is false and the warning must be gone, not merely stale.
     assert!(
-        stderr.contains(
-            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
-             would restore values but leave membership as this write left it"
-        ),
+        !stderr.contains("wh restore does not yet write keyset membership"),
         "unexpected stderr: {stderr}"
     );
 
@@ -2036,7 +2032,26 @@ fn restore_write_and_verify_lines() -> Vec<String> {
         lines.push(out_line(f));
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
-    // No SAVE order follows the write batch: the vendor was never observed sending one.
+
+    // Membership last, one record per frame: 'w' carries no keyset in this snapshot (both 0), so
+    // the write puts it back to none rather than skipping it.
+    let membership = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 0,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_RT,
+            value: 0,
+        },
+    ];
+    for f in &cmds::write_key_records_singly(&membership) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    // No SAVE order follows: the vendor was never observed sending one.
 
     // verify_restore reads 'w' back and finds every field matching what was restored.
     lines.extend(key_settings_lines(0x1A, 1200, 0x0220, 500, 600, 0, 0));
@@ -2717,6 +2732,184 @@ fn restore_last_prints_the_picked_snapshot_and_its_origin() {
         "unexpected stderr: {stderr}"
     );
 
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// A snapshot's JSON text for two keys, 'w' recorded in ap keyset 3 and 'a' recorded in none, so
+/// the restore-membership test below has a real index to write back next to a zero one, telling
+/// "restored to this keyset" apart from "restored to no keyset" rather than exercising only one.
+fn snapshot_json_with_keysets() -> String {
+    let snap = wh_config::snapshot::Snapshot {
+        firmware: "V1.0.0.001".into(),
+        serial: "SNRESTOREKEYSET1".into(),
+        taken_at: "2026-08-28T12:00:00Z".into(),
+        profile: Some(cmds::ProfileNumber::from_one_based(1).unwrap()),
+        origin: None,
+        global: wh_config::snapshot::GlobalToml {
+            travel_mm: 2.0,
+            press_dead_mm: 0.2,
+            release_dead_mm: 0.1,
+        },
+        keys: vec![
+            wh_config::snapshot::KeyToml {
+                name: "w".into(),
+                usage: 0x1A,
+                ap_mm: 1.2,
+                rt: false,
+                rt_press_mm: 0.5,
+                rt_release_mm: 0.6,
+                mode_raw: 0x0018,
+                ap_keyset: 3,
+                rt_keyset: 0,
+            },
+            wh_config::snapshot::KeyToml {
+                name: "a".into(),
+                usage: 0x04,
+                ap_mm: 1.5,
+                rt: false,
+                rt_press_mm: 0.0,
+                rt_release_mm: 0.0,
+                mode_raw: 0x0000,
+                ap_keyset: 0,
+                rt_keyset: 0,
+            },
+        ],
+    };
+    snap.to_json().unwrap()
+}
+
+/// The full script `wh restore` sends for `snapshot_json_with_keysets`: its own profile read, the
+/// auto-backup, the global travel write, the per-key value batch, then membership one record per
+/// frame last, ap over both keys before rt over both, matching `restore_membership_records`' own
+/// order, then the readback `verify_restore` does per key including both keyset fields.
+fn restore_script_with_keyset_readback() -> Vec<String> {
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+
+    let db_write = cmds::write_global_travel(
+        wh_proto::value::Um(2000),
+        wh_proto::value::Um(200),
+        wh_proto::value::Um(100),
+    );
+    lines.push(out_line(&db_write));
+    lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x0018,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 600,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 1500,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x0000,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 0,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 0,
+        },
+    ];
+    for f in &cmds::write_key_records(&value_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    // Membership last, one record per frame: ap for every key, then rt for every key, matching
+    // `restore_membership_records`' own build order rather than interleaving per key.
+    let membership_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 3,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::KEYSET_AP,
+            value: 0,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_RT,
+            value: 0,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::KEYSET_RT,
+            value: 0,
+        },
+    ];
+    for f in &cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    // verify_restore's readback: both keys land at the restored values and keyset indices.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0018, 500, 600, 3, 0));
+    lines.extend(key_settings_lines(0x04, 1500, 0x0000, 0, 0, 0, 0));
+    lines
+}
+
+/// A restore puts membership back, values first and membership last, one record per frame. A
+/// snapshot that recorded a key in ap keyset 3 must leave the board with that key in keyset 3.
+/// `ReplayTransport` matches byte for byte, so a membership frame sent before the value frames,
+/// or batched with them, or in the wrong per-key order, fails the script rather than the
+/// assertions below: the ordering is what this test actually pins.
+#[test]
+fn restore_writes_keyset_membership_after_the_values() {
+    let config_home = scratch_config_dir("restore-keysets");
+    let snap_path =
+        std::env::temp_dir().join(format!("wh-restore-keysets-{}.json", std::process::id()));
+    std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
+
+    let lines = restore_script_with_keyset_readback();
+    let path = write_script("restore-keysets", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("restored 2 keys from snapshot") && stdout.contains("verified"),
+        "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }

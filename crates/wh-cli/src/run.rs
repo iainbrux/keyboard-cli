@@ -997,6 +997,8 @@ struct RestoreKey {
     mode_raw: u16,
     rt_press: Um,
     rt_release: Um,
+    ap_keyset: u16,
+    rt_keyset: u16,
 }
 
 fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<RestoreKey>> {
@@ -1019,9 +1021,29 @@ fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<Res
                 mode_raw: k.mode_raw,
                 rt_press,
                 rt_release,
+                ap_keyset: k.ap_keyset,
+                rt_keyset: k.rt_keyset,
             })
         })
         .collect()
+}
+
+/// Membership records for a restore, actuation point first then rapid trigger, each built
+/// through `KeysetIndex::restoring` so an index from a snapshot can never be mistaken for one
+/// allocation produced.
+fn restore_membership_records(keys: &[RestoreKey]) -> Result<Vec<KeyRecord>> {
+    use wh_device::keyset::{KeysetIndex, Kind};
+    let ap: Vec<(u8, KeysetIndex)> = keys
+        .iter()
+        .map(|k| (k.usage, KeysetIndex::restoring(Kind::Ap, k.ap_keyset)))
+        .collect();
+    let rt: Vec<(u8, KeysetIndex)> = keys
+        .iter()
+        .map(|k| (k.usage, KeysetIndex::restoring(Kind::Rt, k.rt_keyset)))
+        .collect();
+    let mut out = wh_device::keyset::membership_records(&ap)?;
+    out.extend(wh_device::keyset::membership_records(&rt)?);
+    Ok(out)
 }
 
 fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
@@ -1072,19 +1094,26 @@ fn verify_restore<T: Transport>(
             || ks.rt_press != k.rt_press
             || ks.rt_release != k.rt_release
             || ks.mode.value() != k.mode_raw
+            || ks.ap_keyset != k.ap_keyset
+            || ks.rt_keyset != k.rt_keyset
         {
             bad.push(format!(
-                "{}: board reports ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}, \
-                 wanted ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}",
+                "{}: board reports ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x} \
+                 ap keyset {} rt keyset {}, wanted ap {:.2}mm press {:.2}mm release {:.2}mm \
+                 mode {:#06x} ap keyset {} rt keyset {}",
                 key_label(k.usage),
                 ks.ap.to_mm(),
                 ks.rt_press.to_mm(),
                 ks.rt_release.to_mm(),
                 ks.mode.value(),
+                ks.ap_keyset,
+                ks.rt_keyset,
                 k.ap.to_mm(),
                 k.rt_press.to_mm(),
                 k.rt_release.to_mm(),
                 k.mode_raw,
+                k.ap_keyset,
+                k.rt_keyset,
             ));
         }
     }
@@ -1163,6 +1192,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     let global = snap_to_global(&snap)?;
     let keys = validate_restore_keys(&snap)?;
     let records = restore_records(&keys);
+    let membership = restore_membership_records(&keys)?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1176,7 +1206,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.
         auto_backup(s, store, "restore")?;
-        ops::restore_all(s, &global, &records)?;
+        ops::restore_all(s, &global, &records, &membership)?;
         // Printed only after verification passes, so stdout never claims success on a run
         // where stderr reports a mismatch.
         verify_restore(&mut out, s, &keys)?;

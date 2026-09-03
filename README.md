@@ -185,11 +185,10 @@ mode value back verbatim. Hand-editing `"rt": false` in a snapshot file before r
 turn rapid trigger off, and `wh restore` will report success and a verified readback while doing
 exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
 change what a restore writes, change the settings on the board and take a fresh backup, not the
-`rt` field in an old one. The keyset fields are read into the snapshot but `wh restore` still
-ignores them, so a restore puts every value back and leaves membership as it found it. `wh keyset
-create` and `wh keyset delete` write membership, and so does `wh set ap` when a selection splits a
-keyset; `wh keyset set` never does, it only changes a keyset's value. Restore is the one write path
-of all of these that does not yet cover membership (see `docs/tasks.md`).
+`rt` field in an old one. The keyset fields are read into the snapshot and `wh restore` writes them
+back too, one record per key per layout, last, matching the vendor's own write template
+(`docs/keysets.md`): a restore puts both the values and the keyset membership back to what the
+snapshot recorded.
 
 **It does not contain**, and `wh restore` cannot bring back:
 
@@ -251,15 +250,9 @@ These are built and tested against replay scripts, not yet confirmed on the real
   membership records follow, one key per frame, so the same is true there too. But across the two
   halves, a failure can now leave a key's values changed with its membership untouched, or move
   some of a split's keys into the new keyset while leaving others behind in the old one.
-  **`wh restore --last` does not fix any of this.** It restores AP, MODE, RT_PRESS and RT_RELEASE
-  from the auto-backup taken before the write, but not keyset membership, so a key a split moved
-  into a new keyset, whether the split finished cleanly or failed partway, stays there until the
-  operator moves it back by hand, and only partway even then: `wh keyset create` regroups it under
-  a **new** index, not the one it started in, since allocation is max plus one and never reuses a
-  freed index, and `wh keyset delete` can only return it to index 0, membership in no keyset at
-  all, not back into whichever keyset it left. `wh keyset set` cannot help at all; it changes a
-  keyset's value, never its membership (see `docs/protocol.md`). `wh` prints a warning to this
-  effect on every write that touches membership, success or failure alike.
+  **`wh restore --last` does fix this now.** It restores AP, MODE, RT_PRESS, RT_RELEASE, and both
+  keyset memberships from the auto-backup taken before the write, in the same order the vendor
+  writes them: values first, membership one record per key per layout, last.
 - `wh profile 2` then `wh profile` should confirm the switch landed.
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.
 
