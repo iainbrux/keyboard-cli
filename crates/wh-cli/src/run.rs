@@ -757,27 +757,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     crate::keyset::ApMembership::Split { index, .. } => Some(*index),
                 };
                 let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
-                // Cross-checked against `depth` independently of whatever `plan` itself computed:
-                // see `confirm_ap_target`'s own doc for why `verify_write`'s board-vs-sent check
-                // alone cannot catch a conversion bug that sends the wrong value everywhere.
-                crate::keyset::confirm_ap_target(&plan, depth)?;
-                // The label names what actually happened, not a generic "keyset op": a selection
-                // that keeps its membership never touched a keyset at all, and must not claim it
-                // did, while a split did create one and says which.
-                let what = match &membership {
-                    crate::keyset::ApMembership::Keep => format!("ap {:.2}mm", depth.to_mm()),
-                    crate::keyset::ApMembership::Split { index, losing } => {
-                        crate::keyset::announce_steal(
-                            &mut out,
-                            kind,
-                            losing,
-                            index.value(),
-                            crate::keyset::Target::Ap(depth),
-                            &plan,
-                        )?;
-                        format!("ap keyset {} at {:.2}mm", index.value(), depth.to_mm())
-                    }
-                };
+                let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
@@ -787,6 +767,42 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             })
         }
     }
+}
+
+/// Confirms `plan` resolved to `depth`, then builds the label `verify_write_as` reports and, for
+/// a split, prints `announce_steal` first. Split out of `set`'s `SetWhat::Ap` arm so a test can
+/// hand it a `plan` and `depth` that disagree: through the real `Change::ap(depth)` construction
+/// that arm itself uses, the two can never actually diverge, since both come from the same value,
+/// so this is the only way to prove `confirm_ap_target` is wired into the write path at all, not
+/// only correct on its own.
+fn ap_write_label(
+    out: &mut impl Write,
+    kind: wh_device::keyset::Kind,
+    membership: &crate::keyset::ApMembership,
+    plan: &wh_device::keyset::WritePlan,
+    depth: Um,
+) -> Result<String> {
+    // Cross-checked against `depth` independently of whatever `plan` itself computed: see
+    // `confirm_ap_target`'s own doc for why `verify_write_as`'s board-vs-sent check alone cannot
+    // catch a conversion bug that sends the wrong value everywhere.
+    crate::keyset::confirm_ap_target(plan, depth)?;
+    // The label names what actually happened, not a generic "keyset op": a selection that keeps
+    // its membership never touched a keyset at all, and must not claim it did, while a split did
+    // create one and says which.
+    Ok(match membership {
+        crate::keyset::ApMembership::Keep => format!("ap {:.2}mm", depth.to_mm()),
+        crate::keyset::ApMembership::Split { index, losing } => {
+            crate::keyset::announce_steal(
+                out,
+                kind,
+                losing,
+                index.value(),
+                crate::keyset::Target::Ap(depth),
+                plan,
+            )?;
+            format!("ap keyset {} at {:.2}mm", index.value(), depth.to_mm())
+        }
+    })
 }
 
 /// Reads the active profile with no argument, or selects one with `1..=4`. A select takes no
@@ -1497,5 +1513,79 @@ mod tests {
     fn key_label_falls_back_to_hex_for_an_unnamed_usage() {
         let (unnamed, _) = two_usages_absent_from_table();
         assert_eq!(key_label(unnamed), format!("0x{unnamed:02X}"));
+    }
+
+    // -- ap_write_label: proves confirm_ap_target is actually wired in --
+
+    use wh_device::replay::ReplayTransport;
+
+    fn ap_write_label_l(dir: &str, b: &[u8; 64]) -> String {
+        format!(
+            "{{\"dir\":\"{dir}\",\"hex\":\"{}\"}}",
+            wh_device::replay::hex(b)
+        )
+    }
+    fn ap_write_label_rf(cmd: u8, payload: &[u8]) -> [u8; 64] {
+        wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn ap_write_label_settings_script(
+        usage: u8,
+        ap: u16,
+        mode: u16,
+        rt_press: u16,
+        rt_release: u16,
+        ap_keyset: u16,
+        rt_keyset: u16,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (lid, val) in [
+            (layout::AP, ap),
+            (layout::MODE, mode),
+            (layout::RT_PRESS, rt_press),
+            (layout::RT_RELEASE, rt_release),
+            (layout::KEYSET_AP, ap_keyset),
+            (layout::KEYSET_RT, rt_keyset),
+        ] {
+            lines.push(ap_write_label_l("out", &cmds::read_key_layout(usage, lid)));
+            lines.push(ap_write_label_l(
+                "in",
+                &ap_write_label_rf(
+                    cmds::cmd::KEY,
+                    &[0x00, usage, lid, (val & 0xFF) as u8, (val >> 8) as u8],
+                ),
+            ));
+        }
+        lines
+    }
+
+    /// Deleting `ap_write_label`'s call to `confirm_ap_target` leaves every other test in this
+    /// crate green, since `set`'s `SetWhat::Ap` arm always builds `plan` and this check from the
+    /// same `depth`, so the two can never disagree through the real path. This test bypasses that
+    /// by building `plan` from `Change::ap(2.50mm)` and then confirming it against a different,
+    /// independently-chosen depth (1.20mm), the only way to prove the call is wired in here at
+    /// all, not merely correct in isolation (already pinned in `keyset.rs`).
+    #[test]
+    fn ap_write_label_bails_when_the_plan_disagrees_with_the_requested_depth() {
+        let lines = ap_write_label_settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = wh_device::keyset::Change::ap(Um(2500));
+        let plan = wh_device::keyset::plan(&mut s, &[0x1A], &change, None).unwrap();
+        let membership = crate::keyset::ApMembership::Keep;
+
+        let mut out = Vec::new();
+        let err = ap_write_label(
+            &mut out,
+            wh_device::keyset::Kind::Ap,
+            &membership,
+            &plan,
+            Um(1200),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("plan resolved w to 2.50mm, not the 1.20mm requested"),
+            "got: {err}"
+        );
     }
 }

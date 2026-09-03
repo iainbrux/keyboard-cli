@@ -424,6 +424,63 @@ fn keyset_create_announces_a_rapid_trigger_steal() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The common case: `wh keyset create ap --keys w,a,s,d` where none of the four is in any
+/// keyset. `losing` is empty, so before the shared `announce_steal` gained a free-key line this
+/// printed only its header and nothing about the four members it was about to overwrite. Each
+/// key is given a distinct prior actuation point, so a mutation that reused one key's value for
+/// every line, or dropped this case to silence again, fails this exact match.
+#[test]
+fn keyset_create_announces_every_enrolled_key_over_an_all_free_selection() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership
+    for (usage, ks) in [(0x1Au8, 0u16), (0x04, 0), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 0, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 1900, 0x18, 100, 150, 0, 0)); // plan's read of a
+    lines.extend(key_settings_lines(0x16, 1800, 0x18, 100, 150, 0, 0)); // plan's read of s
+    lines.extend(key_settings_lines(0x07, 1700, 0x18, 100, 150, 0, 0)); // plan's read of d
+
+    let script = write_script("keyset-create-all-free", &lines);
+    let config_home = scratch_config_dir("keyset-create-all-free");
+    let out = run_wh(
+        &[
+            "keyset",
+            "create",
+            "ap",
+            "--keys",
+            "w,a,s,d",
+            "--value",
+            "1.20",
+            "--dry-run",
+        ],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("ap keyset 1: creating at 1.20mm"),
+        "got: {text}"
+    );
+    assert!(
+        !text.contains("loses"),
+        "no keyset exists to lose anything from: {text}"
+    );
+    assert!(
+        text.contains("enrolling free key(s) w at 2.00mm,a at 1.90mm,s at 1.80mm,d at 1.70mm"),
+        "got: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `wh keyset create ap --keys w,s` with no `--value`, where the free keys s and d disagree on
 /// the board's actuation point: the matrix, the matrix again and the 0xFF sweep, then the two
 /// disagreeing 0x04 reads over s and d. `global_ap_or_bail` must refuse before `plan` is ever
@@ -677,6 +734,17 @@ fn keyset_create_ap_end_to_end_backs_up_writes_and_verifies() {
     assert!(
         stdout.contains("ap keyset create: 2 keys verified"),
         "got: {stdout}"
+    );
+    // `create` always writes membership, so the restore-coverage warning must fire here too, on
+    // a clean success, not only after a readback mismatch: a create is exactly as unrecoverable
+    // through `wh restore --last` as a split is.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
+             would restore values but leave membership as this write left it"
+        ),
+        "got: {stderr}"
     );
 
     let backups = std::fs::read_dir(config_home.join("wh").join("backups"))

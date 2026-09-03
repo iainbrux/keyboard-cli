@@ -145,13 +145,13 @@ especially the first time you type a new key selector. `wh restore` and `wh self
 `--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
 only ever rewrites a setting to the value it already read.
 
-Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`)
-names which transport it opened, on stderr, one line, before doing anything else: `transport:
-hardware (real keyboard)` or `transport: replay (<path>)`. Check that line before trusting that a run
-did what you expected, especially when driving `wh` from a script or another tool where the rest of
-the output might scroll past. `wh keys list` and `wh keys group` never open a transport at all (they
-only ever touch the local key store), so they print no such line; that absence is expected for those
-two, not a sign the announcement failed.
+Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
+`keyset list|create|set|delete`, `profile`) names which transport it opened, on stderr, one line,
+before doing anything else: `transport: hardware (real keyboard)` or `transport: replay (<path>)`.
+Check that line before trusting that a run did what you expected, especially when driving `wh` from
+a script or another tool where the rest of the output might scroll past. `wh keys list` and
+`wh keys group` never open a transport at all (they only ever touch the local key store), so they
+print no such line; that absence is expected for those two, not a sign the announcement failed.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 
@@ -186,8 +186,10 @@ turn rapid trigger off, and `wh restore` will report success and a verified read
 exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
 change what a restore writes, change the settings on the board and take a fresh backup, not the
 `rt` field in an old one. The keyset fields are read into the snapshot but `wh restore` still
-ignores them, so a restore puts every value back and leaves membership as it found it. `wh keyset`
-does write membership; restore is the one path that does not yet (see `docs/tasks.md`).
+ignores them, so a restore puts every value back and leaves membership as it found it. `wh keyset
+create` and `wh keyset delete` write membership, and so does `wh set ap` when a selection splits a
+keyset; `wh keyset set` never does, it only changes a keyset's value. Restore is the one write path
+of all of these that does not yet cover membership (see `docs/tasks.md`).
 
 **It does not contain**, and `wh restore` cannot bring back:
 
@@ -251,8 +253,12 @@ These are built and tested against replay scripts, not yet confirmed on the real
   some of a split's keys into the new keyset while leaving others behind in the old one.
   **`wh restore --last` does not fix any of this.** It restores AP, MODE, RT_PRESS and RT_RELEASE
   from the auto-backup taken before the write, but not keyset membership, so a key a split moved
-  into a new keyset, whether the split finished cleanly or failed partway, stays there until
-  `wh keyset set`, `create`, or `delete` moves it back by hand. `wh` prints a warning to this
+  into a new keyset, whether the split finished cleanly or failed partway, stays there until the
+  operator moves it back by hand, and only partway even then: `wh keyset create` regroups it under
+  a **new** index, not the one it started in, since allocation is max plus one and never reuses a
+  freed index, and `wh keyset delete` can only return it to index 0, membership in no keyset at
+  all, not back into whichever keyset it left. `wh keyset set` cannot help at all; it changes a
+  keyset's value, never its membership (see `docs/protocol.md`). `wh` prints a warning to this
   effect on every write that touches membership, success or failure alike.
 - `wh profile 2` then `wh profile` should confirm the switch landed.
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.

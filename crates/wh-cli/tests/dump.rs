@@ -1315,12 +1315,16 @@ fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
 }
 
 /// Row two of the `wh set ap` membership rule: the selection is exactly one keyset's members, so
-/// it keeps its index and the write still carries no `0xFF` record. `ks-value-ap` measures a
-/// value change over three keys writing no `0xFF` record; whether the selection was exactly one
-/// keyset's members is not itself measured, one of two readings that capture supports
-/// (`docs/keysets.md`), the other being row one's own scenario. Same board and frames as the
-/// free-key test above, only the pre-write `ap_keyset` differs (1 for both, not 0), proving
-/// membership itself does not drive whether a record gets sent.
+/// it keeps its index and the write still carries no `0xFF` record. `ks-value-ap` measures a value
+/// change over three keys writing no `0xFF` record; whether the selection was exactly one keyset's
+/// members is not itself measured. `docs/keysets.md` gives two readings, and the other one is not
+/// the harmless row-one case: it is an operation over three keys of which one (`x`) was free and
+/// two (`w`, `s`) were already members of another keyset, a mixed selection, which is row three's
+/// scenario, not row one's. Under that reading the vendor wrote no `0xFF` record on exactly the
+/// kind of selection `wh` now splits, the one piece of evidence in the corpus that argues against
+/// row three rather than for this row. Same board and frames as the free-key test above, only the
+/// pre-write `ap_keyset` differs (1 for both, not 0), proving membership itself does not drive
+/// whether a record gets sent.
 #[test]
 fn set_ap_dry_run_over_a_whole_keyset_keeps_its_index() {
     let mut lines = matrix_lines(); // resolve_keys

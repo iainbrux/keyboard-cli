@@ -572,8 +572,8 @@ fn mode_rt_on(mode_raw: u16) -> bool {
 /// The one fault line a mode mismatch contributes, or `None` when the board agrees, annotated
 /// with rapid trigger state on both sides. Split out from `verify_write_as` so a test can read it
 /// back directly: `report_verification` writes fault lines to real process stderr, which a test
-/// cannot capture, the same reason `ap_fault_line` existed as its own function before it was
-/// deleted with the rest of the old `wh set ap` verification path.
+/// cannot capture. `run.rs`'s `verify_rt`/`verify_rt_off` build their own mode-fault wording
+/// inline and so cannot be pinned this precisely; this function is what makes that possible here.
 fn mode_fault(got: u16, want: u16) -> Option<String> {
     if got == want {
         return None;
@@ -900,8 +900,8 @@ mod tests {
 
     // -- mode_fault: the rt-state annotation --
 
-    /// Silent when the board agrees, the same shape `ap_fault_line`'s equivalent case had before
-    /// it was deleted.
+    /// Silent when the board agrees, the same shape the old `wh set ap` verifier's own mode-fault
+    /// case had, before that whole path was replaced by `keyset::plan` and this one.
     #[test]
     fn mode_fault_is_silent_when_the_board_agrees() {
         assert_eq!(mode_fault(0x38, 0x38), None);
@@ -909,9 +909,8 @@ mod tests {
 
     /// Names rapid trigger state on both sides, not just the bare hex values: a bare `mode
     /// 0x0018, wanted mode 0x0038` does not tell the operator that the fault is rapid trigger
-    /// silently turning off, the most safety-relevant thing this tool can report. This is the
-    /// annotation `ap_fault_line` carried before it, and the rest of the old `wh set ap`
-    /// verification path, was deleted.
+    /// silently turning off, the most safety-relevant thing this tool can report. The old `wh set
+    /// ap` verifier, replaced by `keyset::plan` and this module, carried the same annotation.
     #[test]
     fn mode_fault_names_rapid_trigger_state_on_both_sides() {
         let line = mode_fault(0x18, 0x38).expect("0x18 != 0x38 must fault");
@@ -921,10 +920,10 @@ mod tests {
         );
     }
 
-    /// The pre-write nibble is reported through `mode_rt_on`, which must not have the gap the
-    /// deleted `raw_mode_rt_on` once had: nibble 2 (`RtGlobal`) is rapid trigger on too, and task
-    /// 2.12 exists because an earlier version of this exact check missed it, reporting rapid
-    /// trigger off on a board where it was on for every key.
+    /// The pre-write nibble is reported through `mode_rt_on`, which must include nibble 2
+    /// (`RtGlobal`) as rapid trigger on: task 2.12 exists because an earlier rapid-trigger check
+    /// elsewhere in this codebase missed exactly that nibble, reporting rapid trigger off on a
+    /// board where it was on for every key.
     #[test]
     fn mode_fault_names_the_global_rapid_trigger_nibble_as_rt_on() {
         let line = mode_fault(0x10, 0x20).expect("0x10 != 0x20 must fault");
