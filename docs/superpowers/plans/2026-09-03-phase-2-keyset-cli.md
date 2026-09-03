@@ -740,7 +740,10 @@ them. They differ only in where the value comes from and whether membership is c
 - Test: `crates/wh-cli/tests/keyset.rs`
 
 **Interfaces:**
-- Consumes: task 1's `resolve_index` and the two `*_or_bail` helpers, task 2's `verify_membership`.
+- Consumes: task 1's `resolve_index` and the two `*_or_bail` helpers, task 2's `verify_create` and
+  `announce_steal`. Read task 2's Interfaces block above for their current signatures; neither
+  takes a key slice, and reintroducing one at these call sites is the seam task 2's review measured
+  a panic through.
 
 **Semantics:**
 
