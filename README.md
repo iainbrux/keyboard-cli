@@ -105,39 +105,31 @@ wh keyset set ap 3 --value 1.2
 wh keyset delete ap 3
 ```
 
-`wh keyset list` with no kind lists both; naming one lists only that one, each keyset shown with its
-index, value, and member keys: one shared value when they agree (`1 1.50mm  u,i,o,p`), or, when its
-members no longer agree on one, each distinct value with which keys hold it (`1 disagree: u at
-1.50mm, i at 1.20mm`). Disagreement is not only a sign of an interrupted write: `wh set rt` never
-touches membership, so running it on part of an rt keyset's members silently desynchronises the
-keyset, where `wh set ap` on the same selection would split it instead. `wh keyset set` changes an
-existing keyset's value in place and never touches membership; `create`, `delete`, `wh set ap`
-below, and `wh restore` (for keys whose snapshot recorded it, see below) are the only four that move
-a key into or out of a keyset. `create` and `delete` both take `--value` (or, for `rt`,
-`--press`/`--release`); it defaults to the board's current global value and is required only when
-the keys outside every keyset disagree on it, or when none are left outside one.
+`wh keyset list` with no kind lists both `ap` and `rt`; naming one lists that kind. Each keyset is
+shown with its index, value, and member keys: one shared value when the members agree
+(`1 1.50mm  u,i,o,p`), or each distinct value with the keys holding it when they do not
+(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt` does not write `0xFE`; running it on part of
+an rt keyset's members can leave that keyset's members holding different values, which
+`wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
+keyset's value in place. `create`, `delete`, `wh set ap` below, and `wh restore` (for keys whose
+snapshot recorded it, see below) each write keyset membership. `create` and `delete` both take
+`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value,
+and passing it is required when the keys outside every keyset disagree, or when none are left
+outside one.
 
-**Creating a keyset overwrites its members' values, discarding whatever each one held before.** It
-writes the board's current global by default, or an explicit `--value`/`--press`/`--release` if
-given, but never a member's own prior value: `wh keyset create ap --keys u,i,o,p --value 1.5` sets
-all four to 1.50mm regardless of what any of them held a moment earlier.
+**Creating a keyset writes the same value to every member.** It writes the board's current global
+value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
+--keys u,i,o,p --value 1.5` sets all four to 1.50mm.
 
 **`wh set ap` over a selection that is not exactly one existing keyset's members, and not entirely
-free keys, moves the whole selection into one new keyset, and says so.** Three shapes of this are
-worth knowing: a selection that is *part* of a keyset splits it out (`wh set ap --keys w,s --set
-1.5`, where `w` and `s` sit inside a keyset with `a` and `d`, moves `w` and `s` alone into a new
-index); a selection that is a *whole* keyset plus a free key moves the whole keyset along with the
-free key, since the free key still forces a new index; and a selection spanning *two* existing
-keysets merges both into the one new keyset, so `wh set ap --keys all` on a board with several
-keysets collapses all of them into one. `wh` never moves a key back into an existing keyset, since
-`create` always allocates a fresh index: a split or a merge cannot get its original index back
-through `wh keyset` alone, though deleting the resulting keyset and creating a new one over the
-same members at the same value reconstructs the same grouping under a different index; only `wh
-restore --last`, from a backup taken before the change, brings the original index back too. Only
-the first shape here, a selection taking part of a single keyset, is an operator's own observation
-of the vendor's web UI; the whole-keyset and two-keyset-merge shapes are `wh`'s own generalisation
-of that rule, with no evidence of any kind behind them (`docs/keysets.md`, "an operator
-observation").
+free keys, moves the whole selection into one new keyset, and says so.** Three shapes: a selection
+that is part of a keyset moves the selected members into a new index, leaving the rest of that
+keyset in place (`wh set ap --keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a`
+and `d`, moves `w` and `s` into a new index and leaves `a` and `d` in the original one). A
+selection that is a whole keyset plus a free key moves the keyset and the free key together into a
+new index. A selection spanning two existing keysets moves both keysets' members into one new
+index. A newly allocated index is one more than the current maximum live index, or `1` if none
+exists. See `docs/keysets.md`, "an operator observation", for what evidence supports each shape.
 
 Manage stored groups:
 
