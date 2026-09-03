@@ -350,10 +350,10 @@ Honestly, what this corpus does not resolve:
   `0xbc`, `0xbd`, `0xc0`. Two now have a context beyond the connect sequence: `0x22` is read three
   times at the head of every global rapid trigger capture, always replying `0`, and `0xbd` appears
   in 13 files, including before the write in `remap-one-key`. The write-barrier reading has
-  direct counterexamples: `0xbd` is absent from `ks-global-rt-sens-150`, which writes the same 462
-  records as `ks-global-rt-sens-200`, and absent from both global switch captures, while appearing
-  four times in `ks-create-rt-2`. It could still be sent conditionally, but it is not sent before
-  every write.
+  direct counterexamples. `ks-global-rt-sens-150` and `ks-global-rt-sens-200` write exactly the same
+  462 records each, and only the second carries a `0xbd`. It is also absent from both global switch
+  captures, while appearing four times in `ks-create-rt-2`. It could still be sent conditionally,
+  but it is not sent before every write.
 - Key `0x01`'s identity: probably FN, from its position in the key enumeration, but this was
   deliberately never measured directly, because confirming it means remapping FN away, and FN is
   how the board reaches the FN layer used to identify every other remapped key in this document.

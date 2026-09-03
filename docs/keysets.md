@@ -73,9 +73,9 @@ before `h,j` took `9` was `6`, and the three captures in between write no `0xFF`
 the frames alone the corpus shows a maximum of `6` followed by an allocation of `9`, which
 contradicts max plus one. The earlier draft rescued it by asserting a pre-state of "up to 8" that no
 frame shows, which is circular: `9` is the only reason to believe `7` and `8` ever existed. It also
-sits badly with the captured index set, `{1, 2, 4, 5, 6, 9}`, which is six keysets rather than the
-eight that a maximum of `8` with `3` deleted would leave. Settling it needs one capture that reads
-`0xFF` between 22:50 and 23:00, and none exists.
+sits badly with the six keysets still live at the end of the sitting, `{1, 2, 4, 5, 6, 9}`, rather
+than the eight that a maximum of `8` with `3` deleted would leave. Settling it needs one capture
+that reads `0xFF` between 22:50 and 23:00, and none exists.
 
 The `j,k` row is a post-state observation, not an allocation. No capture writes `0xFF=4`; the 22:25
 read simply shows `j` and `k` holding it. The pre-state, the allocation and the ordering are all
@@ -139,7 +139,7 @@ frames carrying 462 write records in total.
 | Operation | Owns | Rewritten unchanged |
 |---|---|---|
 | Create an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
-| Change an actuation point value | `0x04` to the new value, and MODE promoted `Global` to `Single` | `0x14`, `0x15`, and MODE where it is already `Single` |
+| Change an actuation point value | `0x04` to the new value, and MODE promoted `Global` to `Single`, three of three opportunities in the corpus | `0x14`, `0x15`, and MODE where it is already `Single` |
 | Delete an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
 | Create a rapid trigger keyset | MODE touch nibble to `3`, `0x14`/`0x15` to the global sensitivity | `0x04` |
 | Delete a rapid trigger keyset | MODE touch nibble to `1`, `0x14`/`0x15` to the global sensitivity | `0x04` |
@@ -149,11 +149,11 @@ frames carrying 462 write records in total.
 **`0x16` and `0x17` are rewritten at the key's current value like any other non-owned layout.** They
 are not a constant. Every write of them in the keyset-era captures is `100`, 580 records across
 fourteen files, and every write of them in the five Phase 1 captures is `0`, 38 records. Where a
-file both reads and writes them, the written value equals the value it read for that key. Eight
-captures do neither, and `ks-create-ap-1` writes eight records of `100` while containing no read
-frames at all. Hard-coding `100` would write
-`100` over `0` on a board that has never had a keyset. An earlier draft said they are written `100`
-in every template, which is false for three of the seven rows above.
+file both reads and writes them, the written value equals the value it read for that key. Of the 27
+captures, 18 both read and write them, four read without writing, four do neither, and
+`ks-create-ap-1` writes eight records of `100` while containing no read frames at all. Hard-coding
+`100` would write `100` over `0` on a board that has never had a keyset. An earlier draft said
+they are written `100` in every template, which is false for three of the seven rows above.
 
 ### The MODE promotion, and what is actually measured about it
 
@@ -183,6 +183,12 @@ So: the promotion from `Global` to `Single` on an actuation point change is meas
 specific to keyset members, specific to non-members, or common to both is **not** measured, and no
 capture in the corpus settles it. `ops::ap_records` and `keyset::plan` both promote unconditionally,
 which is the shipped behaviour task 2.2 still lists for hardware verification.
+
+What is measured, and is the strongest statement the corpus supports, is the negative: sweeping all
+27 files for keys given a `0x04` write and checking the MODE each had read, **every key that read
+MODE `0x00` and received an actuation point write was written a non-zero MODE.** Three of three
+opportunities, no counterexample. No capture leaves a nibble-`0` key at nibble `0` after an
+actuation point write.
 
 One blind spot in that search: `ks-create-ap-1` has no read frames at all, yet writes MODE `0x10` to
 `u,i,o,p`. Those four prior values are unobserved, so the honest count is three observed promotions
@@ -399,11 +405,11 @@ name is corroborated by the interface rather than measured from the wire.
   holding `0xFE=0`.
 - **How `0xFF` reached `9`.** Needs one capture that reads `0xFF` between 22:50 and 23:00.
 - **`cmd 0x00` sub-order `0xbd`.** An earlier draft called it a possible write barrier sent once
-  before the sensitivity change. It appears in 13 files and is absent from three heavy-write
-  captures that perform the same work: `ks-global-rt-sens-150` writes the same 462 records as
-  `ks-global-rt-sens-200` with no `0xbd` at all, and neither `ks-global-rt-on` nor
-  `ks-global-rt-off` contains one. It also appears four times in `ks-create-rt-2`. The barrier
-  reading has direct counterexamples.
+  before the sensitivity change. It appears in 13 files, and the controlled comparison refutes that
+  reading: `ks-global-rt-sens-150` and `ks-global-rt-sens-200` write exactly the same 462 records
+  each, and only the second carries a `0xbd`. It is absent from both global switch captures too,
+  while appearing four times in `ks-create-rt-2`. It could still be sent conditionally, but it is
+  not sent before every write.
 
 ## Corpus
 
