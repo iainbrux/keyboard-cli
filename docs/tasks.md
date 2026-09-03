@@ -245,23 +245,21 @@ rather than as settings it recognises.
   members before anything is written, a backup is taken first, and the review drove the full
   `wh restore --last` round trip and confirmed membership and every value returned exactly.
 
-- [ ] **2.19 Pin the two-keyset merge in `wh set ap`.** `ap_membership_for` returns `Keep` in two
+- [x] ~~**2.19 Pin the two-keyset merge in `wh set ap`.**~~ `ap_membership_for` returns `Keep` in two
   cases: no selected key is in a keyset, and exactly one keyset loses members with the selection
   being exactly that keyset. Everything else produces one new keyset containing the whole selection.
   So a selection spanning two keysets merges them, and where a keyset is wholly consumed its index
   ceases to exist; a keyset only partly selected survives with its remaining members.
 
-  No test drives `wh set ap` over a selection spanning two indices. Exactly one fixture in the
-  repository carries two distinct non-zero indices in a single membership read,
-  `keyset_list_ap_groups_members_by_index` in `crates/wh-cli/tests/keyset.rs`, and it is the obvious
-  starting point.
-
-  It wants a test rather than a comment because the wrong implementations are plausible and all
-  pass today. A later reader who generalises the `Keep` case to "if every losing keyset is wholly
-  consumed, keep the lowest index" has written a different product that destroys a board
-  differently, with a green suite. A `Membership` with two indices and a selection spanning both,
-  asserting the `Split` and both losing entries, sits beside the existing two unit tests and costs
-  about twenty lines. Its own commit, not folded into another task's.
+  It wanted a test rather than a comment because the wrong implementations are plausible and all
+  passed the suite that existed at the time. A reader who generalises the `Keep` case to "if every
+  losing keyset is wholly consumed, keep the lowest index" writes a different product that destroys
+  a board differently, with a green suite otherwise. Closed by
+  `set_ap_over_a_selection_spanning_two_keysets_merges_them_into_a_new_index` in
+  `crates/wh-cli/tests/dump.rs`, built from `keyset_list_ap_groups_members_by_index`'s starting
+  shape: `w,a` wholly consuming keyset 1 and `s` wholly consuming keyset 2, plus a free key `d`
+  riding along. It drives `wh set ap` over all four and pins both losing lines and the freshly
+  allocated index, `3`, never a reuse of `1` or `2`.
 
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
