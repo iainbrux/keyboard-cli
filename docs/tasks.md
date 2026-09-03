@@ -210,7 +210,8 @@ rather than as settings it recognises.
     `dump` that does not exist.~~ Closed: the comment now says `dump` prints `on`/`off` and a raw
     `mode_raw` instead, that this announcement is the only place in `wh` that names a touch mode to
     the operator, and that an unknown nibble prints rough Rust tuple-variant syntax matching
-    `ops::rt_records`'s own reporting. The behaviour itself was already right and is unchanged.
+    `ops::rt_records`, meaning the behaviour, since that function builds records and prints
+    nothing. The behaviour itself was already right and is unchanged.
   - `announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s. Safe inside
     `create` by construction and pinned there by three fixtures, but it is the last surviving
     instance of the pattern four rounds were spent removing. Recorded in the plan as a warning to
