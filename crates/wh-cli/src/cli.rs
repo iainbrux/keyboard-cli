@@ -67,6 +67,11 @@ pub enum Cmd {
     },
     /// No-op write self-test (writes current values back, verifies)
     Selftest,
+    /// Read and write keysets (grouped actuation point and rapid trigger settings)
+    Keyset {
+        #[command(subcommand)]
+        what: KeysetWhat,
+    },
 }
 
 #[derive(clap::Args)]
@@ -140,6 +145,72 @@ pub enum BackupsWhat {
     List,
 }
 
+/// Which of the two independent keyset groupings a command operates on. They have separate
+/// indices, so every keyset command names one.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum KeysetKindArg {
+    /// Actuation point keysets (layout 0xFF)
+    Ap,
+    /// Rapid trigger keysets (layout 0xFE)
+    Rt,
+}
+
+#[derive(Subcommand)]
+pub enum KeysetWhat {
+    /// List keysets and their members: wh keyset list ap
+    List {
+        /// Omit to list both kinds
+        kind: Option<KeysetKindArg>,
+    },
+    /// Create a keyset over selected keys: wh keyset create ap --keys u,i,o,p
+    Create {
+        kind: KeysetKindArg,
+        #[command(flatten)]
+        keys: KeysArg,
+        /// Actuation point in mm for a new ap keyset. Defaults to the board's global, and is
+        /// required when the keys outside every keyset disagree on it.
+        #[arg(long)]
+        value: Option<f64>,
+        /// Press sensitivity in mm for a new rt keyset. Defaults to the board's global.
+        #[arg(long)]
+        press: Option<f64>,
+        /// Release sensitivity in mm for a new rt keyset. Defaults to the board's global.
+        #[arg(long)]
+        release: Option<f64>,
+        /// Print the exact reports without sending
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Change an existing keyset's value: wh keyset set ap 3 --value 1.2
+    Set {
+        kind: KeysetKindArg,
+        index: u16,
+        #[arg(long)]
+        value: Option<f64>,
+        #[arg(long)]
+        press: Option<f64>,
+        #[arg(long)]
+        release: Option<f64>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete a keyset, returning its members to the global value: wh keyset delete ap 3
+    Delete {
+        kind: KeysetKindArg,
+        index: u16,
+        /// Value in mm to return ap members to. Defaults to the board's global, and is required
+        /// when the keys outside every keyset disagree on it.
+        #[arg(long)]
+        value: Option<f64>,
+        #[arg(long)]
+        press: Option<f64>,
+        #[arg(long)]
+        release: Option<f64>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +268,40 @@ mod tests {
     fn keys_required_unless_pick() {
         assert!(Cli::try_parse_from(["wh", "get", "rt"]).is_err());
         assert!(Cli::try_parse_from(["wh", "get", "rt", "--pick"]).is_ok());
+    }
+
+    #[test]
+    fn keyset_list_takes_an_optional_kind() {
+        let c = Cli::try_parse_from(["wh", "keyset", "list"]).unwrap();
+        match c.cmd {
+            Cmd::Keyset {
+                what: KeysetWhat::List { kind },
+            } => assert!(kind.is_none()),
+            _ => panic!("wrong parse"),
+        }
+        assert!(Cli::try_parse_from(["wh", "keyset", "list", "ap"]).is_ok());
+        assert!(Cli::try_parse_from(["wh", "keyset", "list", "nonsense"]).is_err());
+    }
+
+    #[test]
+    fn keyset_create_requires_a_kind_and_a_selector() {
+        assert!(Cli::try_parse_from(["wh", "keyset", "create", "--keys", "w"]).is_err());
+        assert!(Cli::try_parse_from(["wh", "keyset", "create", "ap"]).is_err());
+        assert!(Cli::try_parse_from(["wh", "keyset", "create", "ap", "--keys", "w"]).is_ok());
+    }
+
+    #[test]
+    fn keyset_set_and_delete_take_a_decimal_index() {
+        let c = Cli::try_parse_from(["wh", "keyset", "set", "ap", "3", "--value", "1.2"]).unwrap();
+        match c.cmd {
+            Cmd::Keyset {
+                what: KeysetWhat::Set { index, value, .. },
+            } => {
+                assert_eq!(index, 3);
+                assert_eq!(value, Some(1.2));
+            }
+            _ => panic!("wrong parse"),
+        }
+        assert!(Cli::try_parse_from(["wh", "keyset", "delete", "rt", "2"]).is_ok());
     }
 }

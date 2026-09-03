@@ -27,6 +27,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Restore { file, last, force } => restore(file, last, force, &store),
         Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
+        Cmd::Keyset { what } => keyset_cmd(what),
     }
 }
 
@@ -846,6 +847,23 @@ fn profile_cmd(number: Option<u8>) -> Result<()> {
             )?;
             Ok(())
         }
+    })
+}
+
+/// The `_` arm is temporary: it stands in for `create`/`set`/`delete` until a later task
+/// replaces it with their real handlers.
+fn keyset_cmd(what: crate::cli::KeysetWhat) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    with_session(|s| match what {
+        crate::cli::KeysetWhat::List { kind } => match kind {
+            Some(k) => crate::keyset::list(&mut out, s, crate::keyset::kind_of(k)),
+            None => {
+                crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Ap)?;
+                crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Rt)
+            }
+        },
+        _ => bail!("not yet implemented"),
     })
 }
 
