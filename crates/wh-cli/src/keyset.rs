@@ -740,7 +740,7 @@ mod tests {
         assert!(msg.contains("pass --value to say which"), "got: {msg}");
     }
 
-    // -- verify_write: F9's own acceptance case --
+    // -- verify_write: a membership-drift acceptance case --
 
     use wh_device::replay::{hex, ReplayTransport};
 
@@ -786,7 +786,7 @@ mod tests {
         lines
     }
 
-    /// The scenario `set` (task 3) will actually build: a plan that writes no membership record
+    /// The scenario `wh keyset set` builds in practice: a plan that writes no membership record
     /// at all, over a key whose `ap_keyset` drifts between the pre-write read and the readback.
     /// Nothing in the plan asked for that field to move, so the fallback to `before` is what
     /// catches it; skipping the membership check entirely whenever `plan` wrote none, the way an
