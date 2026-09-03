@@ -49,9 +49,7 @@ pub(crate) fn resolve_index(sets: &[Keyset], index: u16) -> Result<Keyset> {
 
 /// The board's global actuation point, or an error the operator can act on. `wh` never picks a
 /// winner when the keys outside every keyset disagree: a majority vote would write a value
-/// nobody typed over every member of the keyset being created. Unused until `create`/`set`/
-/// `delete` land and call it.
-#[allow(dead_code)]
+/// nobody typed over every member of the keyset being created.
 pub(crate) fn global_ap_or_bail<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
@@ -67,8 +65,8 @@ pub(crate) fn global_ap_or_bail<T: Transport>(
     }
 }
 
-/// Unused until `create`/`set`/`delete` land and call it; `#[allow(dead_code)]` until then.
-#[allow(dead_code)]
+/// The board's global rapid trigger sensitivity, or an error the operator can act on. Same
+/// refusal as `global_ap_or_bail`, over the rapid trigger layout instead.
 pub(crate) fn global_rt_or_bail<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
@@ -194,6 +192,104 @@ fn agreement_line<V: PartialEq + Copy>(
         })
         .collect();
     Ok(format!("disagree: {}", parts.join(", ")))
+}
+
+/// Creates a keyset over `usages` at the global value, or at an explicit one. Announces which
+/// existing keysets lose members first: a create overwrites its members' values with the global
+/// rather than carrying them in, so the operator sees what is about to go.
+pub(crate) fn create<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    kind: Kind,
+    usages: &[u8],
+    value: Option<Um>,
+    rt: Option<(Um, Um)>,
+) -> Result<CreatePlan> {
+    let m = keyset::read_membership(s, kind)?;
+    let index = keyset::next_index(&m)?;
+    let change = match kind {
+        Kind::Ap => {
+            let v = match value {
+                Some(v) => v,
+                None => global_ap_or_bail(s, &m, "--value")?,
+            };
+            keyset::Change::ap(v)
+        }
+        Kind::Rt => {
+            let (p, r) = match rt {
+                Some(v) => v,
+                None => global_rt_or_bail(s, &m, "--press and --release")?,
+            };
+            keyset::Change::rt_on(p, r)
+        }
+    };
+    let losing = losing_members(&keyset::group(&m), usages);
+    announce_steal(out, kind, &losing, index.value())?;
+    let plan = keyset::plan(s, usages, &change, Some(index))?;
+    Ok(CreatePlan { index, plan })
+}
+
+/// Existing keysets that would lose members to a create over `usages`, as (index, the members
+/// it loses), ascending by index.
+fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    sets.iter()
+        .filter_map(|ks| {
+            let taken: Vec<u8> = ks
+                .members
+                .iter()
+                .copied()
+                .filter(|u| usages.contains(u))
+                .collect();
+            (!taken.is_empty()).then_some((ks.index, taken))
+        })
+        .collect()
+}
+
+pub(crate) fn announce_steal(
+    out: &mut impl Write,
+    kind: Kind,
+    losing: &[(u16, Vec<u8>)],
+    new_index: u16,
+) -> std::io::Result<()> {
+    writeln!(out, "{} keyset {new_index}: creating", kind_name(kind))?;
+    for (index, taken) in losing {
+        let names: Vec<String> = taken.iter().map(|&u| key_label(u)).collect();
+        writeln!(out, "  keyset {index} loses {}", names.join(","))?;
+    }
+    Ok(())
+}
+
+pub(crate) struct CreatePlan {
+    pub index: keyset::KeysetIndex,
+    pub plan: keyset::WritePlan,
+}
+
+/// Re-reads every key the create touched and confirms it holds the new index. Reads the board
+/// back rather than trusting the write's echo, the same way every other write path in `wh`
+/// verifies. `read_key_settings` already returns both keyset layouts, so no new device call is
+/// needed.
+pub(crate) fn verify_membership<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    kind: Kind,
+    usages: &[u8],
+    want: u16,
+) -> Result<()> {
+    let mut bad = Vec::new();
+    for &u in usages {
+        let ks = wh_device::ops::read_key_settings(s, u)?;
+        let got = match kind {
+            Kind::Ap => ks.ap_keyset,
+            Kind::Rt => ks.rt_keyset,
+        };
+        if got != want {
+            bad.push(format!(
+                "{}: board reports keyset {got}, wanted {want}",
+                key_label(u)
+            ));
+        }
+    }
+    crate::run::report_verification(out, "keyset", usages, &bad)
 }
 
 #[cfg(test)]

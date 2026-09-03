@@ -15,8 +15,7 @@ use wh_proto::value::Um;
 pub fn run(cli: Cli) -> Result<()> {
     // Opened once here: `Store::open` only resolves a path, so it is cheap even for commands
     // that never read it. Every command that needs one takes this `&Store` instead of reaching
-    // for the config directory again; `Dump`, `Profile`, `Selftest`, and `Keyset` touch no
-    // config at all.
+    // for the config directory again; `Dump`, `Profile`, and `Selftest` touch no config at all.
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
@@ -28,7 +27,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Restore { file, last, force } => restore(file, last, force, &store),
         Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
-        Cmd::Keyset { what } => keyset_cmd(what),
+        Cmd::Keyset { what } => keyset_cmd(what, &store),
     }
 }
 
@@ -523,6 +522,27 @@ fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
 }
 
+/// Resolves `wh keyset create rt`'s three flags into the `Option<(Um, Um)>` shape
+/// `keyset::create` takes: `--press`/`--release` override a `--value` base, exactly as
+/// `wh set rt`'s `--press`/`--release` override `--set`. `None` only when none of the three
+/// were given at all, so `keyset::create` falls back to the board's global instead.
+fn resolve_rt_override(
+    value: Option<Um>,
+    press: Option<Um>,
+    release: Option<Um>,
+) -> Result<Option<(Um, Um)>> {
+    if value.is_none() && press.is_none() && release.is_none() {
+        return Ok(None);
+    }
+    let p = press
+        .or(value)
+        .ok_or_else(|| anyhow::anyhow!("--release given without --press or --value"))?;
+    let r = release
+        .or(value)
+        .ok_or_else(|| anyhow::anyhow!("--press given without --release or --value"))?;
+    Ok(Some((p, r)))
+}
+
 /// Takes and saves an auto-backup, recording `command` (e.g. `set rt`) as its origin. `restore`
 /// reads the board's profile through its own separate `ops::profile` call rather than off this
 /// function's returned snapshot, so a future `--no-backup` flag or a best-effort backup here
@@ -549,7 +569,7 @@ fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
 
 /// Shared tail of every write command's readback verification. `bad` is one already-formatted
 /// line per mismatch, built by the caller so each verifier can name exactly what differed.
-fn report_verification(
+pub(crate) fn report_verification(
     out: &mut impl Write,
     what: &str,
     usages: &[u8],
@@ -854,7 +874,7 @@ fn profile_cmd(number: Option<u8>) -> Result<()> {
 /// `Create`/`Set`/`Delete` are named explicitly, not matched by `_`, so a renamed or added
 /// `KeysetWhat` variant is a compile error here rather than a silent "not yet implemented".
 /// Decided before `with_session` opens the device, since the vendor HID collection is exclusive.
-fn keyset_cmd(what: crate::cli::KeysetWhat) -> Result<()> {
+fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
     use crate::cli::KeysetWhat;
     match what {
         KeysetWhat::List { kind } => {
@@ -868,7 +888,32 @@ fn keyset_cmd(what: crate::cli::KeysetWhat) -> Result<()> {
                 }
             })
         }
-        KeysetWhat::Create { .. } => bail!("not yet implemented"),
+        KeysetWhat::Create {
+            kind,
+            keys,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            let value = value.map(mm).transpose()?;
+            let press = press.map(mm).transpose()?;
+            let release = release.map(mm).transpose()?;
+            let rt = resolve_rt_override(value, press, release)?;
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let usages = resolve_keys(s, &keys, store)?;
+                let created = crate::keyset::create(&mut out, s, kind, &usages, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &created.plan.frames());
+                }
+                auto_backup(s, store, "keyset create")?;
+                wh_device::keyset::apply(s, &created.plan)?;
+                crate::keyset::verify_membership(&mut out, s, kind, &usages, created.index.value())
+            })
+        }
         KeysetWhat::Set { .. } => bail!("not yet implemented"),
         KeysetWhat::Delete { .. } => bail!("not yet implemented"),
     }

@@ -1,4 +1,4 @@
-//! End-to-end tests of `wh keyset list` over replay scripts.
+//! End-to-end tests of `wh keyset list` and `wh keyset create` over replay scripts.
 //!
 //! `ReplayTransport` matches each outgoing frame against the script byte for byte and rejects
 //! anything else, on purpose: an unscripted, reordered, or otherwise-different send must fail
@@ -6,7 +6,7 @@
 
 use std::process::Command;
 use wh_device::replay::hex;
-use wh_proto::cmds::{self, layout};
+use wh_proto::cmds::{self, layout, KeyRecord};
 
 fn out_line(bytes: &[u8; 64]) -> String {
     format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(bytes))
@@ -103,6 +103,127 @@ fn layout_read_lines(usage: u8, layout: u8, value: u16) -> Vec<String> {
             ],
         )),
     ]
+}
+
+/// One key's full `read_key_settings` script, in the order it issues reads: AP, MODE, RT_PRESS,
+/// RT_RELEASE, KEYSET_AP, KEYSET_RT. Matches `keyset::plan`'s own per-key read order.
+#[allow(clippy::too_many_arguments)]
+fn key_settings_lines(
+    usage: u8,
+    ap: u16,
+    mode: u16,
+    rt_press: u16,
+    rt_release: u16,
+    ap_keyset: u16,
+    rt_keyset: u16,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (lid, val) in [
+        (layout::AP, ap),
+        (layout::MODE, mode),
+        (layout::RT_PRESS, rt_press),
+        (layout::RT_RELEASE, rt_release),
+        (layout::KEYSET_AP, ap_keyset),
+        (layout::KEYSET_RT, rt_keyset),
+    ] {
+        lines.extend(layout_read_lines(usage, lid, val));
+    }
+    lines
+}
+
+/// `wh keyset create ap --keys w,s` over a board where w,a already hold ap keyset 1 at 0.30mm
+/// and s,d are free at 2.00mm: the matrix (for `run::resolve_keys`), the matrix again and the
+/// 0xFF sweep (for `keyset::read_membership`), the 0x04 reads `global_ap` performs over the free
+/// keys s and d, and `plan`'s six-layout read for each selected key, w then s.
+fn create_script_stealing_w_from_keyset_1() -> Vec<String> {
+    let mut lines = matrix_lines();
+    lines.extend(matrix_lines());
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000));
+    lines.extend(key_settings_lines(0x1A, 300, 0x18, 100, 150, 1, 0));
+    lines.extend(key_settings_lines(0x16, 2000, 0x18, 100, 150, 0, 0));
+    lines
+}
+
+/// Creating a keyset over keys that already belong to one must say which keysets lose members
+/// before it writes, because a create overwrites its members' values with the global rather than
+/// carrying them in.
+#[test]
+fn keyset_create_announces_the_keys_it_steals() {
+    // board: w,a in ap keyset 1 at 0.30mm; s,d free at 2.00mm. Create over w,s.
+    let lines = create_script_stealing_w_from_keyset_1();
+    let script = write_script("keyset-create-steal", &lines);
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w,s", "--dry-run"],
+        &script,
+        &scratch_config_dir("keyset-create-steal"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("keyset 1 loses w"), "got: {text}");
+    assert!(
+        text.contains("keyset 2"),
+        "the new index must be named: {text}"
+    );
+    // Output-assertion lever: `s` already sits at the target AP, so `plan`'s skip rule gives it
+    // no value records, only a membership one. If `create` passed `plan` a `usages` that dropped
+    // `s` (the exact class of defect this task's hazard warns about), s's membership frame would
+    // never appear here, with no later frame to mismatch against since nothing follows it in the
+    // script.
+    let s_membership = cmds::write_key_records_singly(&[KeyRecord {
+        key: 0x16,
+        layout: layout::KEYSET_AP,
+        value: 2,
+    }])[0];
+    assert!(
+        text.contains(&hex(&s_membership)),
+        "s's membership frame must be in the plan too, not just w's: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-create-steal"));
+}
+
+/// `wh keyset create ap --keys w,s` with no `--value`, where the free keys s and d disagree on
+/// the board's actuation point: the matrix, the matrix again and the 0xFF sweep, then the two
+/// disagreeing 0x04 reads over s and d. `global_ap_or_bail` must refuse before `plan` is ever
+/// called, so the script needs nothing past those two reads.
+fn create_script_with_a_split_global() -> Vec<String> {
+    let mut lines = matrix_lines();
+    lines.extend(matrix_lines());
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::AP, 1000));
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000));
+    lines
+}
+
+/// A board whose free keys disagree on the actuation point has no one global value, so a create
+/// with no --value must refuse and name the disagreement rather than picking a winner.
+#[test]
+fn keyset_create_refuses_a_split_global_and_names_it() {
+    let lines = create_script_with_a_split_global();
+    let script = write_script("keyset-create-split", &lines);
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w,s"],
+        &script,
+        &scratch_config_dir("keyset-create-split"),
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("disagree"), "got: {err}");
+    assert!(err.contains("--value"), "the way out must be named: {err}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-create-split"));
 }
 
 /// `wh keyset list ap` groups the board's 0xFF values into keysets and prints each one's members
