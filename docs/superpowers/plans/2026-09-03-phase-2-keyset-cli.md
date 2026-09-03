@@ -1316,7 +1316,8 @@ it is how the existing fixtures were built.
 **Type consistency.** `Kind`, `KeysetIndex`, `Change`, `WritePlan` and `Global` are used with the
 signatures quoted from `keyset.rs` at the top. `kind_of` converts the clap enum to the device one
 once, in task 1, and every later task uses `Kind`. `ApMembership` is introduced in task 4 and used
-only there. `CreatePlan` is introduced in task 2 and used only there.
+only there. Task 2 briefly had a `CreatePlan` wrapper; it was removed once its index field
+became dead, and `create` returns a `WritePlan`.
 
 **Two visibility changes.** `wh_device::ops::read_layout_value` went from `pub(crate)` to `pub`
 in task 1, so `wh keyset list` can read one layout per member rather than the six
