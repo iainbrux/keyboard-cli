@@ -128,10 +128,14 @@ keyset in place (`wh set ap --keys w,s --set 1.5`, where `w` and `s` sit inside 
 and `d`, moves `w` and `s` into a new index and leaves `a` and `d` in the original one). A
 selection that is a whole keyset plus a free key moves the keyset and the free key together into a
 new index. A selection spanning two existing keysets moves the selected members from each into one
-new index, leaving each keyset's unselected members in place. `wh set ap --keys all` moves every
-key on the board, including every free one, into one new keyset. A newly allocated index is one
-more than the current maximum live index, or `1` if none exists. See `docs/keysets.md`, "an
-operator observation", for what evidence supports each shape.
+new index, leaving each keyset's unselected members in place.
+
+A newly allocated index is one more than the current maximum live index, or `1` if none exists.
+Selecting the whole board with `--keys all` follows the same rule as any other selection: it
+leaves the board unchanged if every key is already free, or if one keyset already holds every key
+on the board; on any other board it creates one new keyset holding every key, and every keyset
+that existed before ends with no members. See `docs/keysets.md`, "an operator observation", for
+what evidence supports each shape.
 
 Manage stored groups:
 
