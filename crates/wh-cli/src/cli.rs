@@ -187,10 +187,11 @@ pub enum KeysetWhat {
     /// Change an existing keyset's value: wh keyset set ap 3 --value 1.2
     Set {
         kind: KeysetKindArg,
+        /// The keyset's own index, as shown by `wh keyset list`
         index: u16,
         /// Value in mm: the actuation point for an ap keyset, or the rapid trigger base (press
-        /// and release both) for an rt keyset. Required for an ap keyset; for an rt keyset, at
-        /// least one of --value, --press or --release must be given.
+        /// and release both) for an rt keyset. Required for an ap keyset. For an rt keyset,
+        /// --press and --release must be given together, or --value alone to set both.
         #[arg(long)]
         value: Option<f64>,
         /// Press sensitivity in mm, overriding --value's press half. Refused on an ap keyset;
@@ -208,6 +209,7 @@ pub enum KeysetWhat {
     /// Delete a keyset, returning its members to the global value: wh keyset delete ap 3
     Delete {
         kind: KeysetKindArg,
+        /// The keyset's own index, as shown by `wh keyset list`
         index: u16,
         /// Value in mm to return members to: the actuation point for an ap keyset, or the rapid
         /// trigger base for an rt keyset. Defaults to the board's global, and is required when

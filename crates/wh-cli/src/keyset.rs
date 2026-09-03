@@ -547,12 +547,17 @@ pub(crate) fn verify_write<T: Transport>(
         }
     }
     let what = format!("{} keyset {op}", kind_name(kind));
-    crate::run::report_verification(out, &what, &usages, &bad).map_err(|e| {
-        e.context(
-            "wh restore does not yet write keyset membership, so `wh restore --last` would \
-             restore values but leave membership as this write left it",
-        )
-    })
+    let result = crate::run::report_verification(out, &what, &usages, &bad);
+    // A suffix note, not the outer context: the mismatch itself must stay the headline `error:`
+    // line `main` prints, not be pushed behind a caveat. Only raised when `plan` actually wrote
+    // membership: `set` never does, and the caveat would be inapt there.
+    if result.is_err() && !plan.membership_records().is_empty() {
+        crate::run::best_effort_eprintln(
+            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
+             would restore values but leave membership as this write left it",
+        );
+    }
+    result
 }
 
 #[cfg(test)]
@@ -678,11 +683,9 @@ mod tests {
 
         let mut out = Vec::new();
         let err = verify_write(&mut out, &mut s, Kind::Ap, "create", &plan).unwrap_err();
-        // `{:#}` prints the full chain, the same format `main` uses: the mismatch message is
-        // wrapped in the rollback caveat now, not the top-level message any more.
         assert!(
-            format!("{err:#}").contains("readback mismatch on 1 key(s)"),
-            "got: {err:#}"
+            err.to_string().contains("readback mismatch on 1 key(s)"),
+            "got: {err}"
         );
     }
 }
