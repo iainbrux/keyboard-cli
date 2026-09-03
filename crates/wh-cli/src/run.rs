@@ -1080,9 +1080,9 @@ fn restore_membership_skip_counts(keys: &[RestoreKey]) -> (usize, usize) {
 }
 
 /// `k.mode_raw` is written verbatim, including touch nibble `0` if the snapshot recorded it,
-/// which puts the key back on global travel: the one place in `wh` that writes a value the
-/// vendor has never been observed writing (`docs/keysets.md`). Semantically right for a restore;
-/// not a rule for anywhere else.
+/// which puts the key back on global travel: the one place in `wh` that writes that touch nibble,
+/// which the vendor has never been observed writing (`docs/keysets.md`). Membership restore can
+/// also write other unobserved values, such as keyset index `7`; this is about the nibble only.
 fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
     let mut records = Vec::with_capacity(keys.len() * 4);
     for k in keys {
