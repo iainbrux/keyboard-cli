@@ -232,11 +232,14 @@ rather than as settings it recognises.
     checks resting on the firmware not coupling two layouts. One line saying so satisfies the
     measure-never-infer rule.
 
-- [ ] **2.19 Pin the two-keyset merge in `wh set ap`.** `ap_membership_for` returns `Keep` only
-  when exactly one keyset loses members and the selection is exactly that keyset. Every other
-  selection produces one new keyset containing all of it, so selecting keys from two keysets merges
-  them and both original indices vanish. That branch is reachable, is now documented for users, and
-  is pinned by nothing: every unit test uses a single index and every fixture uses index 0 or 1.
+- [ ] **2.19 Pin the two-keyset merge in `wh set ap`.** `ap_membership_for` returns `Keep` in two
+  cases: no selected key is in a keyset, and exactly one keyset loses members with the selection
+  being exactly that keyset. Everything else produces one new keyset containing the whole selection.
+  So a selection spanning two keysets merges them, and where a keyset is wholly consumed its index
+  ceases to exist; a keyset only partly selected survives with its remaining members.
+
+  No test drives `wh set ap` over a selection spanning two indices. Two-index fixtures do exist in
+  `crates/wh-cli/tests/keyset.rs`, for `keyset list`, and one of them is the obvious starting point.
 
   It wants a test rather than a comment because the wrong implementations are plausible and all
   pass today. A later reader who generalises the `Keep` case to "if every losing keyset is wholly

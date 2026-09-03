@@ -233,8 +233,14 @@ than a capture. It is the only support for the rule, so if it is wrong the rule 
 
 **The observation covers one shape only.** It was a selection taking part of a single keyset. It
 says nothing about a selection that consumes a keyset whole, and nothing about a selection spanning
-two keysets, which `wh` merges into one new index. Those are `wh`'s own generalisations of the rule
-and no evidence of any kind supports them.
+two keysets, which `wh` merges into one new index. Those are `wh`'s own generalisations.
+
+One half of one of them does have measured support, and it is worth separating out. That a free key
+in the selection forces a fresh index is measured twice in the allocation table above: `ks-steal-ap`
+created over `A`, stolen from a keyset, alongside the free `G`, taking a new index, and
+`ks-steal-equal-value` did the same with `J` and the free `H`. Both left the original keyset alive
+with its remaining members. What has no support of any kind is a keyset being consumed whole, and a
+selection spanning two keysets.
 
 There is one piece of evidence in the corpus that cuts the other way. The promotion section above
 records that `ks-value-ap` gives two readings, one of which is a mixed selection; the allocation
