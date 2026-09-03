@@ -1606,7 +1606,15 @@ fn set_ap_over_a_selection_spanning_two_keysets_merges_them_into_a_new_index() {
     let path = write_script("set-ap-split-two-indices", &lines);
     let config_home = scratch_config_dir("set-ap-split-two-indices");
     let out = run_wh(
-        &["set", "ap", "--keys", "w,a,s,d", "--set", "1.50", "--dry-run"],
+        &[
+            "set",
+            "ap",
+            "--keys",
+            "w,a,s,d",
+            "--set",
+            "1.50",
+            "--dry-run",
+        ],
         &path,
         &config_home,
     );
