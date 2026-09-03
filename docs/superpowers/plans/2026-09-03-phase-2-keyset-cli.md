@@ -32,6 +32,13 @@ Copied from `CLAUDE.md` and the task entries. Every task's requirements implicit
   or chunk number in a comment.
 - **Never loosen `ReplayTransport`'s byte-for-byte frame matching** to make a test pass. If a
   fixture stops matching, the code changed under it and the fixture is what should change.
+- **Assert values, never coordinates.** An assertion that names a layout byte, a key name or an
+  index, and then only checks that something exists there, is decorative. This shape produced
+  defects in every task of this plan. Two mechanical forms of the rule: a dry-run test asserts
+  `assert_eq!` against a hand-built frame rather than `contains`, and an assertion against captured
+  `stdout` or `stderr` must never be a single character or a bare number. A one-character match on
+  a process's output can be satisfied by the transport line, a path or a process id, which is how
+  one test in this plan passed on a broken tree roughly a third of the time.
 - All three gates pass before every commit: `cargo test --workspace`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`.
 - **Commit before mutation testing.** Restoring a mutation with `git checkout --` destroys
