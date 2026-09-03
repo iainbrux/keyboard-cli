@@ -106,14 +106,16 @@ wh keyset delete ap 3
 ```
 
 `wh keyset list` with no kind lists both; naming one lists only that one, each keyset shown with its
-index, member keys, and their value: one shared value when they agree (`1 1.50mm  u,i,o,p`), or,
-when a partial write failure has left them disagreeing, each distinct value with which keys hold it
-(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh keyset set` changes an existing keyset's value in place
-and never touches membership; `create`, `delete`, `wh set ap` below, and `wh restore` (for keys whose
-snapshot recorded it, see below) are the only four that move a key into or out of a keyset. `create`
-and `delete` both take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's
-current global value and is required only when the keys outside every keyset disagree on it, or when
-none are left outside one.
+index, value, and member keys: one shared value when they agree (`1 1.50mm  u,i,o,p`), or, when its
+members no longer agree on one, each distinct value with which keys hold it (`1 disagree: u at
+1.50mm, i at 1.20mm`). Disagreement is not only a sign of an interrupted write: `wh set rt` never
+touches membership, so running it on part of an rt keyset's members silently desynchronises the
+keyset, where `wh set ap` on the same selection would split it instead. `wh keyset set` changes an
+existing keyset's value in place and never touches membership; `create`, `delete`, `wh set ap`
+below, and `wh restore` (for keys whose snapshot recorded it, see below) are the only four that move
+a key into or out of a keyset. `create` and `delete` both take `--value` (or, for `rt`,
+`--press`/`--release`); it defaults to the board's current global value and is required only when
+the keys outside every keyset disagree on it, or when none are left outside one.
 
 **Creating a keyset overwrites its members' values, discarding whatever each one held before.** It
 writes the board's current global by default, or an explicit `--value`/`--press`/`--release` if
@@ -127,11 +129,15 @@ worth knowing: a selection that is *part* of a keyset splits it out (`wh set ap 
 index); a selection that is a *whole* keyset plus a free key moves the whole keyset along with the
 free key, since the free key still forces a new index; and a selection spanning *two* existing
 keysets merges both into the one new keyset, so `wh set ap --keys all` on a board with several
-keysets collapses all of them into one. There is no command that moves a key back into an existing
-keyset, since `create` always allocates a fresh index, so a split or a merge cannot be undone with
-`wh keyset`; `wh restore --last` is the only way back. This behaviour is inferred, not measured from
-any capture, from an operator's own observation of the vendor's web UI (`docs/keysets.md`, "an
-operator observation").
+keysets collapses all of them into one. `wh` never moves a key back into an existing keyset, since
+`create` always allocates a fresh index: a split or a merge cannot get its original index back
+through `wh keyset` alone, though deleting the resulting keyset and creating a new one over the
+same members at the same value reconstructs the same grouping under a different index; only `wh
+restore --last`, from a backup taken before the change, brings the original index back too. Only
+the first shape here, a selection taking part of a single keyset, is an operator's own observation
+of the vendor's web UI; the whole-keyset and two-keyset-merge shapes are `wh`'s own generalisation
+of that rule, with no evidence of any kind behind them (`docs/keysets.md`, "an operator
+observation").
 
 Manage stored groups:
 
@@ -272,9 +278,11 @@ cached to go stale.
 
 Two things look like exceptions and are not:
 
-- `set rt`, `set ap`, `selftest`, and `keyset create`/`set`/`delete` each read a key's current
-  settings, then write back a change built from that read (the last three through the same
-  `keyset::plan`). Between the read and the write, the board could in principle be changed by hand
+- `set rt`, `set ap`, and `keyset create`/`set`/`delete` each read a key's current settings, then
+  write back a change built from that read (the last three through the same `keyset::plan`).
+  `selftest` does the same at the board level, not a key's: it reads the global travel and dead
+  zones and writes back the identical values, a no-op write that proves the path rather than
+  changing anything. Between a read and its write, the board could in principle be changed by hand
   (or by another tool); that is a real read-modify-write window, not `wh` caching anything.
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
@@ -306,7 +314,7 @@ These are built and tested against replay scripts, not yet confirmed on the real
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.
 - The whole `wh keyset create|set|delete` tree, and the split/merge behaviour of `wh set ap`
   described above, are exactly as replay-only as the rest of this list, and exposed to the same
-  partial-write failure the bullet above describes.
+  partial-write failure the `wh set ap` bullet earlier in this list describes.
 
 ## Protocol
 
