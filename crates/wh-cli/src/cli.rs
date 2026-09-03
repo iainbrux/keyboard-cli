@@ -191,7 +191,7 @@ pub enum KeysetWhat {
         index: u16,
         /// Value in mm: the actuation point for an ap keyset, or the rapid trigger base (press
         /// and release both) for an rt keyset. Required for an ap keyset. For an rt keyset,
-        /// --press and --release must be given together, or --value alone to set both.
+        /// --press requires --release or --value, and --release requires --press or --value.
         #[arg(long)]
         value: Option<f64>,
         /// Press sensitivity in mm, overriding --value's press half. Refused on an ap keyset;

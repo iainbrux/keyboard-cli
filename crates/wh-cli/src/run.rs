@@ -508,8 +508,8 @@ fn two_usages_absent_from_table() -> (u8, u8) {
 }
 
 /// Writes one line to stderr, best-effort: a closed stderr (`wh ... 2>/dev/null`) must not
-/// panic over something merely informational. Unlike stdout writes in this module, the
-/// `Result` is discarded rather than propagated.
+/// panic over something merely informational. Unlike stdout writes across this crate, the
+/// `Result` is discarded rather than propagated. `pub(crate)` since `keyset.rs` calls it too.
 pub(crate) fn best_effort_eprintln(msg: &str) {
     let _ = writeln!(std::io::stderr(), "{msg}");
 }

@@ -1622,7 +1622,13 @@ fn keyset_set_on_a_missing_index_names_the_live_ones() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("no keyset 7"), "got: {err}");
-    assert!(err.contains('1'), "the live indices must be named: {err}");
+    // Not a bare `'1'`: stderr opens with the transport line, which names a temp file path
+    // containing the process id, so a lone digit can pass by matching that instead of the
+    // board's own live index.
+    assert!(
+        err.contains("the board has 1"),
+        "the live indices must be named: {err}"
+    );
 
     std::fs::remove_file(script).unwrap();
     let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-set-missing"));
@@ -3019,8 +3025,15 @@ fn keyset_set_help_does_not_claim_a_single_rt_flag_suffices() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(!text.contains("and/or"), "got: {text}");
     assert!(!text.contains("at least one of"), "got: {text}");
+    // Pins the statement the code's own error messages actually enforce, not the earlier
+    // "must be given together" wording, which was false: `--press` alone plus `--value` is
+    // accepted, since `--value` supplies the missing release half.
     assert!(
-        text.contains("--press and --release must be given together"),
+        text.contains("--press requires --release or --value"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("--release requires --press or --value"),
         "got: {text}"
     );
 }
@@ -3036,6 +3049,13 @@ fn keyset_create_and_delete_help_do_not_claim_a_single_rt_flag_suffices() {
             .unwrap();
         assert!(out.status.success());
         let text = String::from_utf8_lossy(&out.stdout);
+        // A positive anchor: the two `contains(false)` checks below pass just as well if
+        // `--value`'s whole doc comment vanished, which is exactly what happened to `create`'s
+        // when this test was last written without one.
+        assert!(
+            text.contains("Value in mm"),
+            "{sub}: --value help missing: {text}"
+        );
         assert!(!text.contains("and/or"), "{sub} got: {text}");
         assert!(!text.contains("at least one of"), "{sub} got: {text}");
     }

@@ -548,7 +548,7 @@ pub(crate) fn verify_write<T: Transport>(
     }
     let what = format!("{} keyset {op}", kind_name(kind));
     let result = crate::run::report_verification(out, &what, &usages, &bad);
-    // A suffix note, not the outer context: the mismatch itself must stay the headline `error:`
+    // A prefix note, not the outer context: the mismatch itself must stay the headline `error:`
     // line `main` prints, not be pushed behind a caveat. Only raised when `plan` actually wrote
     // membership: `set` never does, and the caveat would be inapt there.
     if result.is_err() && !plan.membership_records().is_empty() {
