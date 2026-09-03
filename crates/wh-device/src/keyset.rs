@@ -110,7 +110,15 @@ impl KeysetIndex {
 /// writes one index to every key it is given. `wh restore` is the only caller, since a snapshot's
 /// indices can include gaps allocation never reuses. Errors if the entries mix kinds, so one
 /// layout's index can never be written to the other's layout.
-pub fn membership_records(entries: &[(u8, KeysetIndex)]) -> Result<Vec<KeyRecord>, DeviceError> {
+///
+/// Named for its one caller, not `membership_records` like `WritePlan`'s own method: the two
+/// return the same shape from different contracts (this one builds fresh records from raw
+/// indices; `WritePlan::membership_records` returns ones `plan` already built), and a shared name
+/// on two reachable things with different contracts is a trap for whichever gets called by
+/// mistake.
+pub fn membership_records_for_restore(
+    entries: &[(u8, KeysetIndex)],
+) -> Result<Vec<KeyRecord>, DeviceError> {
     let Some((_, first)) = entries.first() else {
         return Ok(Vec::new());
     };
@@ -1138,31 +1146,31 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    // -- membership_records --
+    // -- membership_records_for_restore --
 
     /// Mixing an actuation point index with a rapid trigger one in one call must error rather
     /// than writing one layout's index into the other layout, which would silently move keys
     /// between groupings.
     #[test]
-    fn membership_records_refuses_mixed_kinds() {
+    fn membership_records_for_restore_refuses_mixed_kinds() {
         let entries = [
             (0x1Au8, KeysetIndex::restoring(Kind::Ap, 1)),
             (0x04, KeysetIndex::restoring(Kind::Rt, 1)),
         ];
         assert!(matches!(
-            membership_records(&entries),
+            membership_records_for_restore(&entries),
             Err(DeviceError::KeysetKindMismatch { .. })
         ));
     }
 
     /// Every record carries its own key's index and the layout its kind names.
     #[test]
-    fn membership_records_carries_one_index_per_key() {
+    fn membership_records_for_restore_carries_one_index_per_key() {
         let entries = [
             (0x1Au8, KeysetIndex::restoring(Kind::Ap, 3)),
             (0x04, KeysetIndex::restoring(Kind::Ap, 0)),
         ];
-        let r = membership_records(&entries).unwrap();
+        let r = membership_records_for_restore(&entries).unwrap();
         assert_eq!(
             r[0],
             KeyRecord {

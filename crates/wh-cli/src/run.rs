@@ -139,8 +139,10 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
             rt_press_mm: ks.rt_press.to_mm(),
             rt_release_mm: ks.rt_release.to_mm(),
             mode_raw: ks.mode.value(),
-            ap_keyset: ks.ap_keyset,
-            rt_keyset: ks.rt_keyset,
+            // Always `Some`: this is a live read, never a stale or absent value, so `wh
+            // restore` from this snapshot can always tell "no keyset" apart from "unknown".
+            ap_keyset: Some(ks.ap_keyset),
+            rt_keyset: Some(ks.rt_keyset),
         });
     }
     Ok(wh_config::snapshot::Snapshot {
@@ -230,16 +232,19 @@ fn dump(table: bool) -> Result<()> {
                 "key", "ap", "apks", "rt", "press", "release", "rtks"
             )?;
             for k in &snap.keys {
+                // `.unwrap_or(0)` is safe here, not a silent fallback: `snap` came from
+                // `snapshot_from_device` a few lines up in this same function, which always
+                // sets `Some`. A stored snapshot with an absent field never reaches this table.
                 writeln!(
                     out,
                     "{:<12} {:>4.2}mm {:>4} {:>4} {:>6.2}mm {:>6.2}mm {:>4}",
                     k.name,
                     k.ap_mm,
-                    keyset_display(k.ap_keyset),
+                    keyset_display(k.ap_keyset.unwrap_or(0)),
                     if k.rt { "on" } else { "off" },
                     k.rt_press_mm,
                     k.rt_release_mm,
-                    keyset_display(k.rt_keyset)
+                    keyset_display(k.rt_keyset.unwrap_or(0))
                 )?;
             }
         }
@@ -997,8 +1002,11 @@ struct RestoreKey {
     mode_raw: u16,
     rt_press: Um,
     rt_release: Um,
-    ap_keyset: u16,
-    rt_keyset: u16,
+    /// `None` when the snapshot predates keyset recording: distinct from `Some(0)`, a live read
+    /// that found the key outside any keyset. `restore_membership_records` and `verify_restore`
+    /// both key off this to leave a key's membership alone rather than assert `0` for it.
+    ap_keyset: Option<u16>,
+    rt_keyset: Option<u16>,
 }
 
 fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<RestoreKey>> {
@@ -1031,19 +1039,44 @@ fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<Res
 /// Membership records for a restore, actuation point first then rapid trigger, each built
 /// through `KeysetIndex::restoring` so an index from a snapshot can never be mistaken for one
 /// allocation produced.
+///
+/// A key recorded at `Some(0)` still gets a record: skipping it would be incoherent with
+/// `verify_restore` below, which would then read the board's real, live index back, find it
+/// disagreeing with the snapshot's `0`, and fail a restore that never touched that key on
+/// purpose. The write is otherwise unconditional and unverified against the vendor's own
+/// per-operation rules, which is safe only because `verify_restore` re-reads every layout
+/// afterwards, so a firmware side effect here surfaces as a reported mismatch, not silent drift.
+/// A key recorded at `None`, meaning the snapshot predates these fields, gets no record at all:
+/// `restore` cannot assert a membership it was never told.
 fn restore_membership_records(keys: &[RestoreKey]) -> Result<Vec<KeyRecord>> {
     use wh_device::keyset::{KeysetIndex, Kind};
     let ap: Vec<(u8, KeysetIndex)> = keys
         .iter()
-        .map(|k| (k.usage, KeysetIndex::restoring(Kind::Ap, k.ap_keyset)))
+        .filter_map(|k| {
+            k.ap_keyset
+                .map(|v| (k.usage, KeysetIndex::restoring(Kind::Ap, v)))
+        })
         .collect();
     let rt: Vec<(u8, KeysetIndex)> = keys
         .iter()
-        .map(|k| (k.usage, KeysetIndex::restoring(Kind::Rt, k.rt_keyset)))
+        .filter_map(|k| {
+            k.rt_keyset
+                .map(|v| (k.usage, KeysetIndex::restoring(Kind::Rt, v)))
+        })
         .collect();
-    let mut out = wh_device::keyset::membership_records(&ap)?;
-    out.extend(wh_device::keyset::membership_records(&rt)?);
+    let mut out = wh_device::keyset::membership_records_for_restore(&ap)?;
+    out.extend(wh_device::keyset::membership_records_for_restore(&rt)?);
     Ok(out)
+}
+
+/// How many keys `restore_membership_records` left untouched because the snapshot predates
+/// keyset recording, ap and rt counted separately since a hand-edited file could carry one field
+/// and not the other. `restore` prints this to stderr so the gap reads as a reported limitation,
+/// not as the silent success it was before this existed.
+fn restore_membership_skip_counts(keys: &[RestoreKey]) -> (usize, usize) {
+    let ap = keys.iter().filter(|k| k.ap_keyset.is_none()).count();
+    let rt = keys.iter().filter(|k| k.rt_keyset.is_none()).count();
+    (ap, rt)
 }
 
 fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
@@ -1081,6 +1114,11 @@ fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTr
     })
 }
 
+/// Re-reads every restored key and confirms it holds every value the snapshot recorded. Values,
+/// mode and both keyset memberships are checked independently rather than as one bundled
+/// condition, so a key whose snapshot had no recorded membership (`RestoreKey::ap_keyset` or
+/// `rt_keyset` is `None`) gets no membership comparison at all: comparing it against a
+/// fabricated `0` is exactly the defect `restore_membership_records` avoids by not writing one.
 fn verify_restore<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -1090,30 +1128,42 @@ fn verify_restore<T: Transport>(
     let usages: Vec<u8> = keys.iter().map(|k| k.usage).collect();
     for k in keys {
         let ks = ops::read_key_settings(s, k.usage)?;
+        let mut faults = Vec::new();
+
         if ks.ap != k.ap
             || ks.rt_press != k.rt_press
             || ks.rt_release != k.rt_release
             || ks.mode.value() != k.mode_raw
-            || ks.ap_keyset != k.ap_keyset
-            || ks.rt_keyset != k.rt_keyset
         {
-            bad.push(format!(
-                "{}: board reports ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x} \
-                 ap keyset {} rt keyset {}, wanted ap {:.2}mm press {:.2}mm release {:.2}mm \
-                 mode {:#06x} ap keyset {} rt keyset {}",
-                key_label(k.usage),
+            faults.push(format!(
+                "ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}, wanted ap {:.2}mm \
+                 press {:.2}mm release {:.2}mm mode {:#06x}",
                 ks.ap.to_mm(),
                 ks.rt_press.to_mm(),
                 ks.rt_release.to_mm(),
                 ks.mode.value(),
-                ks.ap_keyset,
-                ks.rt_keyset,
                 k.ap.to_mm(),
                 k.rt_press.to_mm(),
                 k.rt_release.to_mm(),
                 k.mode_raw,
-                k.ap_keyset,
-                k.rt_keyset,
+            ));
+        }
+        if let Some(want) = k.ap_keyset {
+            if ks.ap_keyset != want {
+                faults.push(format!("ap keyset {}, wanted {want}", ks.ap_keyset));
+            }
+        }
+        if let Some(want) = k.rt_keyset {
+            if ks.rt_keyset != want {
+                faults.push(format!("rt keyset {}, wanted {want}", ks.rt_keyset));
+            }
+        }
+
+        if !faults.is_empty() {
+            bad.push(format!(
+                "{}: board reports {}",
+                key_label(k.usage),
+                faults.join("; ")
             ));
         }
     }
@@ -1193,6 +1243,16 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     let keys = validate_restore_keys(&snap)?;
     let records = restore_records(&keys);
     let membership = restore_membership_records(&keys)?;
+    // Silence here is how a snapshot predating keyset recording used to read as a clean
+    // success while quietly leaving the board's real membership alone: say so on stderr.
+    let (skipped_ap, skipped_rt) = restore_membership_skip_counts(&keys);
+    if skipped_ap > 0 || skipped_rt > 0 {
+        best_effort_eprintln(&format!(
+            "note: snapshot has no recorded actuation point keyset for {skipped_ap} key(s) and \
+             no recorded rapid trigger keyset for {skipped_rt} key(s) (it predates keyset \
+             recording); leaving those keys' membership on the board as it already is"
+        ));
+    }
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();

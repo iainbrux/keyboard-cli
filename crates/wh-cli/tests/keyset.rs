@@ -2514,8 +2514,11 @@ fn keyset_delete_ap_end_to_end_catches_a_membership_that_never_cleared_on_the_se
 }
 
 /// The mismatch itself must stay the final `error:` line on `delete`, which does write
-/// membership, and the retired restore-coverage caveat must not have come back as some other
-/// line pushed ahead of it.
+/// membership, with nothing else, retired caveat or otherwise, pushed ahead of it. Enumerates
+/// every line stderr is allowed to hold rather than only checking the last one and the retired
+/// wording is absent: a differently-worded caveat inserted before the headline would still leave
+/// the last line reading `error: readback mismatch` and the retired text absent, so only a check
+/// on the total shape of stderr can catch it coming back under a new name.
 #[test]
 fn keyset_delete_ap_mismatch_keeps_the_readback_failure_as_the_headline() {
     let lines = delete_ap_write_script(Readback {
@@ -2528,13 +2531,21 @@ fn keyset_delete_ap_mismatch_keeps_the_readback_failure_as_the_headline() {
     let out = run_wh(&["keyset", "delete", "ap", "1"], &script, &config_home);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(
+        lines.len(),
+        4,
+        "expected exactly transport, backup, one fault line, and the headline, nothing pushed \
+         ahead of the headline: {err}"
+    );
+    assert!(lines[0].starts_with("transport: replay"), "got: {err}");
+    assert!(lines[1].starts_with("(backed up to"), "got: {err}");
     assert!(
-        !err.contains("wh restore does not yet write keyset membership"),
+        lines[2].contains("a: board reports ap keyset 1, wanted 0"),
         "got: {err}"
     );
-    let last_line = err.lines().last().unwrap_or("");
     assert!(
-        last_line.starts_with("error: readback mismatch"),
+        lines[3].starts_with("error: readback mismatch"),
         "the readback failure must be the final, headline line: {err}"
     );
 

@@ -384,10 +384,13 @@ pub fn set_profile<T: Transport>(
 }
 
 /// Writes a whole snapshot back to the board: the global record, then every key's values
-/// batched, then membership one record per frame, last. That ordering is the vendor's and is
-/// measured (`docs/keysets.md`); batching membership with the values would be a divergence for
-/// no gain. Global travel goes first so a restore that fails partway through the rest still
-/// leaves the board's overall travel consistent with what was intended.
+/// batched, then membership one record per frame, last. Values before membership, membership
+/// one-per-frame-last, is the vendor's own per-operation template and is measured
+/// (`docs/keysets.md`); applying that shape to a whole-board restore, and specifically writing
+/// every key's actuation point membership before any key's rapid trigger membership, is this
+/// crate's own inference, not a vendor behaviour: no capture contains a `wh restore` at all.
+/// Global travel goes first so a restore that fails partway through the rest still leaves the
+/// board's overall travel consistent with what was intended.
 pub fn restore_all<T: Transport>(
     s: &mut Session<T>,
     global: &cmds::GlobalTravel,

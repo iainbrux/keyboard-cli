@@ -53,12 +53,15 @@ pub struct KeyToml {
     /// Raw Layout_Mode value, restored verbatim so advanced-key modes survive.
     pub mode_raw: u16,
     /// Keyset membership as read from layouts 0xFF and 0xFE. `0` is the value read for keys
-    /// outside any keyset. Defaulted so snapshots taken before these fields existed still load;
-    /// on such a snapshot `wh restore` writes `0`, taking every key out of any keyset it holds.
+    /// outside any keyset. `None` means the field is absent, which is what a snapshot taken
+    /// before these fields existed deserialises to, and is not the same thing as `Some(0)`, a
+    /// live read that found the key outside any keyset: `wh restore` must tell the two apart, or
+    /// an old snapshot would assert "no keyset" for every key and dissolve whatever the board
+    /// actually holds.
     #[serde(default)]
-    pub ap_keyset: u16,
+    pub ap_keyset: Option<u16>,
     #[serde(default)]
-    pub rt_keyset: u16,
+    pub rt_keyset: Option<u16>,
 }
 
 /// Which parser a snapshot file needs. JSON is what `wh backup` writes; TOML is read so backups
@@ -115,8 +118,8 @@ mod tests {
                 rt_press_mm: 0.5,
                 rt_release_mm: 0.5,
                 mode_raw: 0x20,
-                ap_keyset: 0,
-                rt_keyset: 0,
+                ap_keyset: Some(0),
+                rt_keyset: Some(0),
             }],
         }
     }
@@ -253,7 +256,7 @@ mode_raw = 32
   ]
 }"#;
         let snap = Snapshot::from_json(text).unwrap();
-        assert_eq!(snap.keys[0].ap_keyset, 0);
-        assert_eq!(snap.keys[0].rt_keyset, 0);
+        assert_eq!(snap.keys[0].ap_keyset, None);
+        assert_eq!(snap.keys[0].rt_keyset, None);
     }
 }

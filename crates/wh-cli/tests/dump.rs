@@ -1944,8 +1944,8 @@ fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
             rt_press_mm: 0.5,
             rt_release_mm: 0.6,
             mode_raw: 0x0220,
-            ap_keyset: 0,
-            rt_keyset: 0,
+            ap_keyset: Some(0),
+            rt_keyset: Some(0),
         }],
     };
     snap.to_json().unwrap()
@@ -1995,7 +1995,12 @@ fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
 /// first, then the per-key batch for 'w' (ap, mode verbatim, rt press, rt release), no SAVE, then
 /// a matching readback. Shared by the happy-path and force-rescue tests below so both restore the
 /// identical snapshot content and diverge only on the profile-safety fixture around it.
-fn restore_write_and_verify_lines() -> Vec<String> {
+/// `membership` is `true` for a snapshot that recorded 'w' at keyset `0` (an explicit "no
+/// keyset", `Some(0)`), which sends the two membership frames below, and `false` for one that
+/// predates keyset recording at all (`None`), which must send neither: the fields differ only in
+/// what `restore` knows about 'w's membership, not in what it reads back, so both call sites can
+/// still share the same value batch and readback.
+fn restore_write_and_verify_lines(membership: bool) -> Vec<String> {
     let mut lines = Vec::new();
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um::from_mm(2.0, 0.0, 4.0).unwrap(),
@@ -2033,23 +2038,25 @@ fn restore_write_and_verify_lines() -> Vec<String> {
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
 
-    // Membership last, one record per frame: 'w' carries no keyset in this snapshot (both 0), so
-    // the write puts it back to none rather than skipping it.
-    let membership = vec![
-        KeyRecord {
-            key: 0x1A,
-            layout: layout::KEYSET_AP,
-            value: 0,
-        },
-        KeyRecord {
-            key: 0x1A,
-            layout: layout::KEYSET_RT,
-            value: 0,
-        },
-    ];
-    for f in &cmds::write_key_records_singly(&membership) {
-        lines.push(out_line(f));
-        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    if membership {
+        // Membership last, one record per frame: 'w' carries an explicit no-keyset (`Some(0)`)
+        // in this snapshot, so the write puts it back to none rather than skipping it.
+        let membership = vec![
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_AP,
+                value: 0,
+            },
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_RT,
+                value: 0,
+            },
+        ];
+        for f in &cmds::write_key_records_singly(&membership) {
+            lines.push(out_line(f));
+            lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+        }
     }
     // No SAVE order follows: the vendor was never observed sending one.
 
@@ -2072,7 +2079,7 @@ fn restore_happy_path_backs_up_and_verifies() {
     // replies report the same board profile index 0 (UI profile 1), matching the snapshot.
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
-    lines.extend(restore_write_and_verify_lines());
+    lines.extend(restore_write_and_verify_lines(true));
 
     let path = write_script("restore-happy", &lines);
     let out = run_wh(
@@ -2143,7 +2150,7 @@ mode_raw = 544
 
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
-    lines.extend(restore_write_and_verify_lines());
+    lines.extend(restore_write_and_verify_lines(false));
     let path = write_script("restore-toml-explicit", &lines);
 
     let out = run_wh(
@@ -2159,6 +2166,15 @@ mode_raw = 544
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+    // This TOML predates keyset recording, so `restore` must say it left 'w's membership alone
+    // rather than silently assert `0` for it (`restore_write_and_verify_lines(false)` above sent
+    // no membership frame at all; `ReplayTransport` would have rejected one if it had).
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no recorded actuation point keyset for 1 key")
+            && stderr.contains("no recorded rapid trigger keyset for 1 key"),
+        "unexpected stderr: {stderr}"
+    );
 
     std::fs::remove_file(snap_path).unwrap();
     std::fs::remove_file(path).unwrap();
@@ -2200,7 +2216,7 @@ mode_raw = 544
 
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
-    lines.extend(restore_write_and_verify_lines());
+    lines.extend(restore_write_and_verify_lines(false));
     let path = write_script("restore-last-toml", &lines);
 
     let out = run_wh(&["restore", "--last"], &path, &config_home);
@@ -2335,7 +2351,7 @@ fn restore_force_rescues_an_unrecorded_profile() {
     // verify tail, all the way through since `--force` rescues the unrecorded-profile case.
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
-    lines.extend(restore_write_and_verify_lines());
+    lines.extend(restore_write_and_verify_lines(true));
     let path = write_script("restore-profile-unrecorded-force", &lines);
 
     let out = run_wh(
@@ -2704,8 +2720,8 @@ fn restore_last_prints_the_picked_snapshot_and_its_origin() {
             rt_press_mm: 0.5,
             rt_release_mm: 0.6,
             mode_raw: 0x0220,
-            ap_keyset: 0,
-            rt_keyset: 0,
+            ap_keyset: Some(0),
+            rt_keyset: Some(0),
         }],
     };
     std::fs::write(
@@ -2716,7 +2732,7 @@ fn restore_last_prints_the_picked_snapshot_and_its_origin() {
 
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
-    lines.extend(restore_write_and_verify_lines());
+    lines.extend(restore_write_and_verify_lines(true));
     let path = write_script("restore-last-origin", &lines);
 
     let out = run_wh(&["restore", "--last"], &path, &config_home);
@@ -2760,8 +2776,8 @@ fn snapshot_json_with_keysets() -> String {
                 rt_press_mm: 0.5,
                 rt_release_mm: 0.6,
                 mode_raw: 0x0018,
-                ap_keyset: 3,
-                rt_keyset: 0,
+                ap_keyset: Some(3),
+                rt_keyset: Some(0),
             },
             wh_config::snapshot::KeyToml {
                 name: "a".into(),
@@ -2771,8 +2787,8 @@ fn snapshot_json_with_keysets() -> String {
                 rt_press_mm: 0.0,
                 rt_release_mm: 0.0,
                 mode_raw: 0x0000,
-                ap_keyset: 0,
-                rt_keyset: 0,
+                ap_keyset: Some(0),
+                rt_keyset: Some(0),
             },
         ],
     };
@@ -2783,7 +2799,9 @@ fn snapshot_json_with_keysets() -> String {
 /// auto-backup, the global travel write, the per-key value batch, then membership one record per
 /// frame last, ap over both keys before rt over both, matching `restore_membership_records`' own
 /// order, then the readback `verify_restore` does per key including both keyset fields.
-fn restore_script_with_keyset_readback() -> Vec<String> {
+/// `w_ap_keyset_readback` is what the final readback reports for 'w's ap keyset: `3` for a clean
+/// match, anything else to script a mismatch `verify_restore` must catch.
+fn restore_script_with_keyset_readback(w_ap_keyset_readback: u16) -> Vec<String> {
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
 
@@ -2872,7 +2890,15 @@ fn restore_script_with_keyset_readback() -> Vec<String> {
     }
 
     // verify_restore's readback: both keys land at the restored values and keyset indices.
-    lines.extend(key_settings_lines(0x1A, 1200, 0x0018, 500, 600, 3, 0));
+    lines.extend(key_settings_lines(
+        0x1A,
+        1200,
+        0x0018,
+        500,
+        600,
+        w_ap_keyset_readback,
+        0,
+    ));
     lines.extend(key_settings_lines(0x04, 1500, 0x0000, 0, 0, 0, 0));
     lines
 }
@@ -2889,7 +2915,7 @@ fn restore_writes_keyset_membership_after_the_values() {
         std::env::temp_dir().join(format!("wh-restore-keysets-{}.json", std::process::id()));
     std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
 
-    let lines = restore_script_with_keyset_readback();
+    let lines = restore_script_with_keyset_readback(3);
     let path = write_script("restore-keysets", &lines);
 
     let out = run_wh(
@@ -2907,6 +2933,156 @@ fn restore_writes_keyset_membership_after_the_values() {
     assert!(
         stdout.contains("restored 2 keys from snapshot") && stdout.contains("verified"),
         "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `verify_restore`'s membership check is otherwise unpinned: nothing before this test fails if
+/// both keyset comparisons are deleted from it. Corrupts only 'w's ap keyset readback (`5`
+/// instead of the `3` the restore actually wrote), leaving every value and mode field correct, so
+/// only the keyset comparison can be what fails the run.
+#[test]
+fn restore_reports_a_keyset_membership_mismatch() {
+    let config_home = scratch_config_dir("restore-keyset-mismatch");
+    let snap_path = std::env::temp_dir().join(format!(
+        "wh-restore-keyset-mismatch-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
+
+    let lines = restore_script_with_keyset_readback(5);
+    let path = write_script("restore-keyset-mismatch", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("w: board reports") && stderr.contains("ap keyset 5, wanted 3"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("verified"),
+        "must not claim success while the board disagrees on membership"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// A snapshot with no `ap_keyset`/`rt_keyset` fields at all, the shape of a genuinely pre-2.1
+/// backup, restored against a board holding live, nonzero keyset membership on 'w' (ap keyset 4,
+/// rt keyset 2). The fix this pins: `restore` must not write `0` to either layout for 'w', which
+/// would dissolve whatever keyset it actually belongs to, and it must tell the operator it left
+/// membership alone rather than saying nothing. `ReplayTransport` matches byte for byte and this
+/// script contains no `0xff`/`0xfe` write for 'w' at all, so a regression that sent one would fail
+/// on the unscripted send rather than merely on an assertion below.
+#[test]
+fn restore_from_a_snapshot_that_predates_keysets_leaves_live_membership_untouched() {
+    let config_home = scratch_config_dir("restore-predates-keysets");
+    let snap_path = std::env::temp_dir().join(format!(
+        "wh-restore-predates-keysets-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &snap_path,
+        r#"{
+  "firmware": "V1.0.0.001",
+  "serial": "SNRESTORETEST001",
+  "taken_at": "2026-08-28T12:00:00Z",
+  "profile": 1,
+  "global": { "travel_mm": 2.0, "press_dead_mm": 0.2, "release_dead_mm": 0.1 },
+  "keys": [
+    { "name": "w", "usage": 26, "ap_mm": 1.2, "rt": false, "rt_press_mm": 0.5,
+      "rt_release_mm": 0.6, "mode_raw": 24 }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    // The auto-backup's own live read: 'w' holds ap keyset 4 and rt keyset 2, 'a' holds neither.
+    lines.extend(sync_lines("SNWRITETEST00001", "V1.0.0.001"));
+    lines.extend(profile_lines(0));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines());
+    lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500, 4, 2));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
+
+    // `restore`'s own writes: global travel, then 'w's value batch. No membership frame at all.
+    let db_write = cmds::write_global_travel(
+        wh_proto::value::Um(2000),
+        wh_proto::value::Um(200),
+        wh_proto::value::Um(100),
+    );
+    lines.push(out_line(&db_write));
+    lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x0018,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 600,
+        },
+    ];
+    for f in &cmds::write_key_records(&value_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    // verify_restore's readback: 'w' still holds its live keyset 4/2, untouched, and the values
+    // that were actually restored. The keyset fields are not compared (the snapshot never
+    // recorded them), so whatever they read here cannot itself pass or fail the run.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0018, 500, 600, 4, 2));
+
+    let path = write_script("restore-predates-keysets", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("restored 1 key from snapshot") && stdout.contains("verified"),
+        "unexpected stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no recorded actuation point keyset for 1 key")
+            && stderr.contains("no recorded rapid trigger keyset for 1 key"),
+        "unexpected stderr: {stderr}"
     );
 
     std::fs::remove_file(snap_path).unwrap();

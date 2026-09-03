@@ -251,8 +251,11 @@ These are built and tested against replay scripts, not yet confirmed on the real
   halves, a failure can now leave a key's values changed with its membership untouched, or move
   some of a split's keys into the new keyset while leaving others behind in the old one.
   **`wh restore --last` does fix this now.** It restores AP, MODE, RT_PRESS, RT_RELEASE, and both
-  keyset memberships from the auto-backup taken before the write, in the same order the vendor
-  writes them: values first, membership one record per key per layout, last.
+  keyset memberships from the auto-backup taken before the write, values first and membership one
+  record per key per layout, last: the vendor's own per-operation shape, measured
+  (`docs/keysets.md`). Applying that shape to a whole-board restore, including writing every key's
+  actuation point membership before any key's rapid trigger membership, is not itself measured; no
+  capture contains a `wh restore` at all.
 - `wh profile 2` then `wh profile` should confirm the switch landed.
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.
 
