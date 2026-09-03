@@ -58,9 +58,9 @@ pub struct KeyToml {
     /// live read that found the key outside any keyset: `wh restore` must tell the two apart, or
     /// an old snapshot would assert "no keyset" for every key and dissolve whatever the board
     /// actually holds.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ap_keyset: Option<u16>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rt_keyset: Option<u16>,
 }
 
@@ -140,6 +140,28 @@ mod tests {
         let text = snap.to_json().unwrap();
         assert!(!text.contains("profile"), "profile must be absent: {text}");
         assert_eq!(Snapshot::from_json(&text).unwrap().profile, None);
+    }
+
+    /// A `None` keyset field is omitted rather than written as `null`, matching `profile`'s own
+    /// omission above: a snapshot that never recorded membership must round-trip as one that never
+    /// recorded it, not as one that explicitly recorded "absent".
+    #[test]
+    fn snapshot_json_omits_absent_keyset_fields() {
+        let mut snap = sample();
+        snap.keys[0].ap_keyset = None;
+        snap.keys[0].rt_keyset = None;
+        let text = snap.to_json().unwrap();
+        assert!(
+            !text.contains("ap_keyset"),
+            "ap_keyset must be absent: {text}"
+        );
+        assert!(
+            !text.contains("rt_keyset"),
+            "rt_keyset must be absent: {text}"
+        );
+        let back = Snapshot::from_json(&text).unwrap();
+        assert_eq!(back.keys[0].ap_keyset, None);
+        assert_eq!(back.keys[0].rt_keyset, None);
     }
 
     /// A Phase 1 backup is TOML. `from_file_text` must pick the parser from the extension so those

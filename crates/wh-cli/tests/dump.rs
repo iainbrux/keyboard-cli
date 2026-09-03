@@ -2799,9 +2799,15 @@ fn snapshot_json_with_keysets() -> String {
 /// auto-backup, the global travel write, the per-key value batch, then membership one record per
 /// frame last, ap over both keys before rt over both, matching `restore_membership_records`' own
 /// order, then the readback `verify_restore` does per key including both keyset fields.
-/// `w_ap_keyset_readback` is what the final readback reports for 'w's ap keyset: `3` for a clean
-/// match, anything else to script a mismatch `verify_restore` must catch.
-fn restore_script_with_keyset_readback(w_ap_keyset_readback: u16) -> Vec<String> {
+/// `w_ap_readback` is what the final readback reports for 'w's ap value: `1200` for a clean match,
+/// anything else to script a value mismatch. `a_ap_keyset_readback` is the same for 'a's ap
+/// keyset: `0` for a clean match, anything else to script a membership mismatch, deliberately on
+/// the second key, not the first: a corruption on `keys[0]` cannot tell a `verify_restore` that
+/// checks every key apart from one that only ever checks the first.
+fn restore_script_with_keyset_readback(
+    w_ap_readback: u16,
+    a_ap_keyset_readback: u16,
+) -> Vec<String> {
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
 
@@ -2892,14 +2898,22 @@ fn restore_script_with_keyset_readback(w_ap_keyset_readback: u16) -> Vec<String>
     // verify_restore's readback: both keys land at the restored values and keyset indices.
     lines.extend(key_settings_lines(
         0x1A,
-        1200,
+        w_ap_readback,
         0x0018,
         500,
         600,
-        w_ap_keyset_readback,
+        3,
         0,
     ));
-    lines.extend(key_settings_lines(0x04, 1500, 0x0000, 0, 0, 0, 0));
+    lines.extend(key_settings_lines(
+        0x04,
+        1500,
+        0x0000,
+        0,
+        0,
+        a_ap_keyset_readback,
+        0,
+    ));
     lines
 }
 
@@ -2915,7 +2929,7 @@ fn restore_writes_keyset_membership_after_the_values() {
         std::env::temp_dir().join(format!("wh-restore-keysets-{}.json", std::process::id()));
     std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
 
-    let lines = restore_script_with_keyset_readback(3);
+    let lines = restore_script_with_keyset_readback(1200, 0);
     let path = write_script("restore-keysets", &lines);
 
     let out = run_wh(
@@ -2941,9 +2955,11 @@ fn restore_writes_keyset_membership_after_the_values() {
 }
 
 /// `verify_restore`'s membership check is otherwise unpinned: nothing before this test fails if
-/// both keyset comparisons are deleted from it. Corrupts only 'w's ap keyset readback (`5`
-/// instead of the `3` the restore actually wrote), leaving every value and mode field correct, so
-/// only the keyset comparison can be what fails the run.
+/// both keyset comparisons are deleted from it. Corrupts 'a's ap keyset readback (`5` instead of
+/// the `0` the restore actually wrote), leaving every value and mode field correct, so only the
+/// keyset comparison can be what fails the run. On `keys[1]`, not `keys[0]`: a corruption on the
+/// first key alone cannot tell a loop that checks every key apart from one that checks only the
+/// first, which `keys.iter().take(1)` proved indistinguishable from correct when this was 'w'.
 #[test]
 fn restore_reports_a_keyset_membership_mismatch() {
     let config_home = scratch_config_dir("restore-keyset-mismatch");
@@ -2953,7 +2969,7 @@ fn restore_reports_a_keyset_membership_mismatch() {
     ));
     std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
 
-    let lines = restore_script_with_keyset_readback(5);
+    let lines = restore_script_with_keyset_readback(1200, 5);
     let path = write_script("restore-keyset-mismatch", &lines);
 
     let out = run_wh(
@@ -2968,12 +2984,53 @@ fn restore_reports_a_keyset_membership_mismatch() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("w: board reports") && stderr.contains("ap keyset 5, wanted 3"),
+        stderr.contains("a: board reports") && stderr.contains("ap keyset 5, wanted 0"),
         "unexpected stderr: {stderr}"
     );
     assert!(
         !String::from_utf8_lossy(&out.stdout).contains("verified"),
         "must not claim success while the board disagrees on membership"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The value/mode half of `verify_restore` is otherwise unpinned: nothing before this test fails
+/// if the whole ap/press/release/mode condition is replaced with `if false`. Corrupts only 'w's ap
+/// readback (`1300` instead of the `1200` restore actually wrote), leaving membership and every
+/// other field correct, so only that condition can be what fails the run.
+#[test]
+fn restore_reports_a_value_mismatch() {
+    let config_home = scratch_config_dir("restore-value-mismatch");
+    let snap_path = std::env::temp_dir().join(format!(
+        "wh-restore-value-mismatch-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
+
+    let lines = restore_script_with_keyset_readback(1300, 0);
+    let path = write_script("restore-value-mismatch", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("w: board reports ap 1.30mm") && stderr.contains("wanted ap 1.20mm"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("verified"),
+        "must not claim success while the board disagrees on the restored value"
     );
 
     std::fs::remove_file(snap_path).unwrap();
@@ -3083,6 +3140,64 @@ fn restore_from_a_snapshot_that_predates_keysets_leaves_live_membership_untouche
         stderr.contains("no recorded actuation point keyset for 1 key")
             && stderr.contains("no recorded rapid trigger keyset for 1 key"),
         "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The skip note must not print for a restore that never runs. A snapshot recorded on profile 1,
+/// board on profile 2, predates keyset recording exactly as the test above: `restore` must refuse
+/// on the profile mismatch, the same as it does for any snapshot, and the skip note (which
+/// describes membership being left as the board already has it) must not appear, since nothing
+/// about this restore happened at all. The script ends right after the profile read, so a write
+/// reaching the wire would fail against the unscripted send.
+#[test]
+fn restore_refusal_before_any_write_prints_no_membership_skip_note() {
+    let config_home = scratch_config_dir("restore-predates-keysets-refused");
+    let snap_path = std::env::temp_dir().join(format!(
+        "wh-restore-predates-keysets-refused-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &snap_path,
+        r#"{
+  "firmware": "V1.0.0.001",
+  "serial": "SNRESTORETEST001",
+  "taken_at": "2026-08-28T12:00:00Z",
+  "profile": 1,
+  "global": { "travel_mm": 2.0, "press_dead_mm": 0.2, "release_dead_mm": 0.1 },
+  "keys": [
+    { "name": "w", "usage": 26, "ap_mm": 1.2, "rt": false, "rt_press_mm": 0.5,
+      "rt_release_mm": 0.6, "mode_raw": 24 }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    // Board reports wire index 1 (UI profile 2); the snapshot recorded profile 1, so `restore`
+    // refuses right after this one read, before `auto_backup` or any write is ever attempted.
+    let path = write_script("restore-predates-keysets-refused", &profile_lines(1));
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no recorded actuation point keyset"),
+        "the skip note must not describe a restore that never ran: {stderr}"
     );
 
     std::fs::remove_file(snap_path).unwrap();

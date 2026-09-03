@@ -1243,16 +1243,6 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     let keys = validate_restore_keys(&snap)?;
     let records = restore_records(&keys);
     let membership = restore_membership_records(&keys)?;
-    // Silence here is how a snapshot predating keyset recording used to read as a clean
-    // success while quietly leaving the board's real membership alone: say so on stderr.
-    let (skipped_ap, skipped_rt) = restore_membership_skip_counts(&keys);
-    if skipped_ap > 0 || skipped_rt > 0 {
-        best_effort_eprintln(&format!(
-            "note: snapshot has no recorded actuation point keyset for {skipped_ap} key(s) and \
-             no recorded rapid trigger keyset for {skipped_rt} key(s) (it predates keyset \
-             recording); leaving those keys' membership on the board as it already is"
-        ));
-    }
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1262,6 +1252,17 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // best-effort backup silently drop this safety check with nothing failing to compile.
         let board_profile = ops::profile(s).context("reading the board's active profile")?;
         check_restore_profile(snap.profile, board_profile, force)?;
+        // Past every refusal that stops this restore before it writes anything: only from here
+        // is it true that a key's membership is (about to be) left as the board already has it,
+        // rather than describing a restore that never ran.
+        let (skipped_ap, skipped_rt) = restore_membership_skip_counts(&keys);
+        if skipped_ap > 0 || skipped_rt > 0 {
+            best_effort_eprintln(&format!(
+                "note: snapshot has no recorded actuation point keyset for {skipped_ap} key(s) \
+                 and no recorded rapid trigger keyset for {skipped_rt} key(s) (it predates \
+                 keyset recording); leaving those keys' membership on the board as it already is"
+            ));
+        }
         // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.

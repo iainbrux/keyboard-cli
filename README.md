@@ -186,9 +186,13 @@ turn rapid trigger off, and `wh restore` will report success and a verified read
 exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
 change what a restore writes, change the settings on the board and take a fresh backup, not the
 `rt` field in an old one. The keyset fields are read into the snapshot and `wh restore` writes them
-back too, one record per key per layout, last, matching the vendor's own write template
-(`docs/keysets.md`): a restore puts both the values and the keyset membership back to what the
-snapshot recorded.
+back too, when the snapshot recorded them: values first, batched, then membership one record per
+key per layout, last, the vendor's own per-operation shape (measured, `docs/keysets.md`); applying
+that shape to a whole-board restore, including writing every key's actuation point membership
+before any key's rapid trigger membership, is not itself measured, since no capture contains a
+`wh restore` at all. A snapshot taken before these fields existed has no membership to write back:
+`wh restore` leaves those keys' membership on the board exactly as it found it and says so on
+stderr, rather than asserting the `0` the missing fields would otherwise default to.
 
 **It does not contain**, and `wh restore` cannot bring back:
 
