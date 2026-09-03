@@ -157,7 +157,7 @@ parsing them as layout records produces nonsense).
 | `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Reads `100` on every key touched since, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
 | `0x17` | 1858 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
 | `0x19` | 700 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: measured reaching `2`. Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
+| `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 27-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
 | `0xff` | 420 | 3 | Actuation point keyset index, host-written, measured to `9`. Recorded here as read-but-never-written from a corpus that had never created a keyset. Read and used by `wh` (Phase 2) |
 
 
@@ -340,8 +340,9 @@ behaviour.
 Honestly, what this corpus does not resolve:
 
 - The `0x29` global record's field we call "travel": the vendor's own upstream naming calls it
-  travel, but the meaning is not measured. The vendor only ever reads this record and never writes
-  it across the whole corpus, and the measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a
+  travel, but the meaning is not measured. The vendor never writes this record in the ten captures
+  this section counts, though it does write it in the wider corpus, carrying `press_dead=200` and
+  `release_dead=200` (`docs/keysets.md`). The measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a
   `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
   may be something else entirely.
 - Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. Every

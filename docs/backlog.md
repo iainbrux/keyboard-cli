@@ -271,8 +271,9 @@ out, not something to rush while one is in flight.
 
 **Measured in full on 2026-08-29. See `docs/keysets.md`**, which supersedes this entry and specifies
 task 2.4. In short: `0xFF` and `0xFE` are both host-written and both indices, they are independent
-groupings with separate counters, allocation is max plus one and never reuses a freed index, and a
-delete resets the value to the global before clearing membership.
+groupings with separate counters, allocation is max plus one over live membership, so a freed
+index returns to the pool and only gaps below the maximum are skipped, and a delete resets the
+value to the global before clearing membership.
 
 Two things this entry previously got wrong. `0xFF` was described as inferred from read correlation
 with no evidence anything writes it; it is written, one record per frame. And the cause of the
@@ -420,12 +421,14 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   `initial-load` by reading each key's `0x00` against its `0x01`: esc maps to grave, and 1 through 0
   map to F1 through F10, holding across 69 distinct values in two independent series. That is
   exactly how the board behaves under FN.
-- `0x16` and `0x17`, 1858 records each across the corpus, written as zero alongside every rapid
-  trigger change and **never once observed non-zero**. Purpose unknown.
+- `0x16` and `0x17`, 1858 records each in this ten-capture session, zero in every one of them.
+  Overturned since: both read and are written `100` throughout the keyset sitting, 580 write records
+  across fourteen files. What moved them is unmeasured. See `docs/keysets.md`. Purpose unknown.
 - `0x19`, 700 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
   Purpose unknown.
 - `0xFE` is the **rapid trigger keyset membership**, measured from write evidence in this very
-  session, 424 records. `0xFF` is the **actuation point keyset index**, read `210` times and written
+  session: 424 records in total, of which the write evidence is two request and reply pairs, `1` on
+  a keyset create and `0` on a delete. `0xFF` is the **actuation point keyset index**, read `210` times and written
   `0` in this ten-capture session; host-written and measured directly only in the wider 27-capture
   corpus. Both are indices, not booleans. See the keyset entry above and `docs/keysets.md`.
 

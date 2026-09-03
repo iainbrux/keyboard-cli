@@ -260,14 +260,19 @@ rather than as settings it recognises.
   and `w,a,s` alone (exactly the union of the two losing keysets, nothing free). Both pin the same
   freshly allocated index, `3`, never a reuse of `1` or `2`, and the losing lines for both keysets.
 
-  Two rewrites this closes, found by review. The one the task originally named, "if every losing
-  keyset is wholly consumed, keep the lowest index" with no further condition, was already caught
-  by other fixtures before this test existed, redundant here. The one that survived the first
-  version of this test, "...confined to the multi-keyset case, `total taken == usages.len()` still
-  required," reuses index 1 for `w,a,s,d` and is caught by the free-key selection; a third, nearer
-  neighbour, dropping the `total == usages.len()` guard's effect by choosing a selection where it
-  is still satisfied without a free key (`w,a,s` alone), falls through to the same `Keep` and is
-  caught only by the second selection.
+  Three rewrites, and which selection catches which matters, because an earlier version of this
+  note paired one rewrite's description with another's coverage and a reader trimming the suite
+  would have deleted live coverage on its word.
+
+  1. "If every losing keyset is wholly consumed, keep the lowest index", with no further condition.
+     Already caught by other fixtures before this test existed. Redundant here.
+  2. The same, confined to the multi-keyset case, with no `total == usages.len()` guard. Reuses
+     index 1 for `w,a,s,d`, so the **free-key selection** catches it.
+  3. The same, confined to the multi-keyset case, **with** the `total == usages.len()` guard. On
+     `w,a,s,d` the guard is false, since three keys are taken from four selected, so allocation is
+     unaffected and that selection passes. Only the **`w,a,s` selection**, where the guard is true,
+     catches it. That is the rewrite the whole suite survived before this round, and the second
+     `run_wh` call is the only thing that catches it.
 
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
