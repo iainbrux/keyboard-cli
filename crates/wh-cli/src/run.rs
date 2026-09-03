@@ -925,7 +925,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset create")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_create(&mut out, s, kind, "create", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, "create", &plan)
             })
         }
         KeysetWhat::Set {
@@ -963,7 +963,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset set")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_create(&mut out, s, kind, "set", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, "set", &plan)
             })
         }
         KeysetWhat::Delete {
@@ -993,13 +993,13 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
-                let plan = crate::keyset::delete(s, kind, index, value, rt)?;
+                let plan = crate::keyset::delete(&mut out, s, kind, index, value, rt)?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
                 auto_backup(s, store, "keyset delete")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_create(&mut out, s, kind, "delete", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, "delete", &plan)
             })
         }
     }

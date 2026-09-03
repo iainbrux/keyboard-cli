@@ -46,7 +46,7 @@ above.
 ## Commands
 
 ```bash
-cargo test --workspace                                    # 367 tests
+cargo test --workspace                                    # 381 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo build -p wh-cli --release --target x86_64-pc-windows-gnu   # the real binary

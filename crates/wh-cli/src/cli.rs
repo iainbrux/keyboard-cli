@@ -188,12 +188,20 @@ pub enum KeysetWhat {
     Set {
         kind: KeysetKindArg,
         index: u16,
+        /// Value in mm: the actuation point for an ap keyset, or the rapid trigger base (press
+        /// and release both) for an rt keyset. Required for an ap keyset; for an rt keyset, at
+        /// least one of --value, --press or --release must be given.
         #[arg(long)]
         value: Option<f64>,
+        /// Press sensitivity in mm, overriding --value's press half. Refused on an ap keyset;
+        /// pass --value instead.
         #[arg(long)]
         press: Option<f64>,
+        /// Release sensitivity in mm, overriding --value's release half. Refused on an ap
+        /// keyset; pass --value instead.
         #[arg(long)]
         release: Option<f64>,
+        /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,
     },
@@ -206,10 +214,15 @@ pub enum KeysetWhat {
         /// the keys outside every keyset disagree on it.
         #[arg(long)]
         value: Option<f64>,
+        /// Press sensitivity in mm to return members to, overriding --value's press half.
+        /// Refused on an ap keyset; pass --value instead.
         #[arg(long)]
         press: Option<f64>,
+        /// Release sensitivity in mm to return members to, overriding --value's release half.
+        /// Refused on an ap keyset; pass --value instead.
         #[arg(long)]
         release: Option<f64>,
+        /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,
     },
