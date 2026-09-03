@@ -897,10 +897,24 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             dry_run,
         } => {
             let kind = crate::keyset::kind_of(kind);
+            // Refused up front, before any flag is even converted: `--press`/`--release` mean
+            // nothing on an actuation point create, and silently ignoring them would let a typo'd
+            // command believe it set a sensitivity that was never used.
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset create rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
             let value = value.map(mm).transpose()?;
-            let press = press.map(mm).transpose()?;
-            let release = release.map(mm).transpose()?;
-            let rt = resolve_rt_override(value, press, release)?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
@@ -911,7 +925,14 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset create")?;
                 wh_device::keyset::apply(s, &created.plan)?;
-                crate::keyset::verify_membership(&mut out, s, kind, &usages, created.index.value())
+                crate::keyset::verify_membership(
+                    &mut out,
+                    s,
+                    kind,
+                    &usages,
+                    created.index.value(),
+                    &created.plan,
+                )
             })
         }
         KeysetWhat::Set { .. } => bail!("not yet implemented"),

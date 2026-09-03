@@ -167,14 +167,17 @@ pub enum KeysetWhat {
         kind: KeysetKindArg,
         #[command(flatten)]
         keys: KeysArg,
-        /// Actuation point in mm for a new ap keyset. Defaults to the board's global, and is
+        /// Value in mm: the actuation point for a new ap keyset, or the rapid trigger base
+        /// (press and release both) for a new rt keyset. Defaults to the board's global, and is
         /// required when the keys outside every keyset disagree on it.
         #[arg(long)]
         value: Option<f64>,
-        /// Press sensitivity in mm for a new rt keyset. Defaults to the board's global.
+        /// Press sensitivity in mm for a new rt keyset, overriding --value's press half. Refused
+        /// on an ap keyset; pass --value instead.
         #[arg(long)]
         press: Option<f64>,
-        /// Release sensitivity in mm for a new rt keyset. Defaults to the board's global.
+        /// Release sensitivity in mm for a new rt keyset, overriding --value's release half.
+        /// Refused on an ap keyset; pass --value instead.
         #[arg(long)]
         release: Option<f64>,
         /// Print the exact reports without sending
@@ -198,8 +201,9 @@ pub enum KeysetWhat {
     Delete {
         kind: KeysetKindArg,
         index: u16,
-        /// Value in mm to return ap members to. Defaults to the board's global, and is required
-        /// when the keys outside every keyset disagree on it.
+        /// Value in mm to return members to: the actuation point for an ap keyset, or the rapid
+        /// trigger base for an rt keyset. Defaults to the board's global, and is required when
+        /// the keys outside every keyset disagree on it.
         #[arg(long)]
         value: Option<f64>,
         #[arg(long)]

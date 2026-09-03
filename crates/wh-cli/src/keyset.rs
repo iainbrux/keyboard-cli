@@ -30,8 +30,8 @@ fn kind_name(kind: Kind) -> &'static str {
 
 /// The keyset holding `index`, or an error naming what is actually there. A caller that let a
 /// missing index through would allocate nothing and write membership to no keys, succeeding
-/// silently. Tested directly below; still unreached outside a test build until `create`/`set`/
-/// `delete` call it.
+/// silently. Tested directly below; still unreached outside a test build until `set` or `delete`
+/// land and call it.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_index(sets: &[Keyset], index: u16) -> Result<Keyset> {
     if index == 0 {
@@ -194,6 +194,24 @@ fn agreement_line<V: PartialEq + Copy>(
     Ok(format!("disagree: {}", parts.join(", ")))
 }
 
+/// The value a create resolved to write: `--value`, or `--press`/`--release`, or the board's
+/// global. Carried alongside the plan so `announce_steal` can show what a stolen member is about
+/// to lose it for.
+#[derive(Clone, Copy)]
+pub(crate) enum Target {
+    Ap(Um),
+    Rt(Um, Um),
+}
+
+impl Target {
+    fn display(self) -> String {
+        match self {
+            Target::Ap(v) => format!("{:.2}mm", v.to_mm()),
+            Target::Rt(p, r) => format!("{:.2}/{:.2}mm", p.to_mm(), r.to_mm()),
+        }
+    }
+}
+
 /// Creates a keyset over `usages` at the global value, or at an explicit one. Announces which
 /// existing keysets lose members first: a create overwrites its members' values with the global
 /// rather than carrying them in, so the operator sees what is about to go.
@@ -207,30 +225,41 @@ pub(crate) fn create<T: Transport>(
 ) -> Result<CreatePlan> {
     let m = keyset::read_membership(s, kind)?;
     let index = keyset::next_index(&m)?;
-    let change = match kind {
+    let (change, target) = match kind {
         Kind::Ap => {
             let v = match value {
                 Some(v) => v,
                 None => global_ap_or_bail(s, &m, "--value")?,
             };
-            keyset::Change::ap(v)
+            (keyset::Change::ap(v), Target::Ap(v))
         }
         Kind::Rt => {
             let (p, r) = match rt {
                 Some(v) => v,
                 None => global_rt_or_bail(s, &m, "--press and --release")?,
             };
-            keyset::Change::rt_on(p, r)
+            (keyset::Change::rt_on(p, r), Target::Rt(p, r))
         }
     };
     let losing = losing_members(&keyset::group(&m), usages);
-    announce_steal(out, kind, &losing, index.value())?;
+    // Built before the announcement, not after: `before()` is what lets the announcement show
+    // each stolen member's own pre-write value, and it costs no extra reads since `plan` sends
+    // them anyway. `plan` itself only reads; nothing here has written to the board yet.
     let plan = keyset::plan(s, usages, &change, Some(index))?;
+    announce_steal(
+        out,
+        kind,
+        &losing,
+        index.value(),
+        target,
+        usages,
+        plan.before(),
+    )?;
     Ok(CreatePlan { index, plan })
 }
 
-/// Existing keysets that would lose members to a create over `usages`, as (index, the members
-/// it loses), ascending by index.
+/// Existing keysets that would lose members to a create over `usages`, as (index, the members it
+/// loses). In `group`'s own order, which is ascending by index.
 fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
     sets.iter()
         .filter_map(|ks| {
@@ -245,50 +274,143 @@ fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
         .collect()
 }
 
+/// A stolen member's own pre-write value, read from `before` (in `usages` order, the shape
+/// `plan` returns it in). `usages` and `before` are always the same length and index-aligned, so
+/// this only fails to find `u` if `u` came from somewhere other than `losing_members`, which
+/// only ever takes it from `usages` in the first place.
+fn before_of<'a>(usages: &[u8], before: &'a [ops::KeySettings], u: u8) -> &'a ops::KeySettings {
+    let i = usages
+        .iter()
+        .position(|&x| x == u)
+        .expect("a stolen member is always one of the selected keys");
+    &before[i]
+}
+
+/// Announces which existing keysets lose members to a create, and what they lose it for: a
+/// create overwrites a stolen member's value with the target rather than carrying its own in, so
+/// this line is the operator's only warning before that happens.
 pub(crate) fn announce_steal(
     out: &mut impl Write,
     kind: Kind,
     losing: &[(u16, Vec<u8>)],
     new_index: u16,
+    target: Target,
+    usages: &[u8],
+    before: &[ops::KeySettings],
 ) -> std::io::Result<()> {
-    writeln!(out, "{} keyset {new_index}: creating", kind_name(kind))?;
+    writeln!(
+        out,
+        "{} keyset {new_index}: creating at {}",
+        kind_name(kind),
+        target.display()
+    )?;
     for (index, taken) in losing {
-        let names: Vec<String> = taken.iter().map(|&u| key_label(u)).collect();
-        writeln!(out, "  keyset {index} loses {}", names.join(","))?;
+        let parts: Vec<String> = taken
+            .iter()
+            .map(|&u| {
+                let prior = before_of(usages, before, u);
+                format!("{} at {}", key_label(u), value_display(kind, prior))
+            })
+            .collect();
+        writeln!(out, "  keyset {index} loses {}", parts.join(","))?;
     }
     Ok(())
 }
 
+/// One key's current value, formatted the way `kind` reports it: `Kind::Ap`'s bare millimetres,
+/// `Kind::Rt`'s press/release pair.
+fn value_display(kind: Kind, ks: &ops::KeySettings) -> String {
+    match kind {
+        Kind::Ap => format!("{:.2}mm", ks.ap.to_mm()),
+        Kind::Rt => format!("{:.2}/{:.2}mm", ks.rt_press.to_mm(), ks.rt_release.to_mm()),
+    }
+}
+
+/// A create's index and the plan that writes it, returned together so a caller can both apply
+/// the plan and verify against the exact index it carries.
 pub(crate) struct CreatePlan {
     pub index: keyset::KeysetIndex,
     pub plan: keyset::WritePlan,
 }
 
-/// Re-reads every key the create touched and confirms it holds the new index. Reads the board
-/// back rather than trusting the write's echo, the same way every other write path in `wh`
-/// verifies. `read_key_settings` already returns both keyset layouts, so no new device call is
-/// needed.
+/// Re-reads every key the create touched and confirms it holds both the new index and the value
+/// `plan` computed for it, the same way `verify_ap`/`verify_rt` check a plain `wh set` write:
+/// against what `plan` actually sent, or, for a key the skip rule left untouched, against what
+/// was read from it before the write (which the skip rule only fires when that already equals
+/// the target). Reads the board back rather than trusting the write's echo, the same way every
+/// other write path in `wh` verifies.
 pub(crate) fn verify_membership<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
     want: u16,
+    plan: &keyset::WritePlan,
 ) -> Result<()> {
+    let before = plan.before();
     let mut bad = Vec::new();
-    for &u in usages {
+    for (i, &u) in usages.iter().enumerate() {
         let ks = wh_device::ops::read_key_settings(s, u)?;
-        let got = match kind {
+        let mut faults = Vec::new();
+
+        let got_membership = match kind {
             Kind::Ap => ks.ap_keyset,
             Kind::Rt => ks.rt_keyset,
         };
-        if got != want {
+        if got_membership != want {
+            faults.push(format!("keyset {got_membership}, wanted {want}"));
+        }
+
+        let sent = |layout_id: u8| {
+            plan.value_records()
+                .iter()
+                .find(|r| r.key == u && r.layout == layout_id)
+                .map(|r| r.value)
+        };
+        let want_mode = sent(layout::MODE).unwrap_or_else(|| before[i].mode.value());
+        if ks.mode.value() != want_mode {
+            faults.push(format!(
+                "mode {:#06x}, wanted mode {want_mode:#06x}",
+                ks.mode.value()
+            ));
+        }
+
+        match kind {
+            Kind::Ap => {
+                let want_ap = Um(sent(layout::AP).unwrap_or(before[i].ap.0));
+                if ks.ap != want_ap {
+                    faults.push(format!(
+                        "ap {:.2}mm, wanted {:.2}mm",
+                        ks.ap.to_mm(),
+                        want_ap.to_mm()
+                    ));
+                }
+            }
+            Kind::Rt => {
+                let want_press = Um(sent(layout::RT_PRESS).unwrap_or(before[i].rt_press.0));
+                let want_release = Um(sent(layout::RT_RELEASE).unwrap_or(before[i].rt_release.0));
+                if ks.rt_press != want_press || ks.rt_release != want_release {
+                    faults.push(format!(
+                        "press {:.2}mm release {:.2}mm, wanted press {:.2}mm release {:.2}mm",
+                        ks.rt_press.to_mm(),
+                        ks.rt_release.to_mm(),
+                        want_press.to_mm(),
+                        want_release.to_mm()
+                    ));
+                }
+            }
+        }
+
+        if !faults.is_empty() {
             bad.push(format!(
-                "{}: board reports keyset {got}, wanted {want}",
-                key_label(u)
+                "{}: board reports {}",
+                key_label(u),
+                faults.join("; ")
             ));
         }
     }
+    // `wh restore` does not yet write keyset membership (only the four value layouts), so a
+    // rollback after a mismatch here restores values but leaves membership as this write left it.
     crate::run::report_verification(out, "keyset", usages, &bad)
 }
 
