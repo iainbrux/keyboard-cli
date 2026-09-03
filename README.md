@@ -242,11 +242,10 @@ These are built and tested against replay scripts, not yet confirmed on the real
 - `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `wh` now checks this
   itself: it reads every key's MODE before the write and fails the run, naming the key and both
   values, if a key it deliberately left alone reads back changed.
-- If `wh set ap` fails part way through its write batch, expect a partial result. A key's MODE and
-  AP records can land in different frames (measured over the 68 captured keys of a whole-board
-  write: 126 records in 9 frames, 4 keys straddling a boundary), so those keys are left detached
-  from global travel, still holding their old actuation point. `wh restore --last` rolls the board
-  back from the auto-backup taken before the write.
+- If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
+  packs each key's own records into one frame, never splitting a key's MODE/AP/RT_PRESS/RT_RELEASE
+  group across a boundary, so a failure can only ever land between keys, not inside one key's own
+  records. `wh restore --last` rolls the board back from the auto-backup taken before the write.
 - `wh profile 2` then `wh profile` should confirm the switch landed.
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.
 

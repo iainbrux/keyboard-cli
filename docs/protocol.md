@@ -169,9 +169,10 @@ full possible range. Within the corpus: layout `0x04` (actuation point) only eve
 
 `wh` models four of these: `0x04`, `0x08`, `0x14`, `0x15`. `0x00` and `0x01` are now identified (see
 below) but `wh` does not read or write the key mapping through them; remapping keys is out of Phase 1
-scope. `0x16`, `0x17`, and `0x19` remain unused by `wh`. `0xff` and `0xfe` are read (Phase 2), not
-yet written: `wh` surfaces each key's raw keyset value, and how the vendor writes membership is now
-fully measured in `docs/keysets.md`, pending task 2.4. Board keyset
+scope. `0x16`, `0x17`, and `0x19` remain unused by `wh`. `0xff` and `0xfe` are read by every `wh`
+command that needs keyset membership, and written by `wh keyset create|set|delete` and by
+`wh set ap` when a selection splits a keyset; how the vendor writes membership is fully measured in
+`docs/keysets.md`. Board keyset
 membership is not the same thing as a `wh keys group`, which is a purely host-side name for a set of
 keys stored in `wh`'s own `config.json` and never sent to the board at all. The two happen to share
 the word "group"/"keyset"; they are not the same mechanism.
@@ -208,12 +209,15 @@ trigger keyset holds. Any code deciding whether rapid trigger is enabled must tr
 alike; treating `2` as unknown reports rapid trigger off on a board where it is on for every key.
 See `docs/keysets.md` for the full evidence.
 
-**Writing an actuation point does not touch this layout at all.** `wh set ap` writes layout `0x04`
-alone. This is measured, not assumed: `docs/tasks.md` records a hardware check where a key's
-actuation point was changed with no accompanying mode write, and the key physically actuated at the
-new depth, checked using the board's own actuation LEDs against another key at a known depth. The
-vendor's own web app sends a mode write alongside every actuation-point change anyway, but it is not
-required for the value to take effect, and `wh` deliberately does not send one.
+**A mode write is not required for an actuation point change to take effect.** This is measured, not
+assumed: `docs/tasks.md` records a hardware check where a key's actuation point was changed with no
+accompanying mode write, and the key physically actuated at the new depth, checked using the board's
+own actuation LEDs against another key at a known depth. The vendor's own web app sends a mode write
+alongside every actuation-point change anyway, and, per `docs/keysets.md`, `wh set ap` now matches
+it: `keyset::plan` sends `[MODE, AP, RT_PRESS, RT_RELEASE]` together whenever any of them changes,
+the mode record echoing the touch nibble back unchanged except when it promotes `Global` to
+`Single`. `ops::ap_records`, which writes `0x04` alone (with a MODE record only on that promotion),
+still exists but is no longer on the `wh set ap` path.
 
 Rapid trigger is the nibble this document's earlier draft got backwards, worth stating plainly
 since the wrong answer looks plausible and fails silently. `wh` writes `3` to turn rapid trigger on

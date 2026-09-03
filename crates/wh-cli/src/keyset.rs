@@ -352,6 +352,44 @@ fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
         .collect()
 }
 
+/// What `wh set ap` should do about membership for `usages`. Two of the three cases are measured
+/// and one is not: no capture in the corpus shows the vendor splitting a keyset, only its UI
+/// copying a mixed selection into a new one.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ApMembership {
+    /// Leave membership alone: either no selected key is in a keyset, or the selection is
+    /// exactly one keyset's members and it keeps its index.
+    Keep,
+    /// Move every selected key into a newly allocated keyset, taking these members from these
+    /// existing keysets.
+    Split {
+        index: keyset::KeysetIndex,
+        losing: Vec<(u16, Vec<u8>)>,
+    },
+}
+
+pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembership> {
+    let sets = keyset::group(m);
+    let losing = losing_members(&sets, usages);
+    if losing.is_empty() {
+        return Ok(ApMembership::Keep);
+    }
+    if losing.len() == 1 {
+        let (index, taken) = &losing[0];
+        let whole = sets
+            .iter()
+            .find(|k| k.index == *index)
+            .is_some_and(|k| k.members.len() == taken.len());
+        if whole && taken.len() == usages.len() {
+            return Ok(ApMembership::Keep);
+        }
+    }
+    Ok(ApMembership::Split {
+        index: keyset::next_index(m)?,
+        losing,
+    })
+}
+
 /// Announces which existing keysets lose members to a create, and what they lose it for: a
 /// create overwrites a stolen member's value with the target rather than carrying its own in, so
 /// this line is the operator's only warning before that happens.
@@ -461,8 +499,8 @@ fn value_display(kind: Kind, ks: &ops::KeySettings) -> String {
 /// Re-reads every key `plan` touched and confirms it holds every value `plan` computed for it:
 /// MODE, AP, RT_PRESS, RT_RELEASE, and both keyset memberships, every one of them checked against
 /// what `plan` actually sent for that field or, where it sent nothing, against what was read from
-/// the key before the write. Matches `verify_ap`/`verify_rt`'s own rule. Reads the board back
-/// rather than trusting the write's echo, the same way every other write path in `wh` verifies.
+/// the key before the write. Matches `verify_rt`'s own rule. Reads the board back rather than
+/// trusting the write's echo, the same way every other write path in `wh` verifies.
 ///
 /// Takes no separate key list: `plan.before()` covers every key `plan` was built over, in order.
 /// Every field is checked unconditionally rather than picked by `kind`: an earlier version chose
@@ -687,5 +725,53 @@ mod tests {
             err.to_string().contains("readback mismatch on 1 key(s)"),
             "got: {err}"
         );
+    }
+
+    // -- ap_membership_for --
+
+    /// The `ops::read_matrix` script for up to three usages, one per row-pair column, matching
+    /// `ops::read_matrix`'s own reporting order.
+    fn matrix_lines(usages: &[u8]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (i, &row) in [0u8, 2, 4].iter().enumerate() {
+            let req = wh_proto::cmds::read_defkey_rows(row, row + 1);
+            let mut payload = vec![0u8; 45];
+            payload[1] = row;
+            if let Some(&u) = usages.get(i) {
+                payload[2] = u;
+            }
+            payload[23] = row + 1;
+            lines.push(l("out", &req));
+            lines.push(l("in", &rf(wh_proto::cmds::cmd::DEFKEY, &payload)));
+        }
+        lines
+    }
+
+    /// `taken.len() == usages.len()` is not redundant with `whole`, even though `taken` is always
+    /// a subset of `usages`: a selection can fully consume one keyset (`whole` true) while also
+    /// naming a free key that keyset never held, and that extra key must still force a split.
+    /// Weakening the guard to `<=` (always true, since `taken` can never exceed `usages`) makes
+    /// this case wrongly report `Keep`, and nothing else in this crate's test suite catches it:
+    /// the whole workspace passes under that mutation without this test.
+    #[test]
+    fn ap_membership_for_splits_when_a_whole_keyset_rides_along_with_a_free_key() {
+        // w (0x1A) and a (0x04) fully make up ap keyset 1; x (0x10) is free.
+        let mut lines = matrix_lines(&[0x1A, 0x04, 0x10]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x10, layout::KEYSET_AP, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+
+        let got = ap_membership_for(&m, &[0x1A, 0x04, 0x10]).unwrap();
+        match got {
+            ApMembership::Split { index, losing } => {
+                assert_eq!(index.value(), 2, "got: {index:?}");
+                assert_eq!(losing, vec![(1u16, vec![0x1A, 0x04])], "got: {losing:?}");
+            }
+            ApMembership::Keep => {
+                panic!("a free key riding along with a fully-consumed keyset must still split")
+            }
+        }
     }
 }

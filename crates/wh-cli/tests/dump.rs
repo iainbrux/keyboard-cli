@@ -150,6 +150,43 @@ fn mode_read_lines(usage: u8, mode: u16) -> Vec<String> {
     ]
 }
 
+/// One `read_layout_value` roundtrip: a single-record read request for `usage`/`layout_id`, and
+/// the reply carrying `value`. Distinct from `mode_read_lines`, which is MODE-only; this covers
+/// any layout, needed for `keyset::read_membership`'s own `KEYSET_AP` sweep.
+fn layout_read_lines(usage: u8, layout_id: u8, value: u16) -> Vec<String> {
+    vec![
+        out_line(&cmds::read_key_layout(usage, layout_id)),
+        in_line(&reply(
+            cmds::cmd::KEY,
+            &[
+                0x00,
+                usage,
+                layout_id,
+                (value & 0xFF) as u8,
+                (value >> 8) as u8,
+            ],
+        )),
+    ]
+}
+
+/// The three DEFKEY roundtrips that make up `ops::read_matrix` for a four-key board: 'w' (0x1A)
+/// and 'a' (0x04) in the first row pair, 's' (0x16) and 'd' (0x07) in the second. Only the
+/// keyset-split `set ap` test below needs more than the two-key board every other test here uses.
+fn matrix_lines_wasd() -> Vec<String> {
+    let mut lines = Vec::new();
+    let row_pairs = [(0u8, 1u8), (2u8, 3u8), (4u8, 5u8)];
+    for (i, &(a, b)) in row_pairs.iter().enumerate() {
+        lines.push(out_line(&cmds::read_defkey_rows(a, b)));
+        let payload = match i {
+            0 => defkey_payload(a, b, Some(0x1A), Some(0x04)),
+            1 => defkey_payload(a, b, Some(0x16), Some(0x07)),
+            _ => defkey_payload(a, b, None, None),
+        };
+        lines.push(in_line(&reply(cmds::cmd::DEFKEY, &payload)));
+    }
+    lines
+}
+
 /// The profile-read roundtrip `ops::profile` sends, as `[out, in]` lines: `idx` is the
 /// zero-based index the board replies with (the wire's own numbering; `snapshot_from_device`
 /// converts it to the UI's one-based numbering before storing it in `Snapshot::profile`).
@@ -693,25 +730,47 @@ fn auto_backup_lines_with_modes(profile_idx: u8, mode_w: u16, mode_a: u16) -> Ve
     lines
 }
 
-/// The full script for `wh set ap --keys w --set 1.2` against the two-key board: `resolve_keys`'
-/// own matrix read, the auto-backup phase, `ap_records`' own MODE read, the AP write batch (no
-/// SAVE follows it, the vendor was never observed sending one), then the readback verification
-/// for 'w'. `readback_ap` lets the happy-path and mismatch tests below share this builder and
-/// diverge only on that one number.
+/// The full script for `wh set ap --keys w --set 1.2` against the two-key board, routed through
+/// `keyset::plan`: `resolve_keys`' matrix read, `keyset::read_membership`'s own matrix read and
+/// `0xFF` sweep over both keys (neither is a member), `plan`'s own six-layout read of 'w', the
+/// auto-backup phase, the write batch, then the readback verification for 'w'. `readback_ap` lets
+/// the happy-path and mismatch tests below share this builder and diverge only on that one number.
 ///
-/// 'w' reads back MODE 0x0220 (touch `RtGlobal`), so no MODE record joins the write batch: the
-/// promotion path only fires for a `Global` key, covered separately by `set_ap_promotes_script`.
+/// 'w' reads back MODE 0x0220 (touch `RtGlobal`), which the actuation point promotion never
+/// touches. `plan` still sends MODE in the write batch, echoing 0x0220 back: it only drops MODE
+/// when the touch nibble would stay literally `Global` (0) unchanged, and `RtGlobal` (2) is not
+/// that nibble. Only the AP field can drive a match or mismatch on readback here.
 fn set_ap_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 0)); // w, free
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 0)); // a, free
+    lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 500, 500, 0, 0)); // plan's read of w
     lines.extend(auto_backup_lines(0));
-    lines.extend(mode_read_lines(0x1A, 0x0220)); // ap_records' own pre-write MODE read
 
-    let recs = vec![KeyRecord {
-        key: 0x1A,
-        layout: layout::AP,
-        value: 1200,
-    }];
+    let recs = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x0220,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 500,
+        },
+    ];
     let batch = cmds::write_key_records(&recs);
     for f in &batch {
         lines.push(out_line(f));
@@ -719,9 +778,7 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // Readback verification reads all six layouts for 'w', not just AP. MODE echoes back the
-    // 0x0220 read before the write, so it verifies as unchanged and only the AP field can drive a
-    // match or mismatch here.
+    // verify_write's readback: all six layouts for 'w'.
     lines.extend(key_settings_lines(
         0x1A,
         readback_ap,
@@ -790,15 +847,18 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
 }
 
 /// The end-to-end promotion path: `wh set ap --keys a` against 'a' (0x04), whose MODE reads back
-/// `Global` (0x00, advanced nibble 0) in `auto_backup_lines`. `ap_records`' own MODE read repeats
-/// that same value, so the write batch must gain a MODE record (nibble promoted to `Single`,
-/// advanced nibble 0 preserved, 0x10) alongside AP, covering the promotion path end to end and
-/// not only in `ops::ap_records`' own unit tests.
+/// `Global` (0x00, advanced nibble 0). `plan`'s own six-layout read repeats that same value, so
+/// the write batch gains a MODE record (nibble promoted to `Single`, advanced nibble 0 preserved,
+/// 0x10) alongside AP, press and release, covering the promotion path end to end and not only in
+/// `keyset::plan`'s own unit tests.
 fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 0)); // w, free
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 0)); // a, free
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0)); // plan's read of a: Global
     lines.extend(auto_backup_lines(0));
-    lines.extend(mode_read_lines(0x04, 0x00)); // ap_records' own pre-write MODE read: Global
 
     let recs = vec![
         KeyRecord {
@@ -811,6 +871,16 @@ fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
             layout: layout::AP,
             value: 1200,
         },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 0,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 0,
+        },
     ];
     let batch = cmds::write_key_records(&recs);
     for f in &batch {
@@ -819,9 +889,8 @@ fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // Readback verification reads all six layouts for 'a'; MODE now comes back 0x10, reflecting
-    // the promotion just written. `verify_ap` checks this MODE value because the write batch
-    // above included a MODE record for 0x04.
+    // verify_write's readback: all six layouts for 'a'; MODE now comes back 0x10, reflecting the
+    // promotion just written.
     lines.extend(key_settings_lines(0x04, readback_ap, 0x10, 0, 0, 0, 0));
     lines
 }
@@ -851,23 +920,44 @@ fn set_ap_end_to_end_promotes_a_global_key_to_single() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The end-to-end sibling of `ops::ap_records_never_clears_rapid_trigger`, driven through
-/// `run.rs` to the wire instead of unit-tested against `ops` alone: `wh set ap --keys w` against
-/// 'w' (0x1A), whose MODE reads back `Rt` (0x38). The write batch scripted below is AP alone; if
-/// `ap_records` ever forced the touch nibble to `Single` here, the frame it actually sent would
-/// no longer match this script and `ReplayTransport` would reject it as a send mismatch, proving
-/// rapid trigger provably survives a depth change through the real command path.
+/// The end-to-end sibling of `keyset::plan`'s own rapid-trigger-preserving tests, driven through
+/// `run.rs` to the wire: `wh set ap --keys w` against 'w' (0x1A), whose MODE reads back `Rt`
+/// (0x38). `plan` echoes that same value back in the write batch rather than omitting it: it only
+/// drops MODE when the touch nibble would stay literally `Global` (0) unchanged, and `Rt` (3) is
+/// not that nibble. If `plan` ever forced the touch nibble to `Single` here, the frame it
+/// actually sent would carry a different MODE value and `ReplayTransport` would reject it as a
+/// send mismatch, proving rapid trigger survives a depth change through the real command path.
 fn set_ap_preserves_rapid_trigger_script(readback_ap: u16, readback_mode: u16) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.extend(matrix_lines()); // resolve_keys, ahead of auto_backup's own matrix read
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 0)); // w, free
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 0)); // a, free
+    lines.extend(key_settings_lines(0x1A, 1000, 0x38, 500, 500, 0, 0)); // plan's read of w: Rt
     lines.extend(auto_backup_lines_with_modes(0, 0x38, 0x00));
-    lines.extend(mode_read_lines(0x1A, 0x38)); // ap_records' own pre-write MODE read: Rt
 
-    let recs = vec![KeyRecord {
-        key: 0x1A,
-        layout: layout::AP,
-        value: 1200,
-    }];
+    let recs = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x38,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 500,
+        },
+    ];
     let batch = cmds::write_key_records(&recs);
     for f in &batch {
         lines.push(out_line(f));
@@ -875,10 +965,8 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16, readback_mode: u16) -
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // Readback verification reads all six layouts for 'w'. Rapid trigger surviving is proven
-    // twice over: the write batch carries no MODE record, pinned byte for byte by
-    // `ReplayTransport`, and `verify_ap` compares `readback_mode` against the 0x38 read before
-    // the write, so a firmware that cleared rapid trigger on its own still fails the run.
+    // verify_write's readback: all six layouts for 'w'. `readback_mode` is compared against the
+    // 0x38 MODE the write batch actually sent, not a fallback, since MODE was sent this time.
     lines.extend(key_settings_lines(
         0x1A,
         readback_ap,
@@ -891,10 +979,9 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16, readback_mode: u16) -
     lines
 }
 
-/// `set ap --keys w --set 1.2` against a key with rapid trigger on: the write batch carries no
-/// MODE record, pinned byte for byte by `ReplayTransport`, so rapid trigger survives because
-/// nothing was written to MODE. The run still succeeds and verifies AP; MODE on readback is not
-/// checked here, since this key got no MODE record to check it against.
+/// `set ap --keys w --set 1.2` against a key with rapid trigger on: the write batch's MODE record
+/// echoes 0x38 back unchanged, so rapid trigger survives because the same value was resent, not
+/// because MODE was omitted. The run still succeeds and verifies AP and MODE both.
 #[test]
 fn set_ap_end_to_end_preserves_rapid_trigger() {
     let path = write_script(
@@ -922,9 +1009,9 @@ fn set_ap_end_to_end_preserves_rapid_trigger() {
 }
 
 /// The twin that matters most on this branch: same script, but the board reports MODE 0x18
-/// (`Single`) on readback where it read 0x38 (`Rt`) before the write. Nothing wrote MODE, so the
-/// firmware cleared rapid trigger by itself, and `wh` must say so instead of printing "verified".
-/// Before this check existed the two runs produced byte-identical output.
+/// (`Single`) on readback where the write batch sent 0x38 (`Rt`). The firmware ignored or
+/// clobbered the very MODE record `plan` sent to preserve rapid trigger, and `wh` must say so
+/// instead of printing "verified".
 #[test]
 fn set_ap_end_to_end_fails_when_the_board_clears_rapid_trigger_by_itself() {
     let path = write_script(
@@ -1062,15 +1149,19 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 }
 
 /// `--dry-run` means no writes and no SAVE, not "no I/O": `resolve_keys` still reads the live
-/// matrix, and `ops::ap_records` still reads the key's current MODE, since a preview has to be
-/// of an operation that could actually happen against this board. 'w' reads back MODE 0x18
-/// (already `Single`), so the preview carries no MODE record. The script is exactly those two
-/// reads; a stray write or SAVE afterwards would hit the exhausted script and `ReplayTransport`
-/// would reject it.
+/// matrix, and `keyset::read_membership` and `keyset::plan` still read the board, since a preview
+/// has to be of an operation that could actually happen against this board. 'w' reads back MODE
+/// 0x18 (`Single`, not `Global`), so `plan` still echoes it back in the write batch: dropping MODE
+/// only happens when the touch nibble would stay literally `Global` (0) unchanged. The script is
+/// exactly those reads; a stray write or SAVE afterwards would hit the exhausted script and
+/// `ReplayTransport` would reject it.
 #[test]
 fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
-    let mut lines = matrix_lines();
-    lines.extend(mode_read_lines(0x1A, 0x18));
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 0)); // w, free
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 0)); // a, free
+    lines.extend(key_settings_lines(0x1A, 1000, 0x18, 500, 500, 0, 0)); // plan's read of w
     let path = write_script("set-ap-dry-run", &lines);
     let config_home = scratch_config_dir("set-ap-dry-run");
 
@@ -1090,11 +1181,28 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
 
     // The exact frame set, not just that some frame appears: an added, removed, or reordered
     // frame, including a reinstated SAVE frame, would not otherwise be caught.
-    let expected: Vec<String> = cmds::write_key_records(&[KeyRecord {
-        key: 0x1A,
-        layout: layout::AP,
-        value: 1200,
-    }])
+    let expected: Vec<String> = cmds::write_key_records(&[
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 500,
+        },
+    ])
     .iter()
     .map(|f| hex(f))
     .collect();
@@ -1102,6 +1210,295 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
         frame_lines(&stdout),
         expected,
         "dry run must print exactly the frames a real run would send, and no others: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Row one of the `wh set ap` membership rule (measured, `ap-wasd-1.2`): no selected key is in a
+/// keyset, so the write carries no `0xFF` record at all. Asserted by exact frame equality against
+/// a hand-built `cmds::write_key_records`, not a substring check, so "no membership record" is
+/// proved by the whole frame sequence rather than the absence of one string.
+#[test]
+fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 0)); // w, free
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 0)); // a, free
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 0, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 2000, 0x18, 100, 150, 0, 0)); // plan's read of a
+
+    let path = write_script("set-ap-free-keys", &lines);
+    let config_home = scratch_config_dir("set-ap-free-keys");
+    let out = run_wh(
+        &["set", "ap", "--keys", "w,a", "--set", "1.20", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "no key is in a keyset, so no 0xFF record should appear anywhere in the plan: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Row two of the `wh set ap` membership rule (measured, `ks-value-ap`): the selection is exactly
+/// one keyset's members, so it keeps its index and the write still carries no `0xFF` record.
+/// Same board and frames as the free-key test above, only the pre-write `ap_keyset` differs (1
+/// for both, not 0), proving membership itself does not drive whether a record gets sent.
+#[test]
+fn set_ap_dry_run_over_a_whole_keyset_keeps_its_index() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 1)); // w, keyset 1
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 1)); // a, keyset 1
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 2000, 0x18, 100, 150, 1, 0)); // plan's read of a
+
+    let path = write_script("set-ap-whole-keyset", &lines);
+    let config_home = scratch_config_dir("set-ap-whole-keyset");
+    let out = run_wh(
+        &["set", "ap", "--keys", "w,a", "--set", "1.20", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "selecting a whole keyset must keep its index, not rewrite the 0xFF record: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Row three of the `wh set ap` membership rule: the selection is a strict subset of keyset 1
+/// (`w,s` out of `w,a,s,d`), so `wh set ap` allocates a new index, writes it to every selected
+/// key, and announces the split first. Unlike the vendor's own create flow, no capture in the
+/// corpus shows the vendor splitting a keyset this way; what was observed is its UI copying a
+/// mixed selection into a new one, so this row is inferred, not measured (`docs/keysets.md`).
+///
+/// 'w' and 's' are given different prior actuation points (2.00mm and 1.80mm) on purpose: a
+/// fixture where both members hold the same value cannot tell a correct announcement from one
+/// that prints the first member's value for every key, which is exactly the defect found in an
+/// earlier version of `describe_loss`.
+#[test]
+fn set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 1), (0x07, 1)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x16, 1800, 0x18, 100, 150, 1, 0)); // plan's read of s
+
+    let path = write_script("set-ap-split", &lines);
+    let config_home = scratch_config_dir("set-ap-split");
+    let out = run_wh(
+        &["set", "ap", "--keys", "w,s", "--set", "1.50", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("ap keyset 2: creating at 1.50mm"),
+        "got: {stdout}"
+    );
+    // Both stolen keys named on the same line, each with its own distinct prior value: a
+    // mutation that reused 'w's value for 's' too would fail this exact match.
+    assert!(
+        stdout.contains("keyset 1 loses w at 2.00mm,s at 1.80mm"),
+        "got: {stdout}"
+    );
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::AP,
+            value: 1500,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let membership_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 2,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::KEYSET_AP,
+            value: 2,
+        },
+    ];
+    let mut expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&membership_records)
+            .iter()
+            .map(|f| hex(f)),
+    );
+    // The new index (2) is pinned by equality, not merely asserted present, so a plan that wrote
+    // the wrong index, or wrote membership for the wrong keys, fails this comparison.
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "the split must move exactly w and s to the new index, nothing more: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
