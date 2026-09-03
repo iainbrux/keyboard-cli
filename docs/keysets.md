@@ -87,10 +87,19 @@ existing values being rewritten, and recorded MODE as unchanged for this operati
 is a rewrite and the other is a promotion. The vendor does not leave a member of an actuation point
 keyset following global travel.
 
+**The template does not vary with keyset membership, measured.** `ap-wasd-1.2` is an actuation
+point change on four keys with no keyset traffic anywhere in the file, and it emits the same five
+steps: MODE alone (frames 60 and 62), `0x04` batched (64), MODE with `0x14` and `0x15` batched (66),
+then `0x16`/`0x17` (68). Three separate changes in that one capture, to `850`, `1200` and `300`, all
+identical in shape. Whether those keys were in an actuation point keyset at the time is unmeasured,
+the file reads neither `0xFF` nor `0xFE`, but that is the point: the frames are the same either way,
+so `wh set ap` does not need to know before choosing what to send.
+
 | Operation | Owns | Rewritten unchanged |
 |---|---|---|
 | Create an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
 | Change a keyset's value | `0x04` to the new value, and MODE `Global` to `Single` | `0x14`, `0x15` |
+| Change an actuation point outside a keyset | `0x04` to the new value | MODE, `0x14`, `0x15` |
 | Delete an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
 | Create a rapid trigger keyset | MODE touch nibble to `3`, `0x14`/`0x15` to the global sensitivity | `0x04` |
 | Delete a rapid trigger keyset | MODE touch nibble to `1`, `0x14`/`0x15` to the global sensitivity | `0x04` |
@@ -99,6 +108,14 @@ keyset following global travel.
 
 `0x16` and `0x17` are written `100` in every one of these, on every key, and have never been
 observed holding anything else since keysets appeared. See the corrections below.
+
+**The promotion is measured only inside a keyset.** Searching the whole corpus for a MODE record
+written non-zero over a key that had just read `0`, there are three, and all three are keyset
+operations: `X` in `ks-value-ap` (`0` to `0x10`), `M` in `ks-create-rt-2` and `,` in `ks-steal-rt`
+(both `0` to `0x30`). In `ap-wasd-1.2` all four keys already read `0x18`, so that capture rewrites
+MODE and does not promote. Whether the vendor promotes on an actuation point change outside a
+keyset is unmeasured; `ops::ap_records` and `keyset::plan` both do, and it is the shipped behaviour
+task 2.2 still lists for hardware verification.
 
 ### The skip rule
 

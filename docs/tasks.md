@@ -79,21 +79,29 @@ rather than as settings it recognises.
   global 100/100. `ops::rt_off_records` writes MODE alone and leaves the private value in place, so
   it is the one that diverges; routing through `Change::rt_off` removes a divergence rather than
   creating one.
-- [ ] **2.14 Decide what `wh set ap` emits, before the CLI is written.** The same intent is now
-  expressible two ways with different frames, measured: for a key at MODE `0x10` and AP 1000 with a
-  target of 2000, `ops::ap_records` emits `[AP]` alone while `keyset::plan` with `Change::ap` emits
-  `[MODE, AP, RT_PRESS, RT_RELEASE]`, rewriting MODE at the value it just read and rewriting both
-  sensitivities. Both are defensible: `keyset::plan` implements the vendor's measured template for
-  keyset operations, and `ap_records` documents its own divergence. There is a third shape:
-  `Change::ap_keeping_touch` on a key still following global travel emits `[AP, RT_PRESS,
-  RT_RELEASE]`, since `plan` no longer writes a nibble-0 MODE record.
+- [x] ~~**2.14 Decide what `wh set ap` emits, before the CLI is written.**~~ Settled by
+  measurement, 2026-09-03: **one shape, always.** `wh set ap` routes through `keyset::plan` with
+  `Change::ap`, whether the key is in an actuation point keyset or not, and `ops::ap_records`
+  becomes the divergent path rather than a second supported one.
 
-  **Partly settled by measurement, 2026-08-30.** `ks-value-ap` shows the vendor promoting a member
-  from `Global` to `Single` during a keyset value change: `X` read MODE `0x0000` and was written
-  `0x0010`, alongside `W` and `S` which read and were written `0x18`. So the third shape is not
-  vendor behaviour for a keyset operation, and `Change::ap`'s promotion is the measured choice
-  rather than merely the non-destructive default. What remains open is the non-keyset path: whether
-  `wh set ap` on a key in no keyset emits `ap_records`' `[AP]` alone or the full template.
+  The same intent was expressible three ways with different frames. For a key at MODE `0x10` and AP
+  1000 with a target of 2000, `ops::ap_records` emits `[AP]` alone, `keyset::plan` with
+  `Change::ap` emits `[MODE, AP, RT_PRESS, RT_RELEASE]`, and `Change::ap_keeping_touch` on a key
+  still following global travel emits `[AP, RT_PRESS, RT_RELEASE]`.
+
+  Two measurements close it. `ks-value-ap` shows the vendor promoting a member from `Global` to
+  `Single` during a keyset value change: `X` read MODE `0x0000` and was written `0x0010`, alongside
+  `W` and `S` which read and were written `0x18`. That kills the third shape. `ap-wasd-1.2` shows
+  the vendor emitting the identical five-step template on an actuation point change with no keyset
+  traffic in the file at all, three times over, at `850`, `1200` and `300`. That kills the split
+  between a keyset path and a non-keyset one: the frames do not vary with membership, so the CLI
+  does not have to know before choosing what to send. Write-up in `docs/keysets.md`.
+
+  **One thing inside this stays unmeasured and is not made measured by ticking the task.** No
+  capture in the corpus shows the vendor promoting MODE from `0` on an actuation point change
+  *outside* a keyset. All three promotions in 3696 frames are keyset operations. `Change::ap`
+  promotes there anyway, which is what `ops::ap_records` already ships under 2.2, and 2.2's
+  hardware verification is still the thing that confirms it.
 
 - [ ] **2.15 Decide what `global_ap` returning `Split` or `NoneOutsideAKeyset` should do.** Task
   2.13 records this for `global_rt` only, but `global_ap` has the same three-variant return and is
@@ -104,7 +112,9 @@ rather than as settings it recognises.
 
 - [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
   non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
-  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. It is measured, see 2.14.
+  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. It is measured inside a
+    keyset (`ks-value-ap`, `X` from `0x0000` to `0x0010`) and unmeasured outside one. Say which,
+    see 2.14.
   - `keyset.rs` `frames()` claims a per-key group is at most 4 records. That is a property of
     `plan`'s output, not of `frames()`: `plan` takes a bare `&[u8]` with no dedup, and a repeated
     usage produces a 16-record group that does split. Unreachable through the CLI, since both
