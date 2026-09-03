@@ -1114,11 +1114,14 @@ fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTr
     })
 }
 
-/// Re-reads every restored key and confirms it holds every value the snapshot recorded. Values,
-/// mode and both keyset memberships are checked independently rather than as one bundled
-/// condition, so a key whose snapshot had no recorded membership (`RestoreKey::ap_keyset` or
-/// `rt_keyset` is `None`) gets no membership comparison at all: comparing it against a
-/// fabricated `0` is exactly the defect `restore_membership_records` avoids by not writing one.
+/// Re-reads every restored key and confirms it holds every value the snapshot recorded. Every
+/// comparison, ap, rt press, rt release, mode, and both keyset memberships, is its own `if`
+/// pushing its own fault line, not one bundled condition: a bug that drops exactly one of them
+/// (mode, say, the field `mode_raw` exists so advanced-key modes survive a round trip) must fail
+/// on that comparison alone, not hide behind five others still catching the same key. A key whose
+/// snapshot had no recorded membership (`RestoreKey::ap_keyset` or `rt_keyset` is `None`) gets no
+/// membership comparison at all: comparing it against a fabricated `0` is exactly the defect
+/// `restore_membership_records` avoids by not writing one.
 fn verify_restore<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -1130,22 +1133,32 @@ fn verify_restore<T: Transport>(
         let ks = ops::read_key_settings(s, k.usage)?;
         let mut faults = Vec::new();
 
-        if ks.ap != k.ap
-            || ks.rt_press != k.rt_press
-            || ks.rt_release != k.rt_release
-            || ks.mode.value() != k.mode_raw
-        {
+        if ks.ap != k.ap {
             faults.push(format!(
-                "ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}, wanted ap {:.2}mm \
-                 press {:.2}mm release {:.2}mm mode {:#06x}",
+                "ap {:.2}mm, wanted {:.2}mm",
                 ks.ap.to_mm(),
+                k.ap.to_mm()
+            ));
+        }
+        if ks.rt_press != k.rt_press {
+            faults.push(format!(
+                "rt press {:.2}mm, wanted {:.2}mm",
                 ks.rt_press.to_mm(),
+                k.rt_press.to_mm()
+            ));
+        }
+        if ks.rt_release != k.rt_release {
+            faults.push(format!(
+                "rt release {:.2}mm, wanted {:.2}mm",
                 ks.rt_release.to_mm(),
+                k.rt_release.to_mm()
+            ));
+        }
+        if ks.mode.value() != k.mode_raw {
+            faults.push(format!(
+                "mode {:#06x}, wanted {:#06x}",
                 ks.mode.value(),
-                k.ap.to_mm(),
-                k.rt_press.to_mm(),
-                k.rt_release.to_mm(),
-                k.mode_raw,
+                k.mode_raw
             ));
         }
         if let Some(want) = k.ap_keyset {

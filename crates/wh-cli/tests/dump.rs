@@ -2795,19 +2795,50 @@ fn snapshot_json_with_keysets() -> String {
     snap.to_json().unwrap()
 }
 
+/// One key's six-field wire readback in `restore_script_with_keyset_readback`'s fixture, in
+/// `key_settings_lines`' own parameter order, so a test overrides exactly one field via
+/// `..W_CORRECT_READBACK`/`..A_CORRECT_READBACK` and leaves the rest matching what was actually
+/// restored. Mirrors `tests/keyset.rs`'s own `Readback` pattern.
+#[derive(Clone, Copy)]
+struct KeyReadback {
+    ap: u16,
+    mode: u16,
+    rt_press: u16,
+    rt_release: u16,
+    ap_keyset: u16,
+    rt_keyset: u16,
+}
+
+/// 'w's readback when the restore of `snapshot_json_with_keysets` landed exactly as sent.
+const W_CORRECT_READBACK: KeyReadback = KeyReadback {
+    ap: 1200,
+    mode: 0x0018,
+    rt_press: 500,
+    rt_release: 600,
+    ap_keyset: 3,
+    rt_keyset: 0,
+};
+
+/// 'a's readback when the restore of `snapshot_json_with_keysets` landed exactly as sent.
+const A_CORRECT_READBACK: KeyReadback = KeyReadback {
+    ap: 1500,
+    mode: 0x0000,
+    rt_press: 0,
+    rt_release: 0,
+    ap_keyset: 0,
+    rt_keyset: 0,
+};
+
 /// The full script `wh restore` sends for `snapshot_json_with_keysets`: its own profile read, the
 /// auto-backup, the global travel write, the per-key value batch, then membership one record per
 /// frame last, ap over both keys before rt over both, matching `restore_membership_records`' own
-/// order, then the readback `verify_restore` does per key including both keyset fields.
-/// `w_ap_readback` is what the final readback reports for 'w's ap value: `1200` for a clean match,
-/// anything else to script a value mismatch. `a_ap_keyset_readback` is the same for 'a's ap
-/// keyset: `0` for a clean match, anything else to script a membership mismatch, deliberately on
-/// the second key, not the first: a corruption on `keys[0]` cannot tell a `verify_restore` that
-/// checks every key apart from one that only ever checks the first.
-fn restore_script_with_keyset_readback(
-    w_ap_readback: u16,
-    a_ap_keyset_readback: u16,
-) -> Vec<String> {
+/// order, then the readback `verify_restore` does per key. `w`/`a` are each key's full six-field
+/// readback: `W_CORRECT_READBACK`/`A_CORRECT_READBACK` for a clean match, or one field changed via
+/// `..CORRECT` to script exactly one fault. Deliberately independent per key: a corruption on
+/// `keys[0]` alone cannot tell a `verify_restore` that checks every key apart from one that only
+/// ever checks the first, which `keys.iter().take(1)` proved indistinguishable from correct when
+/// the only corrupted fixture was 'w'.
+fn restore_script_with_keyset_readback(w: KeyReadback, a: KeyReadback) -> Vec<String> {
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
 
@@ -2895,24 +2926,25 @@ fn restore_script_with_keyset_readback(
         lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
     }
 
-    // verify_restore's readback: both keys land at the restored values and keyset indices.
+    // verify_restore's readback: both keys land at the restored values and keyset indices,
+    // unless the caller asked for exactly one field to disagree.
     lines.extend(key_settings_lines(
         0x1A,
-        w_ap_readback,
-        0x0018,
-        500,
-        600,
-        3,
-        0,
+        w.ap,
+        w.mode,
+        w.rt_press,
+        w.rt_release,
+        w.ap_keyset,
+        w.rt_keyset,
     ));
     lines.extend(key_settings_lines(
         0x04,
-        1500,
-        0x0000,
-        0,
-        0,
-        a_ap_keyset_readback,
-        0,
+        a.ap,
+        a.mode,
+        a.rt_press,
+        a.rt_release,
+        a.ap_keyset,
+        a.rt_keyset,
     ));
     lines
 }
@@ -2929,7 +2961,7 @@ fn restore_writes_keyset_membership_after_the_values() {
         std::env::temp_dir().join(format!("wh-restore-keysets-{}.json", std::process::id()));
     std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
 
-    let lines = restore_script_with_keyset_readback(1200, 0);
+    let lines = restore_script_with_keyset_readback(W_CORRECT_READBACK, A_CORRECT_READBACK);
     let path = write_script("restore-keysets", &lines);
 
     let out = run_wh(
@@ -2954,23 +2986,23 @@ fn restore_writes_keyset_membership_after_the_values() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `verify_restore`'s membership check is otherwise unpinned: nothing before this test fails if
-/// both keyset comparisons are deleted from it. Corrupts 'a's ap keyset readback (`5` instead of
-/// the `0` the restore actually wrote), leaving every value and mode field correct, so only the
-/// keyset comparison can be what fails the run. On `keys[1]`, not `keys[0]`: a corruption on the
-/// first key alone cannot tell a loop that checks every key apart from one that checks only the
-/// first, which `keys.iter().take(1)` proved indistinguishable from correct when this was 'w'.
-#[test]
-fn restore_reports_a_keyset_membership_mismatch() {
-    let config_home = scratch_config_dir("restore-keyset-mismatch");
-    let snap_path = std::env::temp_dir().join(format!(
-        "wh-restore-keyset-mismatch-{}.json",
-        std::process::id()
-    ));
+/// Runs `wh restore` against `snapshot_json_with_keysets()` with the given per-key readback and
+/// asserts it fails, names `expected_fault` in stderr, and never claims `verified`. Shared by
+/// every single-field mismatch test below, each of which differs from
+/// `W_CORRECT_READBACK`/`A_CORRECT_READBACK` in exactly one field, so each test can only fail
+/// because of the one comparison it exists to pin, not several at once.
+fn assert_restore_reports_one_fault(
+    tag: &str,
+    w: KeyReadback,
+    a: KeyReadback,
+    expected_fault: &str,
+) {
+    let config_home = scratch_config_dir(tag);
+    let snap_path = std::env::temp_dir().join(format!("wh-{tag}-{}.json", std::process::id()));
     std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
 
-    let lines = restore_script_with_keyset_readback(1200, 5);
-    let path = write_script("restore-keyset-mismatch", &lines);
+    let lines = restore_script_with_keyset_readback(w, a);
+    let path = write_script(tag, &lines);
 
     let out = run_wh(
         &["restore", snap_path.to_str().unwrap()],
@@ -2984,12 +3016,12 @@ fn restore_reports_a_keyset_membership_mismatch() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("a: board reports") && stderr.contains("ap keyset 5, wanted 0"),
+        stderr.contains(expected_fault),
         "unexpected stderr: {stderr}"
     );
     assert!(
         !String::from_utf8_lossy(&out.stdout).contains("verified"),
-        "must not claim success while the board disagrees on membership"
+        "must not claim success while the board disagrees: {stderr}"
     );
 
     std::fs::remove_file(snap_path).unwrap();
@@ -2997,45 +3029,102 @@ fn restore_reports_a_keyset_membership_mismatch() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The value/mode half of `verify_restore` is otherwise unpinned: nothing before this test fails
-/// if the whole ap/press/release/mode condition is replaced with `if false`. Corrupts only 'w's ap
-/// readback (`1300` instead of the `1200` restore actually wrote), leaving membership and every
-/// other field correct, so only that condition can be what fails the run.
+/// `verify_restore`'s ap keyset comparison is otherwise unpinned: nothing before this test fails
+/// if it is deleted. Corrupts 'a's ap keyset readback (`5` instead of the `0` the restore actually
+/// wrote), leaving every other field correct. On `keys[1]`, not `keys[0]`: a corruption on the
+/// first key alone cannot tell a loop that checks every key apart from one that checks only the
+/// first, which `keys.iter().take(1)` proved indistinguishable from correct when this was 'w'.
 #[test]
-fn restore_reports_a_value_mismatch() {
-    let config_home = scratch_config_dir("restore-value-mismatch");
-    let snap_path = std::env::temp_dir().join(format!(
-        "wh-restore-value-mismatch-{}.json",
-        std::process::id()
-    ));
-    std::fs::write(&snap_path, snapshot_json_with_keysets()).unwrap();
+fn restore_reports_an_ap_keyset_mismatch() {
+    assert_restore_reports_one_fault(
+        "restore-ap-keyset-mismatch",
+        W_CORRECT_READBACK,
+        KeyReadback {
+            ap_keyset: 5,
+            ..A_CORRECT_READBACK
+        },
+        "a: board reports ap keyset 5, wanted 0",
+    );
+}
 
-    let lines = restore_script_with_keyset_readback(1300, 0);
-    let path = write_script("restore-value-mismatch", &lines);
+/// The rapid trigger keyset comparison's sibling: `verify_restore`'s `rt_keyset` block is
+/// otherwise unpinned. Removing it entirely leaves the whole workspace green, since nothing
+/// before this test scripts a mismatched `0xFE` readback. Corrupts 'a's rt keyset readback (`7`
+/// instead of `0`), on the second key for the same reason as the ap keyset test above.
+#[test]
+fn restore_reports_an_rt_keyset_mismatch() {
+    assert_restore_reports_one_fault(
+        "restore-rt-keyset-mismatch",
+        W_CORRECT_READBACK,
+        KeyReadback {
+            rt_keyset: 7,
+            ..A_CORRECT_READBACK
+        },
+        "a: board reports rt keyset 7, wanted 0",
+    );
+}
 
-    let out = run_wh(
-        &["restore", snap_path.to_str().unwrap()],
-        &path,
-        &config_home,
+/// `verify_restore`'s `ap` comparison is otherwise unpinned: nothing before this test fails if it
+/// is deleted from the value/mode condition. Corrupts only 'w's ap readback (`1300` instead of
+/// `1200`), leaving every other field, including membership, correct.
+#[test]
+fn restore_reports_an_ap_mismatch() {
+    assert_restore_reports_one_fault(
+        "restore-ap-mismatch",
+        KeyReadback {
+            ap: 1300,
+            ..W_CORRECT_READBACK
+        },
+        A_CORRECT_READBACK,
+        "w: board reports ap 1.30mm, wanted 1.20mm",
     );
-    assert!(
-        !out.status.success(),
-        "expected a non-zero exit, got success with stdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("w: board reports ap 1.30mm") && stderr.contains("wanted ap 1.20mm"),
-        "unexpected stderr: {stderr}"
-    );
-    assert!(
-        !String::from_utf8_lossy(&out.stdout).contains("verified"),
-        "must not claim success while the board disagrees on the restored value"
-    );
+}
 
-    std::fs::remove_file(snap_path).unwrap();
-    std::fs::remove_file(path).unwrap();
-    let _ = std::fs::remove_dir_all(&config_home);
+/// `verify_restore`'s `rt_press` comparison is otherwise unpinned: it can disappear without a
+/// test noticing. Corrupts only 'w's rt press readback (`550` instead of `500`).
+#[test]
+fn restore_reports_an_rt_press_mismatch() {
+    assert_restore_reports_one_fault(
+        "restore-rt-press-mismatch",
+        KeyReadback {
+            rt_press: 550,
+            ..W_CORRECT_READBACK
+        },
+        A_CORRECT_READBACK,
+        "w: board reports rt press 0.55mm, wanted 0.50mm",
+    );
+}
+
+/// `verify_restore`'s `rt_release` comparison is otherwise unpinned: it can disappear without a
+/// test noticing. Corrupts only 'w's rt release readback (`650` instead of `600`).
+#[test]
+fn restore_reports_an_rt_release_mismatch() {
+    assert_restore_reports_one_fault(
+        "restore-rt-release-mismatch",
+        KeyReadback {
+            rt_release: 650,
+            ..W_CORRECT_READBACK
+        },
+        A_CORRECT_READBACK,
+        "w: board reports rt release 0.65mm, wanted 0.60mm",
+    );
+}
+
+/// `verify_restore`'s `mode` comparison is otherwise unpinned, and it is the one that matters
+/// most: `mode_raw` exists precisely so advanced-key modes survive a round trip, so a bug that
+/// drops only this comparison would silently leave an unrestored advanced mode reported as
+/// verified. Corrupts only 'w's mode readback (`0x0020` instead of `0x0018`).
+#[test]
+fn restore_reports_a_mode_mismatch() {
+    assert_restore_reports_one_fault(
+        "restore-mode-mismatch",
+        KeyReadback {
+            mode: 0x0020,
+            ..W_CORRECT_READBACK
+        },
+        A_CORRECT_READBACK,
+        "w: board reports mode 0x0020, wanted 0x0018",
+    );
 }
 
 /// A snapshot with no `ap_keyset`/`rt_keyset` fields at all, the shape of a genuinely pre-2.1

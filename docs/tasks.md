@@ -214,11 +214,10 @@ rather than as settings it recognises.
   - `verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
     create. Cannot affect what is checked, which was proven by deleting the label and watching every
     other parameter go dead. A small enum would make it unforgeable.
-  - `verify_restore` is pinned as a whole and not per comparison. Its actuation point term, its
-    membership term for layout `0xFF`, and its per-key coverage are all pinned. Disabling
-    `rt_press`, `rt_release`, `mode` or the whole `0xFE` membership block individually leaves the
-    workspace green. The `0xFE` one is the same severity as the two already fixed: a firmware that
-    drops a rapid trigger membership write during a restore would be reported as verified.
+  - ~~`verify_restore` was pinned as a whole and not per comparison.~~ Closed: every comparison,
+    `ap`, `rt_press`, `rt_release`, `mode`, and both keyset memberships (`0xFF` and `0xFE`), is now
+    its own fixture-backed fault, confirmed by disabling each one at a time against the full
+    workspace and finding exactly one failing test per row.
   - `wh restore` never checks the snapshot's key usages against the board's live matrix, so a
     snapshot from a different matrix writes values and membership to usages the board may not have.
     Worse than cosmetic, because `verify_restore` reads back the snapshot's usages rather than the
