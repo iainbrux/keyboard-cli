@@ -183,6 +183,39 @@ rather than as settings it recognises.
   plus one, indices are reused after a delete rather than being monotonic, and the vendor does not
   always batch two members of one create into the same frame.
 
+- [ ] **2.18 Parked findings from task 2.4b's `wh keyset create` reviews.** Five review rounds
+  closed everything that changes behaviour. These seven survive, all judged not to block the rest
+  of the CLI, all measured rather than suspected.
+
+  - `verify_create`'s `rt_keyset` fallback to the pre-write value is correct and unpinned: changing
+    it to compare the readback against itself leaves the workspace green. One fixture closes it, an
+    actuation point create whose script drifts a key's `0xFE`, and the reviewer already wrote it.
+  - `value_moves`'s rapid trigger arm is pinned as a unit but neither of its two comparisons
+    individually, because the fixture moves both press and release. A fixture moving only one
+    closes it. Consequence if the release half is lost: a create is announced as keeping a value it
+    is about to overwrite.
+  - `describe_loss` documents a fourth outcome that appears to be unreachable. Reasoning, not
+    measurement: `plan` emits value records only when MODE or a value moved, so if the value did
+    not move then MODE did, and the branch above catches it. Either delete the branch and its
+    doc bullet or find the case that reaches it.
+  - `mode_change`'s comment justifies printing a `TouchMode` through `{:?}` by a precedent in
+    `dump` that does not exist. `dump` prints `on`/`off` and a raw `mode_raw`; this announcement is
+    the only place in `wh` that shows an operator a touch mode name. On an unknown nibble it prints
+    `mode Unknown(7) to Rt`, Rust tuple-variant syntax in operator-facing output. The behaviour is
+    right and matches `ops::rt_records`; the comment is false and the string is rough.
+  - `announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s. Safe inside
+    `create` by construction and pinned there by three fixtures, but it is the last surviving
+    instance of the pattern four rounds were spent removing. Recorded in the plan as a warning to
+    the task that consumes it.
+  - `verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
+    create. Cannot affect what is checked, which was proven by deleting the label and watching every
+    other parameter go dead. A small enum would make it unforgeable.
+  - The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
+    point create now asserts that `0xFE` is untouched, and the converse. `docs/keysets.md`'s
+    separate-counters finding makes that the right assumption, and it is the only one of the six
+    checks resting on the firmware not coupling two layouts. One line saying so satisfies the
+    measure-never-infer rule.
+
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
