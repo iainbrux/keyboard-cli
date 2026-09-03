@@ -189,8 +189,9 @@ rather than as settings it recognises.
   always batch two members of one create into the same frame.
 
 - [ ] **2.18 Parked findings from task 2.4b's `wh keyset create` reviews.** Five review rounds
-  closed everything that changes behaviour. The ones below survive, all judged not to block the
-  rest of the CLI, all measured rather than suspected. Two were added after this entry was written.
+  closed everything that changes behaviour. The bullets below are what survived, all judged not to
+  block the rest of the CLI, all measured rather than suspected. Two were added after this entry was
+  written, and any struck through since have been closed.
 
   - `verify_create`'s `rt_keyset` fallback to the pre-write value is correct and unpinned: changing
     it to compare the readback against itself leaves the workspace green. One fixture closes it, an
