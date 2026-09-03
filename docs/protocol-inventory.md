@@ -3,6 +3,11 @@
 Generated from all ten capture files of the 2026-08-28 hardware session. Everything here is counted
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
+**Every count here is of that ten-file sample and no other.** The corpus is now 27 files and 3696
+frames, and several values first seen later contradict what a row here says was never observed.
+Where a row and `docs/protocol.md` or `docs/keysets.md` disagree, those two are current and this is
+a record of what the first session measured.
+
 **1224 frames, 0 framing failures and 0 checksum failures.** The checksum formula
 `(0x35 + 0x5C + len + cmd + payload.last()) & 0xFF` holds on every single captured frame in both
 directions. Replies set bit 7 of the command byte.
@@ -52,8 +57,8 @@ nonsense.
 | `0x08` | 2252 | 5 | mode. Modelled |
 | `0x14` | 1858 | 3 | RT press, micrometres. Modelled |
 | `0x15` | 1858 | 4 | RT release, micrometres. Modelled |
-| `0x16` | 1858 | 1 | **always `0`**, never once observed non-zero. Written alongside every RT change |
-| `0x17` | 1858 | 1 | **always `0`**, same |
+| `0x16` | 1858 | 1 | `0` in every one of these frames. Later sessions read and write `100`, see `docs/keysets.md` |
+| `0x17` | 1858 | 1 | Same as `0x16`, and always written with it |
 | `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 424 | 2 | rapid trigger keyset membership, an index and not a boolean: measured reaching `2` in the corpus `docs/protocol.md` rests on, untouched by edits within a set |
 | `0xff` | 420 | 3 | read 210 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 27-capture corpus |
