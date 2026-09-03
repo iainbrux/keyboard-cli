@@ -919,19 +919,13 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             let mut out = stdout.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let created = crate::keyset::create(&mut out, s, kind, &usages, value, rt)?;
+                let plan = crate::keyset::create(&mut out, s, kind, &usages, value, rt)?;
                 if dry_run {
-                    return print_frames(&mut out, &created.plan.frames());
+                    return print_frames(&mut out, &plan.frames());
                 }
                 auto_backup(s, store, "keyset create")?;
-                wh_device::keyset::apply(s, &created.plan)?;
-                crate::keyset::verify_create(
-                    &mut out,
-                    s,
-                    kind,
-                    created.index.value(),
-                    &created.plan,
-                )
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_create(&mut out, s, kind, &plan)
             })
         }
         KeysetWhat::Set { .. } => bail!("not yet implemented"),

@@ -222,7 +222,7 @@ pub(crate) fn create<T: Transport>(
     usages: &[u8],
     value: Option<Um>,
     rt: Option<(Um, Um)>,
-) -> Result<CreatePlan> {
+) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let index = keyset::next_index(&m)?;
     let (change, target) = match kind {
@@ -247,7 +247,7 @@ pub(crate) fn create<T: Transport>(
     // them anyway. `plan` itself only reads; nothing here has written to the board yet.
     let plan = keyset::plan(s, usages, &change, Some(index))?;
     announce_steal(out, kind, &losing, index.value(), target, &plan)?;
-    Ok(CreatePlan { index, plan })
+    Ok(plan)
 }
 
 /// Existing keysets that would lose members to a create over `usages`, as (index, the members it
@@ -300,10 +300,14 @@ pub(crate) fn announce_steal(
     Ok(())
 }
 
-/// One stolen key's line: its prior value, when the write is actually about to change it, or a
-/// note that it keeps that value and only its index moves, when `plan`'s skip rule found nothing
-/// to write for it. A key already at the target value loses nothing but its old index, and
-/// saying it "loses w at 2.00mm" would claim the opposite of what is about to happen.
+/// One stolen key's line. Three cases, since a value record can be present without the value it
+/// carries actually moving: `plan` echoes a key's own value back unchanged whenever anything else
+/// about it (its MODE, say) changes, so "a record exists" is not "the value changes".
+///
+/// - The value itself moves: "w at 2.00mm", its prior value, about to be overwritten.
+/// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
+/// - Something was written but the value didn't move (e.g. only its touch mode did):
+///   "w (keeps 2.00mm)", without the "index only" claim, which would be false here.
 fn describe_loss(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let prior = plan
         .before()
@@ -312,10 +316,32 @@ fn describe_loss(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
         .expect("losing_members only ever names a usage plan was built over");
     let value = value_display(kind, prior);
     let name = key_label(u);
-    if plan.value_records().iter().any(|r| r.key == u) {
+    if value_moves(kind, plan, prior, u) {
         format!("{name} at {value}")
+    } else if plan.value_records().iter().any(|r| r.key == u) {
+        format!("{name} (keeps {value})")
     } else {
         format!("{name} (keeps {value}, index only)")
+    }
+}
+
+/// Whether the value `kind` reports (AP for `Kind::Ap`, press/release for `Kind::Rt`) actually
+/// differs from `prior`, read off the record `plan` sent for it rather than assumed from whether
+/// a record exists at all: `plan` always echoes a key's unchanged value back in the same bundle
+/// as an unrelated change, such as a touch mode promotion.
+fn value_moves(kind: Kind, plan: &keyset::WritePlan, prior: &ops::KeySettings, u: u8) -> bool {
+    let sent = |layout_id: u8| {
+        plan.value_records()
+            .iter()
+            .find(|r| r.key == u && r.layout == layout_id)
+            .map(|r| r.value)
+    };
+    match kind {
+        Kind::Ap => sent(layout::AP).is_some_and(|v| v != prior.ap.0),
+        Kind::Rt => {
+            sent(layout::RT_PRESS).is_some_and(|v| v != prior.rt_press.0)
+                || sent(layout::RT_RELEASE).is_some_and(|v| v != prior.rt_release.0)
+        }
     }
 }
 
@@ -328,31 +354,23 @@ fn value_display(kind: Kind, ks: &ops::KeySettings) -> String {
     }
 }
 
-/// A create's index and the plan that writes it, returned together so a caller can both apply
-/// the plan and verify against the exact index it carries.
-pub(crate) struct CreatePlan {
-    pub index: keyset::KeysetIndex,
-    pub plan: keyset::WritePlan,
-}
-
-/// Re-reads every key `plan` touched and confirms it holds both the new index and the value
-/// `plan` computed for it, the same way `verify_ap`/`verify_rt` check a plain `wh set` write:
-/// against what `plan` actually sent, or, for a key the skip rule left untouched, against what
-/// was read from it before the write (which the skip rule only fires when that already equals
-/// the target). Reads the board back rather than trusting the write's echo, the same way every
-/// other write path in `wh` verifies.
+/// Re-reads every key `plan` touched and confirms it holds both the value `plan` computed for it
+/// and, for a key `plan` wrote a membership record for, the exact index and layout that record
+/// carries. Matches `verify_ap`/`verify_rt`: against what `plan` actually sent, or, for a key the
+/// skip rule left untouched, against what was read from it before the write. Reads the board back
+/// rather than trusting the write's echo, the same way every other write path in `wh` verifies.
 ///
-/// Takes no separate key list: `plan.before()` covers every key `plan` was built over, in order,
-/// so the keys checked here can never drift from the keys `apply` actually wrote. A caller that
-/// passed a key list of its own alongside `plan` could hand the two different views of the
-/// selection; indexing one by a position from the other is exactly what panicked, after the
-/// write, on a length mismatch, and would have verified a key against another key's settings on
-/// an order mismatch.
+/// Takes no separate key list, and no separate index: `plan.before()` covers every key `plan` was
+/// built over, in order, and `plan.membership_records()` carries the exact index and layout each
+/// membership write used, per key. A caller cannot hand this function a key list, an index, or a
+/// layout that disagrees with what `plan` itself holds, because none of those are parameters here
+/// any more; a key is checked against membership only when `plan` actually wrote one for it, and
+/// `kind` is still needed to pick which value fields (AP, or press and release) `plan`'s own
+/// records answer for, since both kinds share the same four value layouts.
 pub(crate) fn verify_create<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
-    want: u16,
     plan: &keyset::WritePlan,
 ) -> Result<()> {
     let mut bad = Vec::new();
@@ -363,12 +381,15 @@ pub(crate) fn verify_create<T: Transport>(
         let ks = wh_device::ops::read_key_settings(s, u)?;
         let mut faults = Vec::new();
 
-        let got_membership = match kind {
-            Kind::Ap => ks.ap_keyset,
-            Kind::Rt => ks.rt_keyset,
-        };
-        if got_membership != want {
-            faults.push(format!("keyset {got_membership}, wanted {want}"));
+        if let Some(record) = plan.membership_records().iter().find(|r| r.key == u) {
+            let got = if record.layout == layout::KEYSET_RT {
+                ks.rt_keyset
+            } else {
+                ks.ap_keyset
+            };
+            if got != record.value {
+                faults.push(format!("keyset {got}, wanted {}", record.value));
+            }
         }
 
         let sent = |layout_id: u8| {

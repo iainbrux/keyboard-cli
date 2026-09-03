@@ -300,6 +300,51 @@ fn keyset_create_announces_a_kept_value_differently_from_a_lost_one() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// A stolen member whose MODE promotes (`Global` to `Single`) while its actuation point does not
+/// move at all: `w` sits in ap keyset 1 at 2.00mm with touch `Global`, exactly the board's
+/// global, so only its touch mode changes. "index only" would be wrong here, since MODE moves
+/// too; "at 2.00mm" would be wrong too, since the value itself never does.
+#[test]
+fn keyset_create_announces_a_promoted_key_that_keeps_its_value() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::AP, 2000)); // s, free
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000)); // d, free
+    lines.extend(key_settings_lines(0x1A, 2000, 0x00, 100, 150, 1, 0)); // plan's read of w: touch Global
+
+    let script = write_script("keyset-create-promotes-only", &lines);
+    let config_home = scratch_config_dir("keyset-create-promotes-only");
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("keyset 1 loses w (keeps 2.00mm)"),
+        "got: {text}"
+    );
+    assert!(
+        !text.contains("keeps 2.00mm, index only"),
+        "more than the index changes here, MODE promotes too: {text}"
+    );
+    assert!(
+        !text.contains("loses w at 2.00mm"),
+        "the actuation point itself never moves: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `wh keyset create ap --keys w,s` with no `--value`, where the free keys s and d disagree on
 /// the board's actuation point: the matrix, the matrix again and the 0xFF sweep, then the two
 /// disagreeing 0x04 reads over s and d. `global_ap_or_bail` must refuse before `plan` is ever
@@ -628,6 +673,124 @@ fn keyset_create_ap_end_to_end_catches_a_membership_that_never_landed() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Both `w` and `s`'s membership writes silently do nothing (the board reads `ap_keyset` back as
+/// 0 for both), while both keys' actuation point writes land correctly, matching the reviewer's
+/// F5 repro exactly: the write frames carry index 1 for both keys, byte for byte, but neither
+/// took.
+///
+/// `verify_create` takes no caller-supplied index any more, only `plan`, so there is no call site
+/// left where a wrong index could be substituted; this pins that the index it actually checks
+/// against, `1`, still comes from `plan.membership_records()` and not from any assumption baked
+/// into the check itself.
+#[test]
+fn keyset_create_ap_end_to_end_catches_a_membership_write_that_did_nothing_for_either_key() {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    lines.extend(key_settings_lines(0x1A, 1000, 0x18, 100, 150, 0, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x16, 1500, 0x18, 100, 150, 0, 0)); // plan's read of s
+
+    lines.extend(auto_backup_lines(
+        0,
+        (1000, 0x18, 100, 150, 0, 0), // w
+        (1200, 0x00, 0, 0, 0, 0),     // a
+        (1500, 0x18, 100, 150, 0, 0), // s
+        (1500, 0x00, 0, 0, 0, 0),     // d
+    ));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in cmds::write_key_records(&value_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+    ];
+    for f in cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    // Both keys: AP landed, membership did not.
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 0, 0));
+    lines.extend(key_settings_lines(0x16, 2000, 0x18, 100, 150, 0, 0));
+
+    let script = write_script("keyset-create-ap-membership-neither", &lines);
+    let config_home = scratch_config_dir("keyset-create-ap-membership-neither");
+
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w,s", "--value", "2.00"],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("w: board reports keyset 0, wanted 1"),
+        "got: {err}"
+    );
+    assert!(
+        err.contains("s: board reports keyset 0, wanted 1"),
+        "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `s`'s correct post-write readback for the rt create scripts below: sensitivities at the
 /// 0.10mm/0.30mm target, MODE moved from `Single` to `Rt`, membership moved to keyset 1. `ap`
 /// stays at `s`'s unchanged pre-write value, since `Change::rt_on` never touches it.
@@ -901,6 +1064,330 @@ fn keyset_create_rt_end_to_end_catches_a_membership_that_never_landed() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("s: board reports keyset 0, wanted 1"),
+        "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The full script for `wh keyset create ap --keys w,s --value 2.00`, where `s` already sits at
+/// the target before the write: `plan`'s skip rule gives it no value records at all, only a
+/// membership one, so `verify_create`'s yardstick for it is `before()`, never a record `sent`
+/// returns. `w` still changes for real, matching `create_ap_write_script`'s shape otherwise.
+fn create_ap_write_script_skipping_s(s_readback: Readback) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    lines.extend(key_settings_lines(0x1A, 1000, 0x18, 100, 150, 0, 0)); // plan's read of w
+    lines.extend(key_settings_lines(
+        0x16,
+        S_CORRECT_AP.ap,
+        S_CORRECT_AP.mode,
+        S_CORRECT_AP.rt_press,
+        S_CORRECT_AP.rt_release,
+        0,
+        0,
+    )); // plan's read of s: already at the target, so the skip rule fires
+
+    lines.extend(auto_backup_lines(
+        0,
+        (1000, 0x18, 100, 150, 0, 0), // w
+        (1200, 0x00, 0, 0, 0, 0),     // a
+        (
+            S_CORRECT_AP.ap,
+            S_CORRECT_AP.mode,
+            S_CORRECT_AP.rt_press,
+            S_CORRECT_AP.rt_release,
+            0,
+            0,
+        ), // s
+        (1500, 0x00, 0, 0, 0, 0),     // d
+    ));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in cmds::write_key_records(&value_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+    ];
+    for f in cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // w readback: correct
+    lines.extend(key_settings_lines(
+        0x16,
+        s_readback.ap,
+        s_readback.mode,
+        s_readback.rt_press,
+        s_readback.rt_release,
+        s_readback.ap_keyset,
+        s_readback.rt_keyset,
+    )); // s readback
+
+    lines
+}
+
+/// `s` skipped, so `sent(MODE)` is `None` and `verify_create`'s yardstick falls back to
+/// `before().mode`: `s`'s MODE moved between the write and the readback while nothing was ever
+/// sent to move it. Every earlier ap fixture gives `s` a real MODE record, so `sent` is never
+/// `None` in any of them; this is the only one that exercises the fallback.
+#[test]
+fn keyset_create_ap_end_to_end_catches_a_skipped_keys_mode_moving_on_its_own() {
+    let lines = create_ap_write_script_skipping_s(Readback {
+        mode: 0x28,
+        ..S_CORRECT_AP
+    });
+    let script = write_script("keyset-create-ap-skip-mode", &lines);
+    let config_home = scratch_config_dir("keyset-create-ap-skip-mode");
+
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w,s", "--value", "2.00"],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("s: board reports mode 0x0028, wanted mode 0x0018"),
+        "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `s` skipped, so `sent(AP)` is `None` and `verify_create`'s yardstick falls back to
+/// `before().ap`: `s`'s actuation point moved between the write and the readback while nothing
+/// was ever sent to move it.
+#[test]
+fn keyset_create_ap_end_to_end_catches_a_skipped_keys_ap_moving_on_its_own() {
+    let lines = create_ap_write_script_skipping_s(Readback {
+        ap: 1900,
+        ..S_CORRECT_AP
+    });
+    let script = write_script("keyset-create-ap-skip-ap", &lines);
+    let config_home = scratch_config_dir("keyset-create-ap-skip-ap");
+
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w,s", "--value", "2.00"],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("s: board reports ap 1.90mm, wanted 2.00mm"),
+        "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The full script for `wh keyset create rt --keys w,s --press 0.10 --release 0.30`, where `s`
+/// already sits at the target before the write, the rt sibling of
+/// `create_ap_write_script_skipping_s`.
+fn create_rt_write_script_skipping_s(s_readback: Readback) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 999, 999, 0, 0)); // plan's read of w
+    lines.extend(key_settings_lines(
+        0x16,
+        S_CORRECT_RT.ap,
+        S_CORRECT_RT.mode,
+        S_CORRECT_RT.rt_press,
+        S_CORRECT_RT.rt_release,
+        0,
+        0,
+    )); // plan's read of s: already at the target, so the skip rule fires
+
+    lines.extend(auto_backup_lines(
+        0,
+        (2000, 0x18, 999, 999, 0, 0), // w
+        (1200, 0x00, 0, 0, 0, 0),     // a
+        (
+            S_CORRECT_RT.ap,
+            S_CORRECT_RT.mode,
+            S_CORRECT_RT.rt_press,
+            S_CORRECT_RT.rt_release,
+            0,
+            0,
+        ), // s
+        (1500, 0x00, 0, 0, 0, 0),     // d
+    ));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x38,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 300,
+        },
+    ];
+    for f in cmds::write_key_records(&value_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_RT,
+            value: 1,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::KEYSET_RT,
+            value: 1,
+        },
+    ];
+    for f in cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    lines.extend(key_settings_lines(0x1A, 2000, 0x38, 100, 300, 0, 1)); // w readback: correct
+    lines.extend(key_settings_lines(
+        0x16,
+        s_readback.ap,
+        s_readback.mode,
+        s_readback.rt_press,
+        s_readback.rt_release,
+        s_readback.ap_keyset,
+        s_readback.rt_keyset,
+    )); // s readback
+
+    lines
+}
+
+/// `s` skipped, so `sent(RT_PRESS)` is `None` and `verify_create`'s yardstick falls back to
+/// `before().rt_press`: `s`'s press sensitivity moved between the write and the readback while
+/// nothing was ever sent to move it.
+#[test]
+fn keyset_create_rt_end_to_end_catches_a_skipped_keys_press_moving_on_its_own() {
+    let lines = create_rt_write_script_skipping_s(Readback {
+        rt_press: 500,
+        ..S_CORRECT_RT
+    });
+    let script = write_script("keyset-create-rt-skip-press", &lines);
+    let config_home = scratch_config_dir("keyset-create-rt-skip-press");
+
+    let out = run_wh(
+        &[
+            "keyset",
+            "create",
+            "rt",
+            "--keys",
+            "w,s",
+            "--press",
+            "0.10",
+            "--release",
+            "0.30",
+        ],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "s: board reports press 0.50mm release 0.30mm, wanted press 0.10mm release 0.30mm"
+        ),
+        "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `s` skipped, so `sent(RT_RELEASE)` is `None` and `verify_create`'s yardstick falls back to
+/// `before().rt_release`: `s`'s release sensitivity moved between the write and the readback
+/// while nothing was ever sent to move it.
+#[test]
+fn keyset_create_rt_end_to_end_catches_a_skipped_keys_release_moving_on_its_own() {
+    let lines = create_rt_write_script_skipping_s(Readback {
+        rt_release: 500,
+        ..S_CORRECT_RT
+    });
+    let script = write_script("keyset-create-rt-skip-release", &lines);
+    let config_home = scratch_config_dir("keyset-create-rt-skip-release");
+
+    let out = run_wh(
+        &[
+            "keyset",
+            "create",
+            "rt",
+            "--keys",
+            "w,s",
+            "--press",
+            "0.10",
+            "--release",
+            "0.30",
+        ],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "s: board reports press 0.10mm release 0.50mm, wanted press 0.10mm release 0.30mm"
+        ),
         "got: {err}"
     );
 
