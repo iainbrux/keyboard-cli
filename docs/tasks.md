@@ -238,8 +238,10 @@ rather than as settings it recognises.
   So a selection spanning two keysets merges them, and where a keyset is wholly consumed its index
   ceases to exist; a keyset only partly selected survives with its remaining members.
 
-  No test drives `wh set ap` over a selection spanning two indices. Two-index fixtures do exist in
-  `crates/wh-cli/tests/keyset.rs`, for `keyset list`, and one of them is the obvious starting point.
+  No test drives `wh set ap` over a selection spanning two indices. Exactly one fixture in the
+  repository carries two distinct non-zero indices in a single membership read,
+  `keyset_list_ap_groups_members_by_index` in `crates/wh-cli/tests/keyset.rs`, and it is the obvious
+  starting point.
 
   It wants a test rather than a comment because the wrong implementations are plausible and all
   pass today. A later reader who generalises the `Keep` case to "if every losing keyset is wholly
