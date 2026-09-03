@@ -300,10 +300,11 @@ fn keyset_create_announces_a_kept_value_differently_from_a_lost_one() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// A stolen member whose MODE promotes (`Global` to `Single`) while its actuation point does not
-/// move at all: `w` sits in ap keyset 1 at 2.00mm with touch `Global`, exactly the board's
-/// global, so only its touch mode changes. "index only" would be wrong here, since MODE moves
-/// too; "at 2.00mm" would be wrong too, since the value itself never does.
+/// A stolen member whose touch mode promotes (`Global` to `Single`) while its actuation point
+/// does not move at all: `w` sits in ap keyset 1 at 2.00mm with touch `Global`, exactly the
+/// board's global, so only its touch mode changes. "index only" would be wrong here, since the
+/// mode moves too; "at 2.00mm" would be wrong too, since the value itself never does; and saying
+/// nothing about the mode would leave the one real change unnamed.
 #[test]
 fn keyset_create_announces_a_promoted_key_that_keeps_its_value() {
     let mut lines = matrix_lines(); // resolve_keys
@@ -329,16 +330,66 @@ fn keyset_create_announces_a_promoted_key_that_keeps_its_value() {
     );
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("keyset 1 loses w (keeps 2.00mm)"),
+        text.contains("keyset 1 loses w (keeps 2.00mm, mode Global to Single)"),
         "got: {text}"
     );
     assert!(
         !text.contains("keeps 2.00mm, index only"),
-        "more than the index changes here, MODE promotes too: {text}"
+        "more than the index changes here, the mode promotes too: {text}"
     );
     assert!(
         !text.contains("loses w at 2.00mm"),
         "the actuation point itself never moves: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The rapid trigger sibling of `keyset_create_announces_the_keys_it_steals`: `w` sits in an rt
+/// keyset at 0.50/0.50mm, and a create with different press/release targets is about to overwrite
+/// that. Every other announcement fixture in this file creates `ap`; `value_moves`'s `Kind::Rt`
+/// arm has no coverage without this one.
+#[test]
+fn keyset_create_announces_a_rapid_trigger_steal() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 0), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x38, 500, 500, 0, 1)); // plan's read of w
+
+    let script = write_script("keyset-create-rt-steal", &lines);
+    let config_home = scratch_config_dir("keyset-create-rt-steal");
+    let out = run_wh(
+        &[
+            "keyset",
+            "create",
+            "rt",
+            "--keys",
+            "w",
+            "--press",
+            "0.10",
+            "--release",
+            "0.30",
+            "--dry-run",
+        ],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("rt keyset 2: creating at 0.10/0.30mm"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("keyset 1 loses w at 0.50/0.50mm"),
+        "got: {text}"
     );
 
     std::fs::remove_file(script).unwrap();
@@ -665,7 +716,7 @@ fn keyset_create_ap_end_to_end_catches_a_membership_that_never_landed() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("s: board reports keyset 0, wanted 1"),
+        err.contains("s: board reports ap keyset 0, wanted 1"),
         "got: {err}"
     );
 
@@ -779,11 +830,11 @@ fn keyset_create_ap_end_to_end_catches_a_membership_write_that_did_nothing_for_e
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("w: board reports keyset 0, wanted 1"),
+        err.contains("w: board reports ap keyset 0, wanted 1"),
         "got: {err}"
     );
     assert!(
-        err.contains("s: board reports keyset 0, wanted 1"),
+        err.contains("s: board reports ap keyset 0, wanted 1"),
         "got: {err}"
     );
 
@@ -1063,7 +1114,7 @@ fn keyset_create_rt_end_to_end_catches_a_membership_that_never_landed() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("s: board reports keyset 0, wanted 1"),
+        err.contains("s: board reports rt keyset 0, wanted 1"),
         "got: {err}"
     );
 

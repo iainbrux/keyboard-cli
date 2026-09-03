@@ -925,7 +925,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset create")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_create(&mut out, s, kind, &plan)
+                crate::keyset::verify_create(&mut out, s, kind, "create", &plan)
             })
         }
         KeysetWhat::Set { .. } => bail!("not yet implemented"),

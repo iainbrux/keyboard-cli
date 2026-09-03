@@ -8,7 +8,7 @@ use wh_device::keyset::{self, Global, Keyset, Kind, Membership};
 use wh_device::ops;
 use wh_device::session::Session;
 use wh_device::transport::Transport;
-use wh_proto::cmds::layout;
+use wh_proto::cmds::{layout, KeyRecord};
 use wh_proto::value::Um;
 
 use crate::cli::KeysetKindArg;
@@ -302,12 +302,14 @@ pub(crate) fn announce_steal(
 
 /// One stolen key's line. Three cases, since a value record can be present without the value it
 /// carries actually moving: `plan` echoes a key's own value back unchanged whenever anything else
-/// about it (its MODE, say) changes, so "a record exists" is not "the value changes".
+/// about it (its touch mode, say) changes, so "a record exists" is not "the value changes".
 ///
 /// - The value itself moves: "w at 2.00mm", its prior value, about to be overwritten.
 /// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
-/// - Something was written but the value didn't move (e.g. only its touch mode did):
-///   "w (keeps 2.00mm)", without the "index only" claim, which would be false here.
+/// - The value stays but the touch mode moves: "w (keeps 2.00mm, mode Global to Single)", naming
+///   the thing that actually changes rather than implying nothing did.
+/// - Something else was written but neither the value nor the touch mode moved:
+///   "w (keeps 2.00mm)".
 fn describe_loss(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let prior = plan
         .before()
@@ -318,11 +320,28 @@ fn describe_loss(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let name = key_label(u);
     if value_moves(kind, plan, prior, u) {
         format!("{name} at {value}")
+    } else if let Some(change) = mode_change(plan, prior, u) {
+        format!("{name} (keeps {value}, {change})")
     } else if plan.value_records().iter().any(|r| r.key == u) {
         format!("{name} (keeps {value})")
     } else {
         format!("{name} (keeps {value}, index only)")
     }
+}
+
+/// The touch mode transition a record `plan` sent for `u` represents, when it sent a MODE record
+/// and the touch nibble it carries actually differs from `prior`'s: "mode Global to Single".
+/// `{:?}` on `TouchMode` is the variant name, which is the same word `dump`'s own debugging output
+/// would use, so it needs no separate name table here.
+fn mode_change(plan: &keyset::WritePlan, prior: &ops::KeySettings, u: u8) -> Option<String> {
+    let sent_mode = plan
+        .value_records()
+        .iter()
+        .find(|r| r.key == u && r.layout == layout::MODE)
+        .map(|r| r.value)?;
+    let new_touch = wh_proto::cmds::Mode::from_value(sent_mode).touch;
+    let prior_touch = prior.mode.touch;
+    (new_touch != prior_touch).then(|| format!("mode {prior_touch:?} to {new_touch:?}"))
 }
 
 /// Whether the value `kind` reports (AP for `Kind::Ap`, press/release for `Kind::Rt`) actually
@@ -354,23 +373,23 @@ fn value_display(kind: Kind, ks: &ops::KeySettings) -> String {
     }
 }
 
-/// Re-reads every key `plan` touched and confirms it holds both the value `plan` computed for it
-/// and, for a key `plan` wrote a membership record for, the exact index and layout that record
-/// carries. Matches `verify_ap`/`verify_rt`: against what `plan` actually sent, or, for a key the
-/// skip rule left untouched, against what was read from it before the write. Reads the board back
+/// Re-reads every key `plan` touched and confirms it holds every value `plan` computed for it:
+/// MODE, AP, RT_PRESS, RT_RELEASE, and both keyset memberships, every one of them checked against
+/// what `plan` actually sent for that field or, where it sent nothing, against what was read from
+/// the key before the write. Matches `verify_ap`/`verify_rt`'s own rule. Reads the board back
 /// rather than trusting the write's echo, the same way every other write path in `wh` verifies.
 ///
-/// Takes no separate key list, and no separate index: `plan.before()` covers every key `plan` was
-/// built over, in order, and `plan.membership_records()` carries the exact index and layout each
-/// membership write used, per key. A caller cannot hand this function a key list, an index, or a
-/// layout that disagrees with what `plan` itself holds, because none of those are parameters here
-/// any more; a key is checked against membership only when `plan` actually wrote one for it, and
-/// `kind` is still needed to pick which value fields (AP, or press and release) `plan`'s own
-/// records answer for, since both kinds share the same four value layouts.
+/// Takes no separate key list: `plan.before()` covers every key `plan` was built over, in order.
+/// Every field is checked unconditionally rather than picked by `kind`: an earlier version chose
+/// AP or press/release from the caller's `kind`, and a caller passing the wrong one still passed,
+/// since `plan` always sends all four value layouts for a changed key, the other kind's fields
+/// echoed back unchanged. `kind` survives only to name the ap or rt half of `op`'s label; nothing
+/// here is selected by it any more.
 pub(crate) fn verify_create<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
+    op: &str,
     plan: &keyset::WritePlan,
 ) -> Result<()> {
     let mut bad = Vec::new();
@@ -381,24 +400,31 @@ pub(crate) fn verify_create<T: Transport>(
         let ks = wh_device::ops::read_key_settings(s, u)?;
         let mut faults = Vec::new();
 
-        if let Some(record) = plan.membership_records().iter().find(|r| r.key == u) {
-            let got = if record.layout == layout::KEYSET_RT {
-                ks.rt_keyset
-            } else {
-                ks.ap_keyset
-            };
-            if got != record.value {
-                faults.push(format!("keyset {got}, wanted {}", record.value));
-            }
-        }
-
-        let sent = |layout_id: u8| {
-            plan.value_records()
+        let sent = |records: &[KeyRecord], layout_id: u8| {
+            records
                 .iter()
                 .find(|r| r.key == u && r.layout == layout_id)
                 .map(|r| r.value)
         };
-        let want_mode = sent(layout::MODE).unwrap_or_else(|| before.mode.value());
+        let sent_value = |layout_id: u8| sent(plan.value_records(), layout_id);
+        let sent_membership = |layout_id: u8| sent(plan.membership_records(), layout_id);
+
+        let want_ap_keyset = sent_membership(layout::KEYSET_AP).unwrap_or(before.ap_keyset);
+        if ks.ap_keyset != want_ap_keyset {
+            faults.push(format!(
+                "ap keyset {}, wanted {want_ap_keyset}",
+                ks.ap_keyset
+            ));
+        }
+        let want_rt_keyset = sent_membership(layout::KEYSET_RT).unwrap_or(before.rt_keyset);
+        if ks.rt_keyset != want_rt_keyset {
+            faults.push(format!(
+                "rt keyset {}, wanted {want_rt_keyset}",
+                ks.rt_keyset
+            ));
+        }
+
+        let want_mode = sent_value(layout::MODE).unwrap_or_else(|| before.mode.value());
         if ks.mode.value() != want_mode {
             faults.push(format!(
                 "mode {:#06x}, wanted mode {want_mode:#06x}",
@@ -406,30 +432,25 @@ pub(crate) fn verify_create<T: Transport>(
             ));
         }
 
-        match kind {
-            Kind::Ap => {
-                let want_ap = Um(sent(layout::AP).unwrap_or(before.ap.0));
-                if ks.ap != want_ap {
-                    faults.push(format!(
-                        "ap {:.2}mm, wanted {:.2}mm",
-                        ks.ap.to_mm(),
-                        want_ap.to_mm()
-                    ));
-                }
-            }
-            Kind::Rt => {
-                let want_press = Um(sent(layout::RT_PRESS).unwrap_or(before.rt_press.0));
-                let want_release = Um(sent(layout::RT_RELEASE).unwrap_or(before.rt_release.0));
-                if ks.rt_press != want_press || ks.rt_release != want_release {
-                    faults.push(format!(
-                        "press {:.2}mm release {:.2}mm, wanted press {:.2}mm release {:.2}mm",
-                        ks.rt_press.to_mm(),
-                        ks.rt_release.to_mm(),
-                        want_press.to_mm(),
-                        want_release.to_mm()
-                    ));
-                }
-            }
+        let want_ap = Um(sent_value(layout::AP).unwrap_or(before.ap.0));
+        if ks.ap != want_ap {
+            faults.push(format!(
+                "ap {:.2}mm, wanted {:.2}mm",
+                ks.ap.to_mm(),
+                want_ap.to_mm()
+            ));
+        }
+
+        let want_press = Um(sent_value(layout::RT_PRESS).unwrap_or(before.rt_press.0));
+        let want_release = Um(sent_value(layout::RT_RELEASE).unwrap_or(before.rt_release.0));
+        if ks.rt_press != want_press || ks.rt_release != want_release {
+            faults.push(format!(
+                "press {:.2}mm release {:.2}mm, wanted press {:.2}mm release {:.2}mm",
+                ks.rt_press.to_mm(),
+                ks.rt_release.to_mm(),
+                want_press.to_mm(),
+                want_release.to_mm()
+            ));
         }
 
         if !faults.is_empty() {
@@ -442,7 +463,7 @@ pub(crate) fn verify_create<T: Transport>(
     }
     // `wh restore` does not yet write keyset membership (only the four value layouts), so a
     // rollback after a mismatch here restores values but leaves membership as this write left it.
-    let what = format!("{} keyset create", kind_name(kind));
+    let what = format!("{} keyset {op}", kind_name(kind));
     crate::run::report_verification(out, &what, &usages, &bad)
 }
 
@@ -498,5 +519,80 @@ mod tests {
         assert!(msg.contains("2 key(s) at 2.00mm"), "got: {msg}");
         assert!(msg.contains("1 key(s) at 1.00mm"), "got: {msg}");
         assert!(msg.contains("pass --value to say which"), "got: {msg}");
+    }
+
+    // -- verify_create: F9's own acceptance case --
+
+    use wh_device::replay::{hex, ReplayTransport};
+
+    fn l(dir: &str, b: &[u8; 64]) -> String {
+        format!("{{\"dir\":\"{dir}\",\"hex\":\"{}\"}}", hex(b))
+    }
+    fn rf(cmd: u8, payload: &[u8]) -> [u8; 64] {
+        wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
+    }
+    fn read_reply(usage: u8, lid: u8, val: u16) -> Vec<String> {
+        vec![
+            l("out", &wh_proto::cmds::read_key_layout(usage, lid)),
+            l(
+                "in",
+                &rf(
+                    wh_proto::cmds::cmd::KEY,
+                    &[0x00, usage, lid, (val & 0xFF) as u8, (val >> 8) as u8],
+                ),
+            ),
+        ]
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn settings_script(
+        usage: u8,
+        ap: u16,
+        mode: u16,
+        rt_press: u16,
+        rt_release: u16,
+        ap_keyset: u16,
+        rt_keyset: u16,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (lid, val) in [
+            (layout::AP, ap),
+            (layout::MODE, mode),
+            (layout::RT_PRESS, rt_press),
+            (layout::RT_RELEASE, rt_release),
+            (layout::KEYSET_AP, ap_keyset),
+            (layout::KEYSET_RT, rt_keyset),
+        ] {
+            lines.extend(read_reply(usage, lid, val));
+        }
+        lines
+    }
+
+    /// The scenario `set` (task 3) will actually build: a plan that writes no membership record
+    /// at all, over a key whose `ap_keyset` drifts between the pre-write read and the readback.
+    /// Nothing in the plan asked for that field to move, so the fallback to `before` is what
+    /// catches it; skipping the membership check entirely whenever `plan` wrote none, the way an
+    /// earlier version did, would have missed this.
+    #[test]
+    fn verify_create_catches_a_membership_drift_on_a_plan_with_no_membership_records() {
+        let usage = 0x1Au8;
+        // plan()'s own read: ap already at the target, so nothing at all is written for this key.
+        let mut lines = settings_script(usage, 2000, 0x18, 100, 150, 0, 0);
+        // verify_create's readback: ap_keyset drifted to 7, though the plan never touched it.
+        lines.extend(settings_script(usage, 2000, 0x18, 100, 150, 7, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+
+        let change = keyset::Change::ap(Um(2000));
+        let plan = keyset::plan(&mut s, &[usage], &change, None).unwrap();
+        assert!(
+            plan.membership_records().is_empty(),
+            "this test's whole point is a plan that writes no membership"
+        );
+
+        let mut out = Vec::new();
+        let err = verify_create(&mut out, &mut s, Kind::Ap, "create", &plan).unwrap_err();
+        assert!(
+            err.to_string().contains("readback mismatch on 1 key(s)"),
+            "got: {err}"
+        );
     }
 }
