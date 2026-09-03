@@ -940,53 +940,28 @@ The second row's "exactly" is set equality, not "every selected key is in keyset
 
 - [ ] **Step 1: Write the failing tests**
 
-```rust
-/// `wh set ap` over keys in no keyset writes no membership record. Measured behaviour: the
-/// vendor's own actuation point change in ap-wasd-1.2 sends no 0xFF record at all.
-#[test]
-fn set_ap_on_free_keys_writes_no_membership_record() {
-    let script = write_script("set-ap-free", &set_ap_script_all_keys_free());
-    let out = run_wh(
-        &["set", "ap", "--keys", "w,a", "--set", "1.20", "--dry-run"],
-        &script,
-        &scratch_config_dir("set-ap-free"),
-    );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let joined = frame_lines(&String::from_utf8_lossy(&out.stdout)).join("\n");
-    assert!(!joined.contains("1aff"), "no 0xFF record may be sent: {joined}");
-}
+**Do not copy the sample tests an earlier version of this plan carried here.** They asserted
+`text.contains("keyset 1 loses w,s")` and `joined.contains("1aff")`, which name a coordinate and
+then check only that something exists at it. Task 3's review characterised that shape precisely
+after it produced defects in all three preceding tasks: an assertion of that form passes on a
+command that writes the right layout with the wrong value, or announces the right key with another
+key's value. Two live green mutations were found that way, one of them on a destructive command.
 
-/// `wh set ap` over exactly one keyset's members changes its value in place, keeping the index.
-#[test]
-fn set_ap_over_a_whole_keyset_keeps_its_index() {
-    let script = write_script("set-ap-whole", &set_ap_script_w_and_a_in_keyset_1());
-    let out = run_wh(
-        &["set", "ap", "--keys", "w,a", "--set", "1.20", "--dry-run"],
-        &script,
-        &scratch_config_dir("set-ap-whole"),
-    );
-    assert!(out.status.success());
-    let joined = frame_lines(&String::from_utf8_lossy(&out.stdout)).join("\n");
-    assert!(!joined.contains("1aff"), "the keyset keeps its index: {joined}");
-}
+Three tests are needed, and each must pin a value, not a coordinate:
 
-/// `wh set ap` over a strict subset of a keyset's members splits it, and says which keys moved
-/// and where they went before it writes.
-#[test]
-fn set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split() {
-    let script = write_script("set-ap-split", &set_ap_script_wasd_in_keyset_1());
-    let out = run_wh(
-        &["set", "ap", "--keys", "w,s", "--set", "1.20", "--dry-run"],
-        &script,
-        &scratch_config_dir("set-ap-split"),
-    );
-    assert!(out.status.success());
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("keyset 1 loses w,s"), "got: {text}");
-    assert!(text.contains("keyset 2"), "the new index must be named: {text}");
-    assert!(frame_lines(&text).join("\n").contains("1aff"), "a 0xFF record must be sent");
-}
-```
+- **Free keys write no membership record.** `wh set ap --keys w,a --set 1.20 --dry-run` on a board
+  where neither key is in a keyset. Assert the emitted frames equal a hand-built expectation
+  exactly, via `assert_eq!` against `cmds::write_key_records`, so that "no `0xFF` record" is proved
+  by the whole frame sequence rather than by the absence of a substring. Measured basis:
+  `ap-wasd-1.2` sends no `0xFF` record at all.
+- **A whole keyset keeps its index.** The same shape, over a selection that is exactly one
+  keyset's members. Measured basis: `ks-value-ap` writes no `0xFF` record.
+- **A strict subset splits, and the announcement is right.** `--keys w,s` where keyset 1 holds
+  `w,a,s,d`. **Give the two stolen keys different prior actuation points and assert both lines
+  separately.** A fixture where both members hold the same value cannot tell a correct
+  announcement from one that prints the first member's value twice, which is exactly the defect
+  task 3's review found in `describe_loss`. Assert the membership frames by equality too, so the
+  new index is pinned rather than merely present.
 
 Run: `cargo test -p wh-cli set_ap_`
 Expected: the first two FAIL on the current `ops::ap_records` path (no membership read in the
