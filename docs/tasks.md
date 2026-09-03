@@ -154,13 +154,16 @@ rather than as settings it recognises.
 
 - [ ] **2.17 What the `docs/keysets.md` verification pass found that touches code. Read before
   writing 2.4b.** An adversarial pass on 2026-09-03 checked every measured claim in that document
-  against the frames: 61 confirmed, 29 findings, 8 of them flatly wrong. The document is now
-  rewritten. Three findings change what the CLI should do rather than only what the document says.
+  against the frames across 78 checked claims: 46 confirmed outright, 9 confirmed in part, 23
+  findings only, 29 findings in all and 8 of them flatly wrong. A second pass over the corrections
+  found nine more, six of them mine. The document is now rewritten. Three findings change what the
+  CLI should do rather than only what the document says.
 
   - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
     any other non-owned layout: `100` in all 580 keyset-era write records, `0` in all 38 Phase 1
-    ones, matching what each capture reads. `keyset::plan` never writes them, and its stated reason,
-    that a constant would be an invented value, turns out to be right for a reason it did not know.
+    ones, matching what each capture that reads them reads. `keyset::plan` never writes them, and
+    its stated reason, that a constant would be an invented value, turns out to be right for a
+    reason it did not know.
     If 2.4b ever adds them, read them per key. Hard-coding `100` would write `100` over `0` on a
     board that has never held a keyset.
   - **Template step 1 is a two-record cap, not one frame per distinct value.** Of 162 MODE-only

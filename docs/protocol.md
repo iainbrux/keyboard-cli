@@ -339,19 +339,21 @@ Honestly, what this corpus does not resolve:
   `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
   may be something else entirely.
 - Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. Every
-  Phase 1 capture reads and writes them at `0`; every capture from the keyset sitting reads and
-  writes them at `100`, including through two global sensitivity changes. What moved them is not
-  measured: the only `0` to `100` transition in the corpus is a bare write in a file containing no
-  reads, so tying it to a keyset existing rather than to the sitting or the firmware is an
-  inference. `0x19` is still only ever `0x0000` or `0x3e2c`. `0xff` and `0xfe` are no longer open: both are host-written keyset indices, allocated
-  max plus one, measured in `docs/keysets.md`.
+  value seen for them in a Phase 1 capture is `0` and every value seen in a keyset-sitting capture
+  is `100`, including through two global sensitivity changes. What moved them is not measured: the
+  only `0` to `100` transition in the corpus is a bare write in a file containing no read frames at
+  all, so tying it to a keyset existing rather than to the sitting or the firmware is an inference.
+  `0x19` is still only ever `0x0000` or `0x3e2c`. `0xff` and `0xfe` are no longer open: both are
+  host-written keyset indices, allocated max plus one, measured in `docs/keysets.md`.
 - Commands `0x18` and `0x2c`: unidentified at the command level, discussed above.
 - The nine unidentified `cmd 0x00` sub-orders: `0x22`, `0x50`, `0xa1`, `0xb9`, `0xba`, `0xbb`,
   `0xbc`, `0xbd`, `0xc0`. Two now have a context beyond the connect sequence: `0x22` is read three
   times at the head of every global rapid trigger capture, always replying `0`, and `0xbd` appears
-  in 13 files, including before the write in `remap-one-key`. `0xbd` is not a write barrier: it is
-  absent from `ks-global-rt-sens-150`, which writes the same 132 records as `ks-global-rt-sens-200`,
-  and absent from both global switch captures, while appearing four times in `ks-create-rt-2`.
+  in 13 files, including before the write in `remap-one-key`. The write-barrier reading has
+  direct counterexamples: `0xbd` is absent from `ks-global-rt-sens-150`, which writes the same 462
+  records as `ks-global-rt-sens-200`, and absent from both global switch captures, while appearing
+  four times in `ks-create-rt-2`. It could still be sent conditionally, but it is not sent before
+  every write.
 - Key `0x01`'s identity: probably FN, from its position in the key enumeration, but this was
   deliberately never measured directly, because confirming it means remapping FN away, and FN is
   how the board reaches the FN layer used to identify every other remapped key in this document.

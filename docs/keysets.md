@@ -55,14 +55,14 @@ ascending index order with deleted indices simply absent.
 
 ## Allocation
 
-**Max plus one, never reusing a gap within a layout's live membership.** Measured three times.
+**Max plus one, never reusing a gap within a layout's live membership.** Measured four times.
 
 | Step | Existing indices | Allocated | Status |
 |---|---|---|---|
-| Create on `u,i,o,p` | 1, 2 | **3** | measured, `ks-create-ap-1` |
+| Create on `u,i,o,p` | 1, 2 | **3** | allocation measured, `ks-create-ap-1`; pre-state from the day-earlier reads, since that file has no reads |
 | Delete 3, then create on `o,p` | 1, 2, 4 | **5**, not 3 | measured, `ks-create-ap-3` |
 | Create on `A` (stolen), `G` | up to 5 | **6** | measured, `ks-steal-ap` |
-| Create on `N`, `,` in `0xFE` | 1 | **2** | measured, `ks-steal-rt` |
+| Create on `N`, `,` in `0xFE` | 1 | **2** | allocation measured, `ks-steal-rt`; pre-state derived, that file never reads `0xFE` |
 | Create on `j,k` | 1, 2, 3 | **4** | **post-state only**, never captured |
 | Create on `H`, `J` (stolen) | unobserved | **9** | **unexplained**, see below |
 
@@ -73,8 +73,9 @@ before `h,j` took `9` was `6`, and the three captures in between write no `0xFF`
 the frames alone the corpus shows a maximum of `6` followed by an allocation of `9`, which
 contradicts max plus one. The earlier draft rescued it by asserting a pre-state of "up to 8" that no
 frame shows, which is circular: `9` is the only reason to believe `7` and `8` ever existed. It also
-contradicts the RESET KEYSETS section below, which counts six actuation point keysets. Settling it
-needs one capture that reads `0xFF` between 22:50 and 23:00, and none exists.
+sits badly with the captured index set, `{1, 2, 4, 5, 6, 9}`, which is six keysets rather than the
+eight that a maximum of `8` with `3` deleted would leave. Settling it needs one capture that reads
+`0xFF` between 22:50 and 23:00, and none exists.
 
 The `j,k` row is a post-state observation, not an allocation. No capture writes `0xFF=4`; the 22:25
 read simply shows `j` and `k` holding it. The pre-state, the allocation and the ordering are all
@@ -132,12 +133,13 @@ most important rule in this document, and the global rapid trigger captures meas
 sensitivity change rewrote layout `0x04` for every key with that key's own value, `2000` for sixty
 of them, `2050` for `S`, `W` and `X`, `300` for `D` and `M`, `3000` for `ESC`. Those 66 records are
 not one frame set. The vendor works the board in blocks of about eight keys, repeating the five
-steps per block, so they are spread over roughly nine blocks and about 45 write frames.
+steps per block, so they are spread over nine blocks (eight keys each, then two) and 90 write
+frames carrying 462 write records in total.
 
 | Operation | Owns | Rewritten unchanged |
 |---|---|---|
 | Create an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
-| Change an actuation point value | `0x04` to the new value | MODE, `0x14`, `0x15` |
+| Change an actuation point value | `0x04` to the new value, and MODE promoted `Global` to `Single` | `0x14`, `0x15`, and MODE where it is already `Single` |
 | Delete an actuation point keyset | `0x04` to the global actuation point | MODE, `0x14`, `0x15` |
 | Create a rapid trigger keyset | MODE touch nibble to `3`, `0x14`/`0x15` to the global sensitivity | `0x04` |
 | Delete a rapid trigger keyset | MODE touch nibble to `1`, `0x14`/`0x15` to the global sensitivity | `0x04` |
@@ -146,8 +148,10 @@ steps per block, so they are spread over roughly nine blocks and about 45 write 
 
 **`0x16` and `0x17` are rewritten at the key's current value like any other non-owned layout.** They
 are not a constant. Every write of them in the keyset-era captures is `100`, 580 records across
-fourteen files, and every write of them in the five Phase 1 captures is `0`, 38 records. In each
-file the written value equals the value that file reads for that key. Hard-coding `100` would write
+fourteen files, and every write of them in the five Phase 1 captures is `0`, 38 records. Where a
+file both reads and writes them, the written value equals the value it read for that key. Eight
+captures do neither, and `ks-create-ap-1` writes eight records of `100` while containing no read
+frames at all. Hard-coding `100` would write
 `100` over `0` on a board that has never had a keyset. An earlier draft said they are written `100`
 in every template, which is false for three of the seven rows above.
 
@@ -186,10 +190,10 @@ and four MODE writes whose prior value is unknown.
 
 **The template does not vary with keyset membership.** `ap-wasd-1.2` is an actuation point change on
 four keys with no keyset traffic anywhere in the file, and it emits the same five steps: MODE
-(frames 60 and 62), `0x04` batched (64), MODE with `0x14` and `0x15` batched (66), then `0x16`/`0x17`
-(68). Three separate changes in that one capture, to `850`, `1200` and `300`, all identical in
-shape. Whether those keys were in a keyset is unmeasured, but that is the point: the frames are the
-same either way, so `wh set ap` does not need to know before choosing what to send.
+(frames 60 and 62), `0x04` batched (64), MODE with `0x14` and `0x15` batched (66), then
+`0x16`/`0x17` (68). Three separate changes in that one capture, to `850`, `1200` and `300`, all
+identical in shape. Whether those keys were in a keyset is unmeasured, but that is the point: the
+frames are the same either way, so `wh set ap` does not need to know before choosing what to send.
 
 ### The skip rule
 
@@ -288,8 +292,8 @@ be the whole of it.
 
 The RESET KEYSETS control deletes every keyset of the **current tab's kind only**. Pressed on the
 RAPID TRIGGER tab it cleared the one rapid trigger keyset that was live in the capture, index 2 with
-members `n` and `,`, and wrote no `0xFF` record at all. It uses the ordinary delete template, batched
-across every member at once, with membership still one record per frame.
+members `n` and `,`, and wrote no `0xFF` record at all. It uses the ordinary delete template,
+batched across every member at once, with membership still one record per frame.
 
 Two limits on that. `ks-reset-keysets` does not read `0xFF`, so "left the actuation point keysets
 untouched" rests on the absence of writes rather than on a read. And `u` and `i` held `0xFE=1` at
@@ -338,8 +342,8 @@ been wrong: it would have left the keyset's sensitivity in place, where the vend
 when it read 0.20mm. The reset target tracks the global rather than being a constant.
 
 **Layouts `0x16` and `0x17` are not the global rapid trigger sensitivity**, and they are not always
-zero either. They were recorded as "never once observed non-zero" across 1858 records. Every Phase 1
-capture reads and writes them at `0`; every keyset-sitting capture reads and writes them at `100`,
+zero either. They were recorded as "never once observed non-zero" across 1858 records. Every value
+seen for them in a Phase 1 capture is `0` and every value seen in a keyset-sitting capture is `100`,
 and they stayed at `100` through two global sensitivity changes that moved `0x14`/`0x15` to `150`
 and then `200`. What changed the value is **not** measured. The only capture of a `0` to `100`
 transition is a bare write in `ks-create-ap-1`, a file containing no reads at all, so attributing it
@@ -396,7 +400,7 @@ name is corroborated by the interface rather than measured from the wire.
 - **How `0xFF` reached `9`.** Needs one capture that reads `0xFF` between 22:50 and 23:00.
 - **`cmd 0x00` sub-order `0xbd`.** An earlier draft called it a possible write barrier sent once
   before the sensitivity change. It appears in 13 files and is absent from three heavy-write
-  captures that perform the same work: `ks-global-rt-sens-150` writes the same 132 records as
+  captures that perform the same work: `ks-global-rt-sens-150` writes the same 462 records as
   `ks-global-rt-sens-200` with no `0xbd` at all, and neither `ks-global-rt-on` nor
   `ks-global-rt-off` contains one. It also appears four times in `ks-create-rt-2`. The barrier
   reading has direct counterexamples.
