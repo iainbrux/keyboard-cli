@@ -233,6 +233,17 @@ rather than as settings it recognises.
     checks resting on the firmware not coupling two layouts. One line saying so satisfies the
     measure-never-infer rule.
 
+- [x] ~~**Decision: `wh set ap --keys all` keeps its current behaviour.**~~ Ruled by the operator on
+  2026-09-03, after the whole-branch review raised it. On a board holding keysets, that command
+  collapses every one of them into a single new index and the old indices cease to exist. It follows
+  from the split rule but extends it to two shapes `docs/keysets.md` says nothing supports, a keyset
+  consumed whole and a selection spanning two. Rejected alternatives: refusing those two shapes,
+  which would make an ordinary bulk command fail on any board with a keyset, and gating them behind
+  `--force`, which buys safety with a divergence from the vendor that is itself unmeasured. What
+  makes the current behaviour acceptable is measured: the announcement names every keyset losing
+  members before anything is written, a backup is taken first, and the review drove the full
+  `wh restore --last` round trip and confirmed membership and every value returned exactly.
+
 - [ ] **2.19 Pin the two-keyset merge in `wh set ap`.** `ap_membership_for` returns `Keep` in two
   cases: no selected key is in a keyset, and exactly one keyset loses members with the selection
   being exactly that keyset. Everything else produces one new keyset containing the whole selection.
