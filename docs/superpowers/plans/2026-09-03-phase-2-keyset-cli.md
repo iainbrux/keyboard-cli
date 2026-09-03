@@ -552,8 +552,8 @@ git commit -m "[feat] - Add the wh keyset command tree and wh keyset list"
 
 **Interfaces:**
 - Consumes: task 1's `resolve_index`, `global_ap_or_bail`, `global_rt_or_bail`, `kind_of`.
-- Produces, for task 4. **These are what shipped, after task 2's review; earlier drafts of this
-  plan showed shorter signatures and task 4 must use these:**
+- Produces, for task 4. **These are what shipped, after task 2's two review rounds. Earlier drafts
+  of this plan showed shorter signatures; use these.**
   ```rust
   fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)>;
 
@@ -563,23 +563,33 @@ git commit -m "[feat] - Add the wh keyset command tree and wh keyset list"
       losing: &[(u16, Vec<u8>)],
       new_index: u16,
       target: Target,
-      usages: &[u8],
-      before: &[ops::KeySettings],
+      plan: &keyset::WritePlan,
   ) -> std::io::Result<()>;
 
-  pub(crate) fn verify_membership<T: Transport>(
+  pub(crate) fn verify_create<T: Transport>(
       out: &mut impl Write,
       s: &mut Session<T>,
       kind: Kind,
-      usages: &[u8],
       want: u16,
       plan: &keyset::WritePlan,
   ) -> Result<()>;
   ```
-  `announce_steal` grew `target`, `usages` and `before` because naming which keys are stolen
-  without naming what they lose and what replaces it is half a warning. `verify_membership` grew
-  `plan` because verification checks the value as well as the index, and `WritePlan::before()` is
-  where each key's prior settings come from.
+
+  **Neither takes a `usages` slice, deliberately.** Both derive their key list from
+  `WritePlan::before()`, whose `KeySettings` carry `.usage`. An earlier version passed `usages`
+  alongside the plan and indexed one by a position derived from the other, and the review measured
+  the result: a length disagreement panics after `apply` has already written the board, and an
+  order disagreement silently verifies one key against another key's prior settings. `run.rs`'s
+  `verify_rt` documents the same rule. Do not reintroduce a parallel key list at task 3's call
+  site.
+
+  `announce_steal` takes `target` and the plan because naming which keys are stolen without naming
+  what they lose and what replaces it is half a warning. It distinguishes a key that keeps its
+  value from one that loses it, by asking the plan whether any value record touched that key.
+
+  `verify_create` checks membership **and** value: `0x04` for `Kind::Ap`, MODE plus `0x14` and
+  `0x15` for `Kind::Rt`. Membership alone is not verification, and a create that checked only the
+  index reported "verified" on a board that had not changed.
 
 **What it must do, in order:**
 
