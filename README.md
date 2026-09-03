@@ -132,10 +132,10 @@ new index, leaving each keyset's unselected members in place.
 
 A newly allocated index is one more than the current maximum live index, or `1` if none exists.
 Selecting the whole board with `--keys all` follows the same rule as any other selection: it
-leaves the board unchanged if every key is already free, or if one keyset already holds every key
-on the board; on any other board it creates one new keyset holding every key, and every keyset
-that existed before ends with no members. See `docs/keysets.md`, "an operator observation", for
-what evidence supports each shape.
+leaves every keyset's membership as it is if every key is already free, or if one keyset already
+holds every key on the board (the value written still changes on both); on any other board it
+creates one new keyset holding every key, and every keyset that existed before ends with no
+members. See `docs/keysets.md`, "an operator observation", for what evidence supports each shape.
 
 Manage stored groups:
 
