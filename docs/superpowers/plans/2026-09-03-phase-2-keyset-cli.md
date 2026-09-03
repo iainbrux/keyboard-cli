@@ -129,7 +129,9 @@ to get right.
 | `crates/wh-cli/tests/keyset.rs` | **New.** End-to-end replay tests for the `wh keyset` tree | 1 to 3 |
 | `crates/wh-cli/tests/dump.rs` | End-to-end tests for the `set ap` split and restore | 4, 5 |
 | `crates/wh-device/src/keyset.rs` | One new helper, `membership_records` | 5 |
-| `crates/wh-device/src/ops.rs` | `restore_all` splits values from membership | 5 |
+| `crates/wh-device/src/ops.rs` | `read_layout_value` becomes `pub`; `restore_all` splits values from membership | 1, 5 |
+| `README.md` | The user-facing command reference for the whole tree | 6 |
+| `docs/tasks.md` | Closing 2.4b | 6 |
 
 `crates/wh-cli/src/run.rs` is already 1500 lines. Everything new that is not a two-line dispatch arm
 goes in `crates/wh-cli/src/keyset.rs`.
@@ -395,10 +397,10 @@ fn split_message_str(what: &str, shown: &[(String, usize)], flag: &str) -> Strin
     )
 }
 
-/// Lists one kind's keysets with their members and the value those members hold. The value comes
-/// from the first member's live settings rather than being assumed: a keyset is supposed to hold
-/// one value across its members, and printing what is actually there is how a caller sees when
-/// that has stopped being true.
+/// Lists one kind's keysets with their members and value. Every member is read and compared: an
+/// agreeing keyset prints its one value, a disagreeing one names each distinct value and which
+/// keys hold it. `wh` never picks a winner here, the same refusal `global_ap` and `global_rt`
+/// apply to the board's global value.
 pub(crate) fn list<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -412,21 +414,22 @@ pub(crate) fn list<T: Transport>(
     }
     writeln!(out, "{} keysets:", kind_name(kind))?;
     for ks in &sets {
-        let names: Vec<String> = ks.members.iter().map(|&u| key_label(u)).collect();
-        let first = wh_device::ops::read_key_settings(s, ks.members[0])?;
-        let value = match kind {
-            Kind::Ap => format!("{:.2}mm", first.ap.to_mm()),
-            Kind::Rt => format!(
-                "{:.2}/{:.2}mm",
-                first.rt_press.to_mm(),
-                first.rt_release.to_mm()
-            ),
-        };
-        writeln!(out, "  {} {}  {}", ks.index, value, names.join(","))?;
+        let line = keyset_line(s, kind, ks)?;
+        writeln!(out, "  {} {}", ks.index, line)?;
     }
     Ok(())
 }
 ```
+
+`keyset_line` reads one layout per member for `Kind::Ap` and two for `Kind::Rt`, through
+`ops::read_layout_value`, and hands the pairs to an `agreement_line` helper that prints one value
+when every member holds it and `disagree: <keys> at <value>, ...` when they do not.
+
+**This block is what shipped, after task 1's review.** An earlier version of this plan read
+`ks.members[0]` alone and carried a comment claiming that printing it was how a caller sees a
+keyset whose members have drifted apart. The review proved with a replay script that a divergence
+was not merely unreported but never observed. **Any later task that reads a keyset's value reads
+every member.** Do not reintroduce the one-member read.
 
 - [ ] **Step 4: Dispatch it from `run.rs`**
 
@@ -476,7 +479,7 @@ fn keyset_list_ap_groups_members_by_index() {
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 0)] {
         lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
     }
-    // one read_key_settings per keyset, for the value column
+    // one AP read per member, for the value column
     lines.extend(key_settings_lines(0x1A, 2000, 0x0018, 100, 100, 1, 0));
     lines.extend(key_settings_lines(0x16, 1200, 0x0018, 100, 100, 2, 0));
     let script = write_script("keyset-list-ap", &lines);
@@ -1352,7 +1355,8 @@ signatures quoted from `keyset.rs` at the top. `kind_of` converts the clap enum 
 once, in task 1, and every later task uses `Kind`. `ApMembership` is introduced in task 4 and used
 only there. `CreatePlan` is introduced in task 2 and used only there.
 
-**One visibility change** is needed and is called out where it occurs: `run::report_verification`
-from private to `pub(crate)`, in task 2. Everything else this plan calls is already public.
-`ops::read_key_settings` already returns `ap_keyset` and `rt_keyset`, so verification needs no new
-device call.
+**Two visibility changes.** `wh_device::ops::read_layout_value` went from `pub(crate)` to `pub`
+in task 1, so `wh keyset list` can read one layout per member rather than the six
+`read_key_settings` returns. `run::report_verification` goes from private to `pub(crate)` in task 2.
+Task 2's verification itself needs no new device call: `ops::read_key_settings` already returns
+`ap_keyset` and `rt_keyset`.
