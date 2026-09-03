@@ -61,7 +61,7 @@ nonsense.
 | `0x16` | 1858 | 1 | `0` in every one of these frames. Later sessions read and write `100`, see `docs/keysets.md` |
 | `0x17` | 1858 | 1 | Same as `0x16`, and always written with it |
 | `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | rapid trigger keyset membership, an index and not a boolean: measured reaching `2` in the corpus `docs/protocol.md` rests on, untouched by edits within a set |
+| `0xfe` | 424 | 2 | rapid trigger keyset membership, an index and not a boolean: only `0` and `1` in this ten-capture session, reaching `2` only in the wider 27-capture corpus, see `docs/keysets.md`, untouched by edits within a set |
 | `0xff` | 420 | 3 | read 210 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 27-capture corpus |
 
 The counts above are what these ten captured scenarios happened to exercise, not the fields'
