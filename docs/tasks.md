@@ -38,7 +38,9 @@ rather than as settings it recognises.
   `2` to `Unknown(2)` and `rt_enabled()` matched only `Rt`/`RtContinuous`, so `wh dump` and
   `wh get rt` reported rapid trigger **off** on a board where it was on for every key. A reporting
   bug, not a data-loss one: read-modify-write preserved the nibble it could not name.
-  `TouchMode::RtGlobal` added, with `rt_enabled`, `rt_off_records` and `raw_mode_rt_on` fixed.
+  `TouchMode::RtGlobal` added, with `rt_enabled` and `rt_off_records` fixed, and the same nibble-2
+  gap closed everywhere else a mode value's rapid trigger state gets named, including `wh-cli`'s
+  `keyset.rs` `mode_fault` (`raw_mode_rt_on`'s successor after task 4's fix round).
 - [ ] **2.4 Write keyset membership. No longer blocked.** `docs/keysets.md` specifies it completely
   from fifteen capture scenarios: one write template shared by every operation, values always
   before membership, membership one record per frame and always last, non-owned layouts rewritten at
@@ -194,10 +196,11 @@ rather than as settings it recognises.
     individually, because the fixture moves both press and release. A fixture moving only one
     closes it. Consequence if the release half is lost: a create is announced as keeping a value it
     is about to overwrite.
-  - `describe_loss` documents a fourth outcome that appears to be unreachable. Reasoning, not
-    measurement: `plan` emits value records only when MODE or a value moved, so if the value did
-    not move then MODE did, and the branch above catches it. Either delete the branch and its
-    doc bullet or find the case that reaches it.
+  - `describe_member` (renamed from `describe_loss` in task 4's fix round, once it started
+    covering a freshly-enrolled free key too) documents a fourth outcome that appears to be
+    unreachable. Reasoning, not measurement: `plan` emits value records only when MODE or a value
+    moved, so if the value did not move then MODE did, and the branch above catches it. Either
+    delete the branch and its doc bullet or find the case that reaches it.
   - `mode_change`'s comment justifies printing a `TouchMode` through `{:?}` by a precedent in
     `dump` that does not exist. `dump` prints `on`/`off` and a raw `mode_raw`; this announcement is
     the only place in `wh` that shows an operator a touch mode name. On an unknown nibble it prints

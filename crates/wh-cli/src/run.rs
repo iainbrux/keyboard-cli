@@ -757,22 +757,33 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     crate::keyset::ApMembership::Split { index, .. } => Some(*index),
                 };
                 let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
-                if let crate::keyset::ApMembership::Split { index, losing } = &membership {
-                    crate::keyset::announce_steal(
-                        &mut out,
-                        kind,
-                        losing,
-                        index.value(),
-                        crate::keyset::Target::Ap(depth),
-                        &plan,
-                    )?;
-                }
+                // Cross-checked against `depth` independently of whatever `plan` itself computed:
+                // see `confirm_ap_target`'s own doc for why `verify_write`'s board-vs-sent check
+                // alone cannot catch a conversion bug that sends the wrong value everywhere.
+                crate::keyset::confirm_ap_target(&plan, depth)?;
+                // The label names what actually happened, not a generic "keyset op": a selection
+                // that keeps its membership never touched a keyset at all, and must not claim it
+                // did, while a split did create one and says which.
+                let what = match &membership {
+                    crate::keyset::ApMembership::Keep => format!("ap {:.2}mm", depth.to_mm()),
+                    crate::keyset::ApMembership::Split { index, losing } => {
+                        crate::keyset::announce_steal(
+                            &mut out,
+                            kind,
+                            losing,
+                            index.value(),
+                            crate::keyset::Target::Ap(depth),
+                            &plan,
+                        )?;
+                        format!("ap keyset {} at {:.2}mm", index.value(), depth.to_mm())
+                    }
+                };
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
                 auto_backup(s, store, "set ap")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "set", &plan)
+                crate::keyset::verify_write_as(&mut out, s, &what, &plan)
             })
         }
     }

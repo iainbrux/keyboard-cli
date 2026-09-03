@@ -811,7 +811,12 @@ fn set_ap_end_to_end_backs_up_writes_and_verifies() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+    // Exact label, not a bare "verified": the label must name the depth actually verified and
+    // must not claim a keyset operation that never happened, since no key here is in a keyset.
+    assert!(
+        stdout.contains("ap 1.20mm: 1 key verified"),
+        "unexpected stdout: {stdout}"
+    );
 
     let backups = std::fs::read_dir(config_home.join("wh").join("backups"))
         .unwrap()
@@ -914,7 +919,10 @@ fn set_ap_end_to_end_promotes_a_global_key_to_single() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("ap 1.20mm: 1 key verified"),
+        "unexpected stdout: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -1002,7 +1010,10 @@ fn set_ap_end_to_end_preserves_rapid_trigger() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("ap 1.20mm: 1 key verified"),
+        "unexpected stdout: {stdout}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -1216,9 +1227,12 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// Row one of the `wh set ap` membership rule (measured, `ap-wasd-1.2`): no selected key is in a
-/// keyset, so the write carries no `0xFF` record at all. Asserted by exact frame equality against
-/// a hand-built `cmds::write_key_records`, not a substring check, so "no membership record" is
+/// Row one of the `wh set ap` membership rule: no selected key is in a keyset, so the write
+/// carries no `0xFF` record at all. `ap-wasd-1.2` measures the absence of a `0xFF` write over an
+/// actuation point change; whether the keys involved were actually free is not itself read back
+/// (`docs/keysets.md`), so this fixture's free-keys board is the simplest state consistent with
+/// that capture, not a measured fact in its own right. Asserted by exact frame equality against a
+/// hand-built `cmds::write_key_records`, not a substring check, so "no membership record" is
 /// proved by the whole frame sequence rather than the absence of one string.
 #[test]
 fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
@@ -1300,10 +1314,13 @@ fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// Row two of the `wh set ap` membership rule (measured, `ks-value-ap`): the selection is exactly
-/// one keyset's members, so it keeps its index and the write still carries no `0xFF` record.
-/// Same board and frames as the free-key test above, only the pre-write `ap_keyset` differs (1
-/// for both, not 0), proving membership itself does not drive whether a record gets sent.
+/// Row two of the `wh set ap` membership rule: the selection is exactly one keyset's members, so
+/// it keeps its index and the write still carries no `0xFF` record. `ks-value-ap` measures a
+/// value change over three keys writing no `0xFF` record; whether the selection was exactly one
+/// keyset's members is not itself measured, one of two readings that capture supports
+/// (`docs/keysets.md`), the other being row one's own scenario. Same board and frames as the
+/// free-key test above, only the pre-write `ap_keyset` differs (1 for both, not 0), proving
+/// membership itself does not drive whether a record gets sent.
 #[test]
 fn set_ap_dry_run_over_a_whole_keyset_keeps_its_index() {
     let mut lines = matrix_lines(); // resolve_keys
@@ -1393,7 +1410,7 @@ fn set_ap_dry_run_over_a_whole_keyset_keeps_its_index() {
 /// 'w' and 's' are given different prior actuation points (2.00mm and 1.80mm) on purpose: a
 /// fixture where both members hold the same value cannot tell a correct announcement from one
 /// that prints the first member's value for every key, which is exactly the defect found in an
-/// earlier version of `describe_loss`.
+/// earlier version of `describe_member` (then named `describe_loss`).
 #[test]
 fn set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split() {
     let mut lines = matrix_lines_wasd(); // resolve_keys
@@ -1499,6 +1516,213 @@ fn set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split() {
         frame_lines(&stdout),
         expected,
         "the split must move exactly w and s to the new index, nothing more: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The escalation the review raised and the operator decided: `wh set ap --keys all` on a board
+/// where one keyset exists sweeps every key, including every free one, into a single new keyset,
+/// destroying the old one's separate identity. The behaviour is kept, since it is the vendor's
+/// own and the operator chose "split automatically but inform the user" when this was designed.
+/// What was incomplete was the information: the announcement must name the free keys being
+/// enrolled, not only the keyset losing members, or the operator only sees half the change.
+///
+/// Each of the four keys is given a distinct prior actuation point, for the same reason the split
+/// test above does: a fixture where they share a value cannot tell a correct announcement from
+/// one that reuses the first key's value for every line.
+#[test]
+fn set_ap_dry_run_over_all_keys_enrolls_free_keys_and_says_so() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 1900, 0x18, 100, 150, 1, 0)); // plan's read of a
+    lines.extend(key_settings_lines(0x16, 1800, 0x18, 100, 150, 0, 0)); // plan's read of s
+    lines.extend(key_settings_lines(0x07, 1700, 0x18, 100, 150, 0, 0)); // plan's read of d
+
+    let path = write_script("set-ap-split-all", &lines);
+    let config_home = scratch_config_dir("set-ap-split-all");
+    let out = run_wh(
+        &["set", "ap", "--keys", "all", "--set", "1.50", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("ap keyset 2: creating at 1.50mm"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("keyset 1 loses w at 2.00mm,a at 1.90mm"),
+        "got: {stdout}"
+    );
+    // The line the escalation was about: s and d were never in any keyset, and the operator must
+    // still be told they are being moved, each with its own distinct prior value.
+    assert!(
+        stdout.contains("enrolling free key(s) s at 1.80mm,d at 1.70mm"),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// One key's `(ap, mode, rt_press, rt_release, ap_keyset, rt_keyset)`, the shape
+/// `auto_backup_lines_wasd` takes one of per board key.
+type WasdKeyState = (u16, u16, u16, u16, u16, u16);
+
+/// Like `auto_backup_lines`, but against the four-key w/a/s/d board `matrix_lines_wasd` reports,
+/// for the real (non-dry-run) split test below: sync, profile, global travel, the matrix, then
+/// one six-read `read_key_settings` per key in matrix order (w, a, s, d).
+fn auto_backup_lines_wasd(
+    profile_idx: u8,
+    w: WasdKeyState,
+    a: WasdKeyState,
+    s: WasdKeyState,
+    d: WasdKeyState,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNWRITETEST00002", "V1.0.0.001"));
+    lines.extend(profile_lines(profile_idx));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines_wasd());
+    for (usage, (ap, mode, press, release, apks, rtks)) in
+        [(0x1Au8, w), (0x04, a), (0x16, s), (0x07, d)]
+    {
+        lines.extend(key_settings_lines(
+            usage, ap, mode, press, release, apks, rtks,
+        ));
+    }
+    lines
+}
+
+/// The non-dry-run sibling of `set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split`:
+/// the same board and selection, but driving the real write, auto-backup, and readback
+/// verification, not just the preview. Also pins the fix for the sharpest edge this feature
+/// introduces: `wh restore` does not restore keyset membership, so a **successful** split is
+/// exactly as unrecoverable through `wh restore --last` as a failed one, and the warning saying so
+/// must fire here too, not only when verification has already failed.
+#[test]
+fn set_ap_end_to_end_splits_a_keyset_and_warns_restore_wont_cover_it() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 1), (0x07, 1)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x16, 1800, 0x18, 100, 150, 1, 0)); // plan's read of s
+    lines.extend(auto_backup_lines_wasd(
+        0,
+        (2000, 0x18, 100, 150, 1, 0), // w
+        (2000, 0x18, 100, 150, 1, 0), // a, untouched
+        (1800, 0x18, 100, 150, 1, 0), // s
+        (2000, 0x18, 100, 150, 1, 0), // d, untouched
+    ));
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1500,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::AP,
+            value: 1500,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in &cmds::write_key_records(&value_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 2,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::KEYSET_AP,
+            value: 2,
+        },
+    ];
+    for f in &cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    // verify_write_as's readback: both keys landed at the new depth and the new index.
+    lines.extend(key_settings_lines(0x1A, 1500, 0x18, 100, 150, 2, 0));
+    lines.extend(key_settings_lines(0x16, 1500, 0x18, 100, 150, 2, 0));
+
+    let path = write_script("set-ap-split-real", &lines);
+    let config_home = scratch_config_dir("set-ap-split-real");
+    let out = run_wh(
+        &["set", "ap", "--keys", "w,s", "--set", "1.5"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap keyset 2 at 1.50mm: 2 keys verified"),
+        "unexpected stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The unrecoverability warning must fire on a successful split too, not only a failed one:
+    // `wh restore --last` still would not put w and s back in keyset 1 after this.
+    assert!(
+        stderr.contains(
+            "note: wh restore does not yet write keyset membership, so `wh restore --last` \
+             would restore values but leave membership as this write left it"
+        ),
+        "unexpected stderr: {stderr}"
     );
 
     std::fs::remove_file(path).unwrap();

@@ -747,7 +747,7 @@ fn keyset_create_ap_end_to_end_catches_a_mode_that_never_landed() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("s: board reports mode 0x0028, wanted mode 0x0018"),
+        err.contains("s: board reports mode 0x0028 (rt on), wanted mode 0x0018 (rt off)"),
         "got: {err}"
     );
 
@@ -1298,7 +1298,7 @@ fn keyset_create_ap_end_to_end_catches_a_skipped_keys_mode_moving_on_its_own() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("s: board reports mode 0x0028, wanted mode 0x0018"),
+        err.contains("s: board reports mode 0x0028 (rt on), wanted mode 0x0018 (rt off)"),
         "got: {err}"
     );
 
@@ -1959,7 +1959,7 @@ fn keyset_set_ap_end_to_end_catches_a_mode_that_never_landed_on_the_second_membe
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("a: board reports mode 0x0028, wanted mode 0x0018"),
+        err.contains("a: board reports mode 0x0028 (rt on), wanted mode 0x0018 (rt off)"),
         "got: {err}"
     );
 
@@ -3003,7 +3003,7 @@ fn keyset_delete_rt_end_to_end_catches_a_mode_that_never_turned_off_on_the_secon
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("a: board reports mode 0x0038, wanted mode 0x0018"),
+        err.contains("a: board reports mode 0x0038 (rt on), wanted mode 0x0018 (rt off)"),
         "got: {err}"
     );
 

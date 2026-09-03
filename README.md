@@ -239,13 +239,21 @@ These are built and tested against replay scripts, not yet confirmed on the real
 - `wh set ap` on an untouched key should no longer render greyed in the vendor UI. That the MODE
   touch nibble is what causes the greying is a hypothesis, not an established cause: see
   `docs/backlog.md`.
-- `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `wh` now checks this
-  itself: it reads every key's MODE before the write and fails the run, naming the key and both
-  values, if a key it deliberately left alone reads back changed.
+- `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `keyset::plan` resends
+  the key's own touch nibble unchanged, since it only ever promotes nibble 0 (`Global`), and `wh`
+  checks the readback against what it actually sent, failing the run and naming the key and both
+  values (with rapid trigger state on each) if the board reports something else.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
-  packs each key's own records into one frame, never splitting a key's MODE/AP/RT_PRESS/RT_RELEASE
-  group across a boundary, so a failure can only ever land between keys, not inside one key's own
-  records. `wh restore --last` rolls the board back from the auto-backup taken before the write.
+  packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame each, so a
+  failure among them can only land between keys, never inside one key's own group; a split's
+  membership records follow, one key per frame, so the same is true there too. But across the two
+  halves, a failure can now leave a key's values changed with its membership untouched, or move
+  some of a split's keys into the new keyset while leaving others behind in the old one.
+  **`wh restore --last` does not fix any of this.** It restores AP, MODE, RT_PRESS and RT_RELEASE
+  from the auto-backup taken before the write, but not keyset membership, so a key a split moved
+  into a new keyset, whether the split finished cleanly or failed partway, stays there until
+  `wh keyset set`, `create`, or `delete` moves it back by hand. `wh` prints a warning to this
+  effect on every write that touches membership, success or failure alike.
 - `wh profile 2` then `wh profile` should confirm the switch landed.
 - A full `wh dump` should be timed: it now issues six reads per key rather than four.
 

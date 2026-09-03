@@ -313,7 +313,7 @@ pub(crate) fn delete<T: Transport>(
 }
 
 /// Announces a delete's effect on every member before it writes: what each currently holds and
-/// what it is about to become. Reuses `describe_loss`'s vocabulary, the same one `announce_steal`
+/// what it is about to become. Reuses `describe_member`'s vocabulary, the same one `announce_steal`
 /// uses when a create takes a member from another keyset, since a delete is the same kind of loss.
 fn announce_delete(
     out: &mut impl Write,
@@ -329,7 +329,7 @@ fn announce_delete(
         target.display()
     )?;
     for before in plan.before() {
-        writeln!(out, "  {}", describe_loss(kind, plan, before.usage))?;
+        writeln!(out, "  {}", describe_member(kind, plan, before.usage))?;
     }
     Ok(())
 }
@@ -352,9 +352,11 @@ fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
         .collect()
 }
 
-/// What `wh set ap` should do about membership for `usages`. Two of the three cases are measured
-/// and one is not: no capture in the corpus shows the vendor splitting a keyset, only its UI
-/// copying a mixed selection into a new one.
+/// What `wh set ap` should do about membership for `usages`. What is measured, for both `Keep`
+/// sub-cases, is only that a capture wrote no `0xFF` record; which board state produced that
+/// absence (free keys, or a selection that happened to equal one whole keyset) is inferred, not
+/// itself read back (`docs/keysets.md`). No capture shows the vendor splitting a keyset either:
+/// what was observed is its UI copying a mixed selection into a new one.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ApMembership {
     /// Leave membership alone: either no selected key is in a keyset, or the selection is
@@ -368,7 +370,18 @@ pub(crate) enum ApMembership {
     },
 }
 
+/// Errors if `m` isn't `Kind::Ap` membership, the same guard `global_ap`/`global_rt` and `plan`
+/// apply: the one caller today always passes `Kind::Ap`, so this is a latent contract hole rather
+/// than a live bug, but a future caller passing a rapid trigger `Membership` would otherwise get
+/// `Keep` back silently and wrongly, since `losing_members` would find nothing to lose against an
+/// actuation point selection it was never built over.
 pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembership> {
+    if m.kind() != Kind::Ap {
+        bail!(
+            "ap_membership_for requires an actuation point membership, got {:?}",
+            m.kind()
+        );
+    }
     let sets = keyset::group(m);
     let losing = losing_members(&sets, usages);
     if losing.is_empty() {
@@ -390,14 +403,44 @@ pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembe
     })
 }
 
-/// Announces which existing keysets lose members to a create, and what they lose it for: a
-/// create overwrites a stolen member's value with the target rather than carrying its own in, so
-/// this line is the operator's only warning before that happens.
+/// Confirms `plan`'s resolved actuation point target, for every key it covers, equals `depth`,
+/// the operator's own requested value. `verify_write` only ever compares the board against what
+/// `plan` sent: an internally consistent check that a conversion bug in `Change::ap` or `plan`
+/// itself, one that sent the wrong value everywhere, would pass cleanly, since the board would
+/// then agree with the very number the bug produced. This is the one place that number is
+/// checked against a source independent of `plan`.
+pub(crate) fn confirm_ap_target(plan: &keyset::WritePlan, depth: Um) -> Result<()> {
+    for before in plan.before() {
+        let sent = plan
+            .value_records()
+            .iter()
+            .find(|r| r.key == before.usage && r.layout == layout::AP)
+            .map(|r| Um(r.value));
+        let target = sent.unwrap_or(before.ap);
+        if target != depth {
+            bail!(
+                "internal error: plan resolved {} to {:.2}mm, not the {:.2}mm requested",
+                key_label(before.usage),
+                target.to_mm(),
+                depth.to_mm()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Announces which existing keysets lose members to a create, what they lose it for, and which
+/// free keys (in no keyset at all) are being enrolled alongside them: a create overwrites every
+/// affected member's value with the target rather than carrying its own in, and a selection that
+/// mixes stolen members with free keys moves the free ones too, so both halves need saying before
+/// either happens. Naming only the losing keysets, as an earlier version did, described half the
+/// change: a selection of an entire keyset plus one free key silently enrolled that key with
+/// nothing printed about it at all.
 ///
-/// Takes `plan` whole rather than a separate key list, so a member `losing` names can never be
-/// looked up against settings from a different selection: every usage `losing` carries came from
-/// `losing_members` filtering against the same `usages` `plan` was built over, so `plan.before()`
-/// always has an entry for it.
+/// Takes `plan` whole rather than a separate key list, so a member `losing` names, or a free key
+/// this derives from `plan.before()`, can never be looked up against settings from a different
+/// selection: every usage `losing` carries came from `losing_members` filtering against the same
+/// `usages` `plan` was built over, so `plan.before()` always has an entry for it.
 pub(crate) fn announce_steal(
     out: &mut impl Write,
     kind: Kind,
@@ -412,20 +455,36 @@ pub(crate) fn announce_steal(
         kind_name(kind),
         target.display()
     )?;
+    let mut taken_flat: Vec<u8> = Vec::new();
     for (index, taken) in losing {
         let parts: Vec<String> = taken
             .iter()
-            .map(|&u| describe_loss(kind, plan, u))
+            .map(|&u| describe_member(kind, plan, u))
             .collect();
         writeln!(out, "  keyset {index} loses {}", parts.join(","))?;
+        taken_flat.extend(taken.iter().copied());
+    }
+    let free: Vec<u8> = plan
+        .before()
+        .iter()
+        .map(|b| b.usage)
+        .filter(|u| !taken_flat.contains(u))
+        .collect();
+    if !free.is_empty() {
+        let parts: Vec<String> = free
+            .iter()
+            .map(|&u| describe_member(kind, plan, u))
+            .collect();
+        writeln!(out, "  enrolling free key(s) {}", parts.join(","))?;
     }
     Ok(())
 }
 
-/// One member's line, describing what a create's steal or a delete's own write does to it.
-/// Three cases, since a value record can be present without the value it carries actually moving:
-/// `plan` echoes a key's own value back unchanged whenever anything else about it (its touch
-/// mode, say) changes, so "a record exists" is not "the value changes".
+/// One member's line, describing what a create's steal, a create's plain enrollment of a free
+/// key, or a delete's own write does to it. Three cases, since a value record can be present
+/// without the value it carries actually moving: `plan` echoes a key's own value back unchanged
+/// whenever anything else about it (its touch mode, say) changes, so "a record exists" is not
+/// "the value changes".
 ///
 /// - The value itself moves: "w at 2.00mm", its prior value, about to be overwritten.
 /// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
@@ -433,7 +492,7 @@ pub(crate) fn announce_steal(
 ///   the thing that actually changes rather than implying nothing did.
 /// - Something else was written but neither the value nor the touch mode moved:
 ///   "w (keeps 2.00mm)".
-fn describe_loss(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
+fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let prior = plan
         .before()
         .iter()
@@ -496,6 +555,36 @@ fn value_display(kind: Kind, ks: &ops::KeySettings) -> String {
     }
 }
 
+/// Whether a raw MODE value has rapid trigger on, for annotating a wanted value held as a bare
+/// `u16` rather than a parsed `KeySettings`. Matches `ops::KeySettings::rt_enabled`'s nibble set,
+/// including nibble 2 (`RtGlobal`): task 2.12 fixed a real bug where `wh` reported rapid trigger
+/// off on a board where it was on for every key, because an earlier version of this check missed
+/// that nibble.
+fn mode_rt_on(mode_raw: u16) -> bool {
+    matches!(
+        wh_proto::cmds::Mode::from_value(mode_raw).touch,
+        wh_proto::cmds::TouchMode::RtGlobal
+            | wh_proto::cmds::TouchMode::Rt
+            | wh_proto::cmds::TouchMode::RtContinuous
+    )
+}
+
+/// The one fault line a mode mismatch contributes, or `None` when the board agrees, annotated
+/// with rapid trigger state on both sides. Split out from `verify_write_as` so a test can read it
+/// back directly: `report_verification` writes fault lines to real process stderr, which a test
+/// cannot capture, the same reason `ap_fault_line` existed as its own function before it was
+/// deleted with the rest of the old `wh set ap` verification path.
+fn mode_fault(got: u16, want: u16) -> Option<String> {
+    if got == want {
+        return None;
+    }
+    Some(format!(
+        "mode {got:#06x} (rt {}), wanted mode {want:#06x} (rt {})",
+        if mode_rt_on(got) { "on" } else { "off" },
+        if mode_rt_on(want) { "on" } else { "off" },
+    ))
+}
+
 /// Re-reads every key `plan` touched and confirms it holds every value `plan` computed for it:
 /// MODE, AP, RT_PRESS, RT_RELEASE, and both keyset memberships, every one of them checked against
 /// what `plan` actually sent for that field or, where it sent nothing, against what was read from
@@ -513,6 +602,19 @@ pub(crate) fn verify_write<T: Transport>(
     s: &mut Session<T>,
     kind: Kind,
     op: &str,
+    plan: &keyset::WritePlan,
+) -> Result<()> {
+    verify_write_as(out, s, &format!("{} keyset {op}", kind_name(kind)), plan)
+}
+
+/// The body of `verify_write`, taking the exact label to report rather than assembling one from
+/// `kind`/`op`: `wh set ap` needs a label that says what actually happened (a plain depth change,
+/// or a keyset split), not the generic "kind keyset op" shape every keyset subcommand shares.
+/// `verify_write` itself is the thin wrapper every keyset subcommand still uses.
+pub(crate) fn verify_write_as<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    what: &str,
     plan: &keyset::WritePlan,
 ) -> Result<()> {
     let mut bad = Vec::new();
@@ -548,11 +650,8 @@ pub(crate) fn verify_write<T: Transport>(
         }
 
         let want_mode = sent_value(layout::MODE).unwrap_or_else(|| before.mode.value());
-        if ks.mode.value() != want_mode {
-            faults.push(format!(
-                "mode {:#06x}, wanted mode {want_mode:#06x}",
-                ks.mode.value()
-            ));
+        if let Some(line) = mode_fault(ks.mode.value(), want_mode) {
+            faults.push(line);
         }
 
         let want_ap = Um(sent_value(layout::AP).unwrap_or(before.ap.0));
@@ -584,12 +683,14 @@ pub(crate) fn verify_write<T: Transport>(
             ));
         }
     }
-    let what = format!("{} keyset {op}", kind_name(kind));
-    let result = crate::run::report_verification(out, &what, &usages, &bad);
+    let result = crate::run::report_verification(out, what, &usages, &bad);
     // A prefix note, not the outer context: the mismatch itself must stay the headline `error:`
-    // line `main` prints, not be pushed behind a caveat. Only raised when `plan` actually wrote
-    // membership: `set` never does, and the caveat would be inapt there.
-    if result.is_err() && !plan.membership_records().is_empty() {
+    // line `main` prints, not be pushed behind a caveat, on failure. Printed on success too now:
+    // a successful split is exactly as unrestorable as a failed one, and saying nothing then was
+    // the gap that let a `wh set ap` split go unrecoverable with no warning at all. Raised
+    // whenever `plan` wrote membership, which every one of `create`, `set ap`'s split path, and
+    // `delete` can now do; `set` never does, and never reaches here with a non-empty check.
+    if !plan.membership_records().is_empty() {
         crate::run::best_effort_eprintln(
             "note: wh restore does not yet write keyset membership, so `wh restore --last` \
              would restore values but leave membership as this write left it",
@@ -773,5 +874,87 @@ mod tests {
                 panic!("a free key riding along with a fully-consumed keyset must still split")
             }
         }
+    }
+
+    /// `ap_membership_for` must refuse a rapid trigger `Membership`, the same guard every other
+    /// kind-sensitive function in this module applies, rather than silently returning `Keep`: a
+    /// caller that passed the wrong kind would otherwise overwrite a keyset's shared value across
+    /// members the operator never selected, with no error to say why.
+    #[test]
+    fn ap_membership_for_rejects_a_rapid_trigger_membership() {
+        // Built through a scripted read the same way `read_membership` builds one: `Membership`
+        // has no public constructor, so there is no way to hand this function the wrong kind
+        // other than through a real read.
+        let mut lines = matrix_lines(&[0x1A]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_RT, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let rt_m = keyset::read_membership(&mut s, Kind::Rt).unwrap();
+
+        let err = ap_membership_for(&rt_m, &[0x1A]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires an actuation point membership"),
+            "got: {err}"
+        );
+    }
+
+    // -- mode_fault: the rt-state annotation --
+
+    /// Silent when the board agrees, the same shape `ap_fault_line`'s equivalent case had before
+    /// it was deleted.
+    #[test]
+    fn mode_fault_is_silent_when_the_board_agrees() {
+        assert_eq!(mode_fault(0x38, 0x38), None);
+    }
+
+    /// Names rapid trigger state on both sides, not just the bare hex values: a bare `mode
+    /// 0x0018, wanted mode 0x0038` does not tell the operator that the fault is rapid trigger
+    /// silently turning off, the most safety-relevant thing this tool can report. This is the
+    /// annotation `ap_fault_line` carried before it, and the rest of the old `wh set ap`
+    /// verification path, was deleted.
+    #[test]
+    fn mode_fault_names_rapid_trigger_state_on_both_sides() {
+        let line = mode_fault(0x18, 0x38).expect("0x18 != 0x38 must fault");
+        assert_eq!(
+            line, "mode 0x0018 (rt off), wanted mode 0x0038 (rt on)",
+            "got: {line}"
+        );
+    }
+
+    /// The pre-write nibble is reported through `mode_rt_on`, which must not have the gap the
+    /// deleted `raw_mode_rt_on` once had: nibble 2 (`RtGlobal`) is rapid trigger on too, and task
+    /// 2.12 exists because an earlier version of this exact check missed it, reporting rapid
+    /// trigger off on a board where it was on for every key.
+    #[test]
+    fn mode_fault_names_the_global_rapid_trigger_nibble_as_rt_on() {
+        let line = mode_fault(0x10, 0x20).expect("0x10 != 0x20 must fault");
+        assert_eq!(
+            line, "mode 0x0010 (rt off), wanted mode 0x0020 (rt on)",
+            "got: {line}"
+        );
+    }
+
+    // -- confirm_ap_target --
+
+    /// The one place `plan`'s resolved actuation point target is checked against a value `plan`
+    /// itself never computed: the operator's own request. A `Change::ap` and `plan` that agreed
+    /// with each other but disagreed with `depth` would otherwise pass `verify_write` cleanly,
+    /// since that only ever compares the board against what `plan` sent.
+    #[test]
+    fn confirm_ap_target_catches_a_plan_that_resolved_to_the_wrong_depth() {
+        let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = keyset::Change::ap(Um(2500));
+        let plan = keyset::plan(&mut s, &[0x1A], &change, None).unwrap();
+
+        // Correct: the plan really did resolve to 2500um (2.50mm), matching what was requested.
+        confirm_ap_target(&plan, Um(2500)).unwrap();
+        // Wrong: an independently-known value the plan never produced.
+        let err = confirm_ap_target(&plan, Um(1200)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("plan resolved w to 2.50mm, not the 1.20mm requested"),
+            "got: {err}"
+        );
     }
 }
