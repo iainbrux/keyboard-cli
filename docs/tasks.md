@@ -65,14 +65,15 @@ rather than as settings it recognises.
   it previously wrote none. That is vendor-consistent, but it means this gap is reached far more
   often than it was.
 
-  **Two things to settle before implementing, both found by review.** First, `global_rt` returns
-  three variants and this task says only "the sensitivities come from `global_rt`". What a `Split`
-  or a `NoneOutsideAKeyset` should do is undecided, and the obvious "unwrap or default" lands on
-  `Um(0)`, which would write `0x14 = 0, 0x15 = 0`, a value the vendor has never been observed
-  writing. That one is still open. Second, and now closed: `keyset::plan` used to send a MODE
-  record at an unchanged nibble-0 value, which `ops::rt_off_records` refuses to do. `plan` no longer
-  emits one at all, measured against 618 MODE write records in the corpus of which none is at
-  nibble 0, so routing this task through `plan` no longer introduces that write.
+  **Two things to settle before implementing, both found by review, both now closed.** First,
+  `global_rt` returns three variants and this task said only "the sensitivities come from
+  `global_rt`". What a `Split` or a `NoneOutsideAKeyset` should do was undecided, and the obvious
+  "unwrap or default" lands on `Um(0)`, which would write `0x14 = 0, 0x15 = 0`, a value the vendor
+  has never been observed writing. Settled by 2.15: both refuse and both name `--press`/`--release`.
+  Second: `keyset::plan` used to send a MODE record at an unchanged nibble-0 value, which
+  `ops::rt_off_records` refuses to do. `plan` no longer emits one at all, measured against 618 MODE
+  write records in the corpus of which none is at nibble 0, so routing this task through `plan` no
+  longer introduces that write.
 
   Measured in the same review, and settling an earlier doubt: the vendor **does** reset the
   sensitivities on a per-key rapid trigger off. `rt-off-w.jsonl` shows W going from 500/500 to the
@@ -103,12 +104,23 @@ rather than as settings it recognises.
   promotes there anyway, which is what `ops::ap_records` already ships under 2.2, and 2.2's
   hardware verification is still the thing that confirms it.
 
-- [ ] **2.15 Decide what `global_ap` returning `Split` or `NoneOutsideAKeyset` should do.** Task
-  2.13 records this for `global_rt` only, but `global_ap` has the same three-variant return and is
-  the value source for both `wh keyset create ap` and `wh keyset delete ap`, which resets members to
-  the global. It is one command away from mattering: on the current board `global_ap` returns
-  `Agreed(2.00mm)` from the 57 keys outside any keyset, and a single `wh set ap --keys w --set 1.0`
-  makes it `Split`. Blocks the keyset CLI.
+- [x] ~~**2.15 Decide what `global_ap` returning `Split` or `NoneOutsideAKeyset` should do.**~~
+  Decided 2026-09-03, by the operator, and the same ruling covers `global_rt` and closes the last
+  open question in 2.13: **both variants are an error, and both name `--value` as the way past it.**
+  Neither picks a winner.
+
+  - `Split`: refuse, and name the disagreement in the message, the distinct values with how many
+    keys hold each, descending, which is the order `Global::Split` already carries. A majority vote
+    would write a value the operator never typed over every member's actuation point.
+  - `NoneOutsideAKeyset`: refuse, and say why, that no key sits outside a keyset so the board holds
+    no global to read. Rejected alternatives: the whole board's majority, which returns some
+    keyset's value wearing the global's name, and the vendor's five fixed keys (`0x29`, `0xfa`,
+    `0x31`, `0x28`, `0x52`), whose disagreement behaviour is unmeasured and one of which was itself
+    in a keyset.
+
+  This gives `wh keyset create ap`, `wh keyset delete ap` and `wh set rt --off` a `--value` (or
+  `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
+  disagreeing one. Implemented in 2.4b and 2.13, not here.
 
 - [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
   non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
