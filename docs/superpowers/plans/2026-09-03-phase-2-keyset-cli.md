@@ -707,34 +707,23 @@ fn keyset_create_refuses_a_split_global_and_names_it() {
 Add to `keyset.rs`:
 
 ```rust
-/// Re-reads every key the create touched and confirms it holds the new index. Reads the board
-/// back rather than trusting the write's echo, the same way every other write path in `wh`
-/// verifies. `read_key_settings` already returns both keyset layouts, so no new device call is
-/// needed.
-pub(crate) fn verify_membership<T: Transport>(
-    out: &mut impl Write,
-    s: &mut Session<T>,
-    kind: Kind,
-    usages: &[u8],
-    want: u16,
-) -> Result<()> {
-    let mut bad = Vec::new();
-    for &u in usages {
-        let ks = wh_device::ops::read_key_settings(s, u)?;
-        let got = match kind {
-            Kind::Ap => ks.ap_keyset,
-            Kind::Rt => ks.rt_keyset,
-        };
-        if got != want {
-            bad.push(format!(
-                "{}: board reports keyset {got}, wanted {want}",
-                key_label(u)
-            ));
-        }
-    }
-    crate::run::report_verification(out, "keyset", usages, &bad)
-}
-```
+**The invariant, which matters more than any signature: a create is verified only when every key it
+touched is re-read and both its membership and its value are checked.** Membership alone is not
+verification. `verify_ap` checks AP and MODE; `verify_rt` checks MODE plus press and release. A
+create that checked only the index would report "verified" on a board where the value never moved,
+and for `Kind::Rt` it would report "verified" with rapid trigger still off, because MODE is the
+record that turns the feature on.
+
+Read every key. Check the index, and check the value the change asked for: `0x04` for `Kind::Ap`,
+and MODE plus `0x14`/`0x15` for `Kind::Rt`. `WritePlan::before()` gives each key's settings as read
+before the write, in `usages` order, including keys the skip rule gave no records to, which is why
+it exists.
+
+An earlier version of this plan gave a code block here that checked the index alone, while the
+ordered list above said "the new index and the new value". The review caught the contradiction by
+driving the binary over a script that acknowledged every write and then answered the readback with
+the old value: `wh` printed "2 keys verified" and exited 0 on a board that had not changed. Do not
+reintroduce that.
 
 `report_verification` is private to `run.rs`; make it `pub(crate)`. That is the only visibility
 change this plan needs: `ops::read_key_settings` is already `pub` and already returns `ap_keyset`

@@ -185,8 +185,9 @@ mode value back verbatim. Hand-editing `"rt": false` in a snapshot file before r
 turn rapid trigger off, and `wh restore` will report success and a verified readback while doing
 exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
 change what a restore writes, change the settings on the board and take a fresh backup, not the
-`rt` field in an old one. The keyset fields are informational the same way: `wh restore` ignores
-them entirely, since keyset membership is not yet something `wh` writes (see `docs/tasks.md`).
+`rt` field in an old one. The keyset fields are read into the snapshot but `wh restore` still
+ignores them, so a restore puts every value back and leaves membership as it found it. `wh keyset`
+does write membership; restore is the one path that does not yet (see `docs/tasks.md`).
 
 **It does not contain**, and `wh restore` cannot bring back:
 
