@@ -4,9 +4,10 @@ Generated from all ten capture files of the 2026-08-28 hardware session. Everyth
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
 **Every count here is of that ten-file sample and no other.** The corpus is now 27 files and 3696
-frames, and several values first seen later contradict what a row here says was never observed.
-Where a row and `docs/protocol.md` or `docs/keysets.md` disagree, those two are current and this is
-a record of what the first session measured.
+frames, and several values were first seen after this session. Where a row and `docs/protocol.md` or
+`docs/keysets.md` disagree, those two are current and this is a record of what the first session
+measured. Any absolute in a row below, "always", "never", "only ever", is a statement about these
+ten files.
 
 **1224 frames, 0 framing failures and 0 checksum failures.** The checksum formula
 `(0x35 + 0x5C + len + cmd + payload.last()) & 0xFF` holds on every single captured frame in both
