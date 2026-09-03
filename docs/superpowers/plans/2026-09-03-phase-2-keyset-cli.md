@@ -1272,6 +1272,49 @@ git commit -m "[feat] - Restore keyset membership after the values, one record p
 
 ---
 
+### Task 6: Document the `wh keyset` tree for users
+
+The whole feature otherwise lands undocumented: `README.md`'s command reference is where users read
+what `wh` can do, and nothing in tasks 1 to 5 touches it.
+
+**Files:**
+- Modify: `README.md`, `docs/tasks.md`
+
+**Interfaces:** none. This task adds no code.
+
+- [ ] **Step 1: Add the tree to the command reference**
+
+Add a `wh keyset` block to `README.md`'s `## Commands` section, in the style of the blocks already
+there: one line per subcommand with a worked example, and one sentence each on the two behaviours a
+user cannot guess. Those two are that **creating a keyset overwrites its members' values with the
+board's global**, not with their own, and that **`wh set ap` over part of a keyset splits it into a
+new one and says so**.
+
+- [ ] **Step 2: Correct the statement this feature makes false**
+
+`README.md:189` says "keyset membership is not yet something `wh` writes". That is true today and
+false once task 2 lands. Rewrite it to say what `wh` now writes and what it still does not.
+`CLAUDE.md` requires this: a change that makes an existing statement false must fix it, and this
+repository has been caught by exactly that kind of leftover twice.
+
+- [ ] **Step 3: Strike through 2.4b in `docs/tasks.md`**
+
+Tick it, and list underneath what shipped: the `wh keyset` tree, `wh set ap` splitting, and
+`wh restore` writing membership. Note that `ops::ap_records` and `ops::set_ap` remain in the tree
+and are no longer on the `wh set ap` path, since a later reader will otherwise assume the live route
+is the one they can see called from `run.rs`.
+
+- [ ] **Step 4: Gates and commit**
+
+Run all three gates. No code changed, so the test count should be unchanged.
+
+```bash
+git add README.md docs/tasks.md
+git commit -m "[docs] - Document the wh keyset command tree and close 2.4b"
+```
+
+---
+
 ## What this plan deliberately leaves out
 
 - **Task 2.13**, routing `wh set rt --off` through `keyset::plan` so it clears `0xFE`. It depends on
@@ -1283,6 +1326,13 @@ git commit -m "[feat] - Restore keyset membership after the values, one record p
   leaves them in place. Deleting them is a separate decision.
 - **A `--json` output mode for `wh keyset list`.** `wh keys list` and `wh backups list` both print
   human text; this matches them.
+
+## Ruling recorded after task 1's review
+
+The review found that this plan scheduled no user-facing documentation anywhere, so the feature
+would have shipped with `README.md` silently claiming `wh` does not write keyset membership. Task 6
+above was added for that. It is last because the command reference is only worth writing once the
+tree is complete.
 
 ## Self-review
 
