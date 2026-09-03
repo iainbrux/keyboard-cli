@@ -1038,10 +1038,18 @@ Expected: PASS.
 
 - [ ] **Step 5: Prove the tests bite**
 
-Change `ap_membership_for`'s `taken.len() == usages.len()` to `taken.len() <= usages.len()` and
-confirm `set_ap_over_part_of_a_keyset_splits_it_and_announces_the_split` fails, since a strict
-subset would now be treated as the whole keyset. Restore, confirm `git status --porcelain` is empty,
-and say so.
+**The mutation an earlier version of this plan named here does not work, and the reason is worth
+knowing.** It said to change `taken.len() == usages.len()` to `<=` and watch the split test fail.
+`taken` is built by filtering a keyset's members against a deduplicated `usages`, so
+`taken.len() <= usages.len()` is a tautology wherever it is reached, and the mutation collapses the
+guard to `if whole`, which is already false for a strict subset. The whole workspace passes under
+it.
+
+The boundary that actually needs pinning is a **whole keyset riding along with a free key**: `whole`
+is true, but the selection is larger than the keyset, so it must still split. Mutate the guard so
+that case returns `Keep`, and confirm a test fails. If none does, write one.
+
+Restore, confirm `git status --porcelain` is empty, and say so.
 
 - [ ] **Step 6: Commit**
 
