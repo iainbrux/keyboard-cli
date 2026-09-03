@@ -250,6 +250,65 @@ pub(crate) fn create<T: Transport>(
     Ok(plan)
 }
 
+/// Changes an existing keyset's value across every member. Membership is untouched: the keyset
+/// keeps its index and its member list.
+pub(crate) fn set_value<T: Transport>(
+    s: &mut Session<T>,
+    kind: Kind,
+    index: u16,
+    value: Option<Um>,
+    rt: Option<(Um, Um)>,
+) -> Result<keyset::WritePlan> {
+    let m = keyset::read_membership(s, kind)?;
+    let ks = resolve_index(&keyset::group(&m), index)?;
+    let change = match kind {
+        Kind::Ap => keyset::Change::ap(value.ok_or_else(|| {
+            anyhow::anyhow!("pass --value to say what this keyset's actuation point becomes")
+        })?),
+        Kind::Rt => {
+            let (p, r) = rt.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "pass --press and/or --release to say what this keyset's rapid trigger \
+                     sensitivity becomes"
+                )
+            })?;
+            keyset::Change::rt_on(p, r)
+        }
+    };
+    Ok(keyset::plan(s, &ks.members, &change, None)?)
+}
+
+/// Deletes a keyset: its members return to the global value and their membership is cleared.
+/// Values go out first and membership last, which is `plan`'s own ordering.
+pub(crate) fn delete<T: Transport>(
+    s: &mut Session<T>,
+    kind: Kind,
+    index: u16,
+    value: Option<Um>,
+    rt: Option<(Um, Um)>,
+) -> Result<keyset::WritePlan> {
+    let m = keyset::read_membership(s, kind)?;
+    let ks = resolve_index(&keyset::group(&m), index)?;
+    let change = match kind {
+        Kind::Ap => {
+            let v = match value {
+                Some(v) => v,
+                None => global_ap_or_bail(s, &m, "--value")?,
+            };
+            keyset::Change::ap(v)
+        }
+        Kind::Rt => {
+            let (p, r) = match rt {
+                Some(v) => v,
+                None => global_rt_or_bail(s, &m, "--press and --release")?,
+            };
+            keyset::Change::rt_off(p, r)
+        }
+    };
+    let cleared = keyset::KeysetIndex::clear(kind);
+    Ok(keyset::plan(s, &ks.members, &change, Some(cleared))?)
+}
+
 /// Existing keysets that would lose members to a create over `usages`, as (index, the members it
 /// loses). In `group`'s own order, which is ascending by index. Every returned member is one of
 /// `usages`, since `taken` is built by filtering each keyset's own members against it, which is

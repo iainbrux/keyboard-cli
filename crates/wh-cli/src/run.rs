@@ -928,8 +928,80 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 crate::keyset::verify_create(&mut out, s, kind, "create", &plan)
             })
         }
-        KeysetWhat::Set { .. } => bail!("not yet implemented"),
-        KeysetWhat::Delete { .. } => bail!("not yet implemented"),
+        KeysetWhat::Set {
+            kind,
+            index,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            // Same refusal as `create`: rapid trigger flags mean nothing on an actuation point
+            // operation, so a typo'd flag must be refused, not silently ignored.
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset set rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
+            let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let plan = crate::keyset::set_value(s, kind, index, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &plan.frames());
+                }
+                auto_backup(s, store, "keyset set")?;
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_create(&mut out, s, kind, "set", &plan)
+            })
+        }
+        KeysetWhat::Delete {
+            kind,
+            index,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset delete rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
+            let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let plan = crate::keyset::delete(s, kind, index, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &plan.frames());
+                }
+                auto_backup(s, store, "keyset delete")?;
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_create(&mut out, s, kind, "delete", &plan)
+            })
+        }
     }
 }
 

@@ -67,6 +67,34 @@ fn matrix_lines() -> Vec<String> {
     lines
 }
 
+/// True if `s` contains a run of at least `n` consecutive hex-digit characters anywhere in it,
+/// not just as the whole string.
+fn contains_hex_run(s: &str, n: usize) -> bool {
+    let mut run = 0usize;
+    for c in s.chars() {
+        if c.is_ascii_hexdigit() {
+            run += 1;
+            if run >= n {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+/// Every `stdout` line containing a 64-byte frame's hex, verbatim and in order. `--dry-run`
+/// prints one bare frame per line, so a line that wraps a frame in other text is captured whole
+/// and fails the comparison loudly instead of being silently skipped.
+fn frame_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|l| contains_hex_run(l, 128))
+        .map(str::to_string)
+        .collect()
+}
+
 fn write_script(tag: &str, lines: &[String]) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("wh-{tag}-{}.jsonl", std::process::id()));
     std::fs::write(&path, lines.join("\n")).unwrap();
@@ -1440,6 +1468,645 @@ fn keyset_create_rt_end_to_end_catches_a_skipped_keys_release_moving_on_its_own(
             "s: board reports press 0.10mm release 0.50mm, wanted press 0.10mm release 0.30mm"
         ),
         "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh keyset set ap 1 --value 1.20 --dry-run` over a board where w,a hold ap keyset 1 at 1.00mm
+/// and s,d are free: `read_membership`'s matrix and 0xFF sweep, then `plan`'s six-layout read for
+/// w then a. No global read at all: `set` never falls back to it.
+fn set_script_for_keyset_1_over_w_and_a() -> Vec<String> {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 1000, 0x18, 100, 150, 1, 0));
+    lines.extend(key_settings_lines(0x04, 1000, 0x18, 100, 150, 1, 0));
+    lines
+}
+
+/// `wh keyset delete ap 1 --dry-run` over the same board: w,a hold ap keyset 1 at 0.30mm, s,d are
+/// free and agree at 2.00mm. `read_membership`'s matrix and 0xFF sweep, `global_ap`'s two reads
+/// over the free keys s and d, then `plan`'s six-layout read for w then a.
+fn delete_script_for_keyset_1() -> Vec<String> {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000));
+    lines.extend(key_settings_lines(0x1A, 300, 0x18, 100, 150, 1, 0));
+    lines.extend(key_settings_lines(0x04, 300, 0x18, 100, 150, 1, 0));
+    lines
+}
+
+/// Changing a keyset's value writes every member, not just the one named, and writes no
+/// membership record at all: the keyset keeps its index.
+#[test]
+fn keyset_set_writes_every_member_and_no_membership_record() {
+    let script = write_script("keyset-set", &set_script_for_keyset_1_over_w_and_a());
+    let out = run_wh(
+        &["keyset", "set", "ap", "1", "--value", "1.20", "--dry-run"],
+        &script,
+        &scratch_config_dir("keyset-set"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let frames = frame_lines(&String::from_utf8_lossy(&out.stdout));
+    let joined = frames.join("\n");
+    assert!(
+        joined.contains("1a04"),
+        "w's ap record must be present: {joined}"
+    );
+    assert!(
+        joined.contains("0404"),
+        "a's ap record must be present: {joined}"
+    );
+    assert!(
+        !joined.contains("1aff"),
+        "no 0xFF record may be sent: {joined}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-set"));
+}
+
+/// An index no key holds is an error naming what the board actually has, not a silent success
+/// that writes to nobody.
+#[test]
+fn keyset_set_on_a_missing_index_names_the_live_ones() {
+    let script = write_script(
+        "keyset-set-missing",
+        &set_script_for_keyset_1_over_w_and_a(),
+    );
+    let out = run_wh(
+        &["keyset", "set", "ap", "7", "--value", "1.20"],
+        &script,
+        &scratch_config_dir("keyset-set-missing"),
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no keyset 7"), "got: {err}");
+    assert!(err.contains('1'), "the live indices must be named: {err}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-set-missing"));
+}
+
+/// A delete clears membership and returns the members to the global value, in that order:
+/// values first, membership last, one record per frame.
+#[test]
+fn keyset_delete_writes_values_before_clearing_membership() {
+    let script = write_script("keyset-delete", &delete_script_for_keyset_1());
+    let out = run_wh(
+        &["keyset", "delete", "ap", "1", "--dry-run"],
+        &script,
+        &scratch_config_dir("keyset-delete"),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let frames = frame_lines(&String::from_utf8_lossy(&out.stdout));
+    let membership_at = frames
+        .iter()
+        .position(|f| f.contains("1aff"))
+        .expect("0xFF record");
+    let value_at = frames
+        .iter()
+        .position(|f| f.contains("1a04"))
+        .expect("0x04 record");
+    assert!(value_at < membership_at, "values must precede membership");
+    let after: Vec<&String> = frames[membership_at..].iter().collect();
+    assert_eq!(
+        after.len(),
+        2,
+        "one membership record per frame, two members"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-delete"));
+}
+
+/// `s`'s and `d`'s state for `set`/`delete` end-to-end scripts below: free of any ap keyset,
+/// their exact values only matter to the auto-backup snapshot read.
+const FREE_KEY: KeyState = (1500, 0x00, 0, 0, 0, 0);
+
+/// The full script for `wh keyset set ap 1 --value 1.20` against a board where w,a hold ap
+/// keyset 1 at 1.00mm and s,d are free: `read_membership`'s matrix and 0xFF sweep, `plan`'s
+/// six-layout read for w then a, the auto-backup snapshot, the value batch (no membership, `set`
+/// writes none), then the readback for both members. `a_readback` lets the fault test below vary
+/// exactly one of `a`'s fields.
+fn set_ap_write_script(a_readback: Readback) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 1000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 1000, 0x18, 100, 150, 1, 0)); // plan's read of a
+
+    lines.extend(auto_backup_lines(
+        0,
+        (1000, 0x18, 100, 150, 1, 0), // w
+        (1000, 0x18, 100, 150, 1, 0), // a
+        FREE_KEY,                     // s
+        FREE_KEY,                     // d
+    ));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in cmds::write_key_records(&value_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0)); // w readback: correct
+    lines.extend(key_settings_lines(
+        0x04,
+        a_readback.ap,
+        a_readback.mode,
+        a_readback.rt_press,
+        a_readback.rt_release,
+        a_readback.ap_keyset,
+        a_readback.rt_keyset,
+    )); // a readback
+
+    lines
+}
+
+/// `a`'s correct post-write readback for the `set` scripts above: ap moved to the 1.20mm target,
+/// everything else unchanged, membership untouched at keyset 1.
+const A_CORRECT_SET: Readback = Readback {
+    ap: 1200,
+    mode: 0x18,
+    rt_press: 100,
+    rt_release: 150,
+    ap_keyset: 1,
+    rt_keyset: 0,
+};
+
+/// `wh keyset set ap 1 --value 1.20` end to end, with a fully correct readback: the auto-backup
+/// phase, the value batch with no membership records, and a readback that matches for both
+/// members. Exit 0, "verified" in stdout, and a real backup file on disk.
+///
+/// Byte-for-byte lever: the script's first frame after `set_value`'s own reads is the
+/// auto-backup's SYNC read; a write sent before the backup would not match it.
+#[test]
+fn keyset_set_ap_end_to_end_backs_up_writes_and_verifies() {
+    let lines = set_ap_write_script(A_CORRECT_SET);
+    let script = write_script("keyset-set-ap-ok", &lines);
+    let config_home = scratch_config_dir("keyset-set-ap-ok");
+
+    let out = run_wh(
+        &["keyset", "set", "ap", "1", "--value", "1.20"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap keyset set: 2 keys verified"),
+        "got: {stdout}"
+    );
+
+    let backups = std::fs::read_dir(config_home.join("wh").join("backups"))
+        .unwrap()
+        .count();
+    assert_eq!(backups, 1, "expected exactly one auto-backup file on disk");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `a`'s actuation point write silently fails to land while everything else about it lands
+/// correctly. `a` is the second member `set` writes, so a verifier that stopped after the first
+/// member would never read it back.
+///
+/// Output-assertion lever: nothing is scripted after `a`'s readback, so only the printed
+/// mismatch text can catch a verifier that missed it.
+#[test]
+fn keyset_set_ap_end_to_end_catches_a_value_that_never_landed_on_the_second_member() {
+    let lines = set_ap_write_script(Readback {
+        ap: 1000, // a still reports its pre-write ap
+        ..A_CORRECT_SET
+    });
+    let script = write_script("keyset-set-ap-mismatch", &lines);
+    let config_home = scratch_config_dir("keyset-set-ap-mismatch");
+
+    let out = run_wh(
+        &["keyset", "set", "ap", "1", "--value", "1.20"],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("a: board reports ap 1.00mm, wanted 1.20mm"),
+        "got: {err}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("verified"),
+        "must not claim success on a board that did not change"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `set` with no `--value` at all is an error, not a no-op: nothing may be written to nobody's
+/// benefit. Fails right after `read_membership`, before `plan` ever reads a key, so the unused
+/// tail of the reused script is simply never consumed.
+#[test]
+fn keyset_set_ap_requires_a_value() {
+    let script = write_script(
+        "keyset-set-novalue",
+        &set_script_for_keyset_1_over_w_and_a(),
+    );
+    let out = run_wh(
+        &["keyset", "set", "ap", "1"],
+        &script,
+        &scratch_config_dir("keyset-set-novalue"),
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("pass --value"), "got: {err}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-set-novalue"));
+}
+
+/// `--press`/`--release` are meaningless on an ap `set`, the same refusal `create` applies:
+/// silently ignoring them would leave a typo'd command believing it changed a sensitivity that
+/// was never used.
+#[test]
+fn keyset_set_ap_refuses_rapid_trigger_flags() {
+    let config_home = scratch_config_dir("keyset-set-ap-refuse");
+    let out = run_wh(
+        &[
+            "keyset",
+            "set",
+            "ap",
+            "1",
+            "--press",
+            "0.10",
+            "--release",
+            "0.20",
+        ],
+        std::path::Path::new("/nonexistent-keyset-set-refuse.jsonl"),
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--press") && err.contains("--release"),
+        "got: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh keyset set rt 1 --press 0.10 --release 0.30 --dry-run` writes every member's sensitivity
+/// and no rapid trigger membership record: `set` never touches membership, ap or rt alike.
+#[test]
+fn keyset_set_rt_writes_press_and_release_to_every_member() {
+    let mut lines = matrix_lines(); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 999, 999, 0, 1)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 2000, 0x18, 999, 999, 0, 1)); // plan's read of a
+
+    let script = write_script("keyset-set-rt", &lines);
+    let config_home = scratch_config_dir("keyset-set-rt");
+    let out = run_wh(
+        &[
+            "keyset",
+            "set",
+            "rt",
+            "1",
+            "--press",
+            "0.10",
+            "--release",
+            "0.30",
+            "--dry-run",
+        ],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let frames = frame_lines(&String::from_utf8_lossy(&out.stdout));
+    let joined = frames.join("\n");
+    assert!(
+        joined.contains("1a14"),
+        "w's press record must be present: {joined}"
+    );
+    assert!(
+        joined.contains("0414"),
+        "a's press record must be present: {joined}"
+    );
+    assert!(
+        !joined.contains("1afe"),
+        "no 0xFE record may be sent: {joined}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The full script for `wh keyset delete ap 1` against a board where w,a hold ap keyset 1 at
+/// 0.30mm and s,d are free and agree at 2.00mm: `read_membership`'s matrix and 0xFF sweep,
+/// `global_ap`'s two reads over s and d, `plan`'s six-layout read for w then a, the auto-backup
+/// snapshot, the value batch, the two membership frames, then the readback for both members.
+/// `a_readback` lets the fault test below vary exactly one of `a`'s fields.
+fn delete_ap_write_script(a_readback: Readback) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::AP, 2000)); // s, free
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000)); // d, free
+    lines.extend(key_settings_lines(0x1A, 300, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 300, 0x18, 100, 150, 1, 0)); // plan's read of a
+
+    lines.extend(auto_backup_lines(
+        0,
+        (300, 0x18, 100, 150, 1, 0), // w
+        (300, 0x18, 100, 150, 1, 0), // a
+        (2000, 0x00, 0, 0, 0, 0),    // s
+        (2000, 0x00, 0, 0, 0, 0),    // d
+    ));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in cmds::write_key_records(&value_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 0,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::KEYSET_AP,
+            value: 0,
+        },
+    ];
+    for f in cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 0, 0)); // w readback: correct
+    lines.extend(key_settings_lines(
+        0x04,
+        a_readback.ap,
+        a_readback.mode,
+        a_readback.rt_press,
+        a_readback.rt_release,
+        a_readback.ap_keyset,
+        a_readback.rt_keyset,
+    )); // a readback
+
+    lines
+}
+
+/// `a`'s correct post-write readback for the `delete` scripts above: ap returned to the board's
+/// 2.00mm global, membership cleared to 0.
+const A_CORRECT_DELETE: Readback = Readback {
+    ap: 2000,
+    mode: 0x18,
+    rt_press: 100,
+    rt_release: 150,
+    ap_keyset: 0,
+    rt_keyset: 0,
+};
+
+/// `wh keyset delete ap 1` end to end, with no `--value`, falling back to the board's global:
+/// the auto-backup phase, the value batch, the two membership frames, and a readback that
+/// matches for both members.
+#[test]
+fn keyset_delete_ap_end_to_end_backs_up_writes_and_verifies() {
+    let lines = delete_ap_write_script(A_CORRECT_DELETE);
+    let script = write_script("keyset-delete-ap-ok", &lines);
+    let config_home = scratch_config_dir("keyset-delete-ap-ok");
+
+    let out = run_wh(&["keyset", "delete", "ap", "1"], &script, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap keyset delete: 2 keys verified"),
+        "got: {stdout}"
+    );
+
+    let backups = std::fs::read_dir(config_home.join("wh").join("backups"))
+        .unwrap()
+        .count();
+    assert_eq!(backups, 1, "expected exactly one auto-backup file on disk");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `a`'s membership write silently fails to land while its value writes all land correctly. `a`
+/// is the second member `delete` writes, so a verifier that stopped after the first member would
+/// never read it back.
+///
+/// Output-assertion lever, same reasoning as the `set` mismatch test above.
+#[test]
+fn keyset_delete_ap_end_to_end_catches_a_membership_that_never_cleared_on_the_second_member() {
+    let lines = delete_ap_write_script(Readback {
+        ap_keyset: 1, // a still reports ap keyset 1
+        ..A_CORRECT_DELETE
+    });
+    let script = write_script("keyset-delete-ap-mismatch", &lines);
+    let config_home = scratch_config_dir("keyset-delete-ap-mismatch");
+
+    let out = run_wh(&["keyset", "delete", "ap", "1"], &script, &config_home);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("a: board reports ap keyset 1, wanted 0"),
+        "got: {err}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// A board whose free keys disagree on the actuation point has no one global value, so a delete
+/// with no `--value` must refuse and name the disagreement rather than picking a winner: `delete`
+/// never votes.
+#[test]
+fn keyset_delete_ap_with_no_value_and_split_global_refuses() {
+    let mut lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::AP, 1000));
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000));
+    let script = write_script("keyset-delete-split", &lines);
+    let out = run_wh(
+        &["keyset", "delete", "ap", "1"],
+        &script,
+        &scratch_config_dir("keyset-delete-split"),
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("disagree"), "got: {err}");
+    assert!(err.contains("--value"), "the way out must be named: {err}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-delete-split"));
+}
+
+/// `wh keyset delete rt 1 --dry-run` with no `--press`/`--release`, falling back to the board's
+/// global rapid trigger sensitivity: values go out first, membership last, and membership uses
+/// the rt layout (`0xFE`), not the ap one.
+#[test]
+fn keyset_delete_rt_clears_membership_to_the_global() {
+    let mut lines = matrix_lines(); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    lines.extend(layout_read_lines(0x16, layout::RT_PRESS, 100)); // s, free
+    lines.extend(layout_read_lines(0x16, layout::RT_RELEASE, 150));
+    lines.extend(layout_read_lines(0x07, layout::RT_PRESS, 100)); // d, free
+    lines.extend(layout_read_lines(0x07, layout::RT_RELEASE, 150));
+    lines.extend(key_settings_lines(0x1A, 2000, 0x38, 500, 500, 0, 1)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 2000, 0x38, 500, 500, 0, 1)); // plan's read of a
+
+    let script = write_script("keyset-delete-rt", &lines);
+    let config_home = scratch_config_dir("keyset-delete-rt");
+    let out = run_wh(
+        &["keyset", "delete", "rt", "1", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let frames = frame_lines(&String::from_utf8_lossy(&out.stdout));
+    let membership_at = frames
+        .iter()
+        .position(|f| f.contains("1afe"))
+        .expect("0xFE record");
+    let value_at = frames
+        .iter()
+        .position(|f| f.contains("1a14"))
+        .expect("press record");
+    assert!(value_at < membership_at, "values must precede membership");
+    let after: Vec<&String> = frames[membership_at..].iter().collect();
+    assert_eq!(
+        after.len(),
+        2,
+        "one membership record per frame, two members"
     );
 
     std::fs::remove_file(script).unwrap();
