@@ -552,44 +552,34 @@ git commit -m "[feat] - Add the wh keyset command tree and wh keyset list"
 
 **Interfaces:**
 - Consumes: task 1's `resolve_index`, `global_ap_or_bail`, `global_rt_or_bail`, `kind_of`.
-- Produces, for task 4. **These are what shipped, after task 2's two review rounds. Earlier drafts
-  of this plan showed shorter signatures; use these.**
-  ```rust
-  fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)>;
+- Produces, for tasks 3 and 4: `losing_members`, `announce_steal`, `verify_create`, all in
+  `crates/wh-cli/src/keyset.rs`.
 
-  pub(crate) fn announce_steal(
-      out: &mut impl Write,
-      kind: Kind,
-      losing: &[(u16, Vec<u8>)],
-      new_index: u16,
-      target: Target,
-      plan: &keyset::WritePlan,
-  ) -> std::io::Result<()>;
+  **Read their signatures from the source, not from here.** This block has gone stale three times
+  in three fix rounds and each staleness was a chance to reintroduce a defect the reviews had
+  already removed. What follows is the part that does not change: the invariants those signatures
+  exist to enforce. If a signature you find in the source seems to contradict one of these,
+  the invariant is the authority and the discrepancy is worth reporting.
 
-  pub(crate) fn verify_create<T: Transport>(
-      out: &mut impl Write,
-      s: &mut Session<T>,
-      kind: Kind,
-      want: u16,
-      plan: &keyset::WritePlan,
-  ) -> Result<()>;
-  ```
-
-  **Neither takes a `usages` slice, deliberately.** Both derive their key list from
-  `WritePlan::before()`, whose `KeySettings` carry `.usage`. An earlier version passed `usages`
-  alongside the plan and indexed one by a position derived from the other, and the review measured
-  the result: a length disagreement panics after `apply` has already written the board, and an
-  order disagreement silently verifies one key against another key's prior settings. `run.rs`'s
-  `verify_rt` documents the same rule. Do not reintroduce a parallel key list at task 3's call
-  site.
-
-  `announce_steal` takes `target` and the plan because naming which keys are stolen without naming
-  what they lose and what replaces it is half a warning. It distinguishes a key that keeps its
-  value from one that loses it, by asking the plan whether any value record touched that key.
-
-  `verify_create` checks membership **and** value: `0x04` for `Kind::Ap`, MODE plus `0x14` and
-  `0x15` for `Kind::Rt`. Membership alone is not verification, and a create that checked only the
-  index reported "verified" on a board that had not changed.
+  - **Neither `announce_steal` nor `verify_create` takes a key slice.** Both derive their key list
+    from `WritePlan::before()`, whose `KeySettings` carry `.usage`. An earlier version passed
+    `usages` alongside the plan and indexed one by a position from the other: a length disagreement
+    panicked after `apply` had already written the board, and an order disagreement silently
+    verified one key against another key's prior settings. Do not reintroduce a parallel key list
+    at any call site.
+  - **The membership a write is verified against comes from the write itself.** A key is
+    membership-checked when, and only when, the plan wrote a membership record for it, and the
+    index and layout checked are the ones in that record. `verify_create` takes no caller-supplied
+    index, because a caller that supplied a wrong one produced "2 keys verified" and exit 0 on a
+    board where no keyset had been created. This matters for `set`, which writes no membership
+    records at all.
+  - **Verification covers value as well as membership**: `0x04` for `Kind::Ap`, MODE plus `0x14`
+    and `0x15` for `Kind::Rt`. Membership alone is not verification. For a key the skip rule gave
+    no records to, the yardstick is that key's pre-write settings from `before()`, never the value
+    just read back, which would only prove the board agrees with itself.
+  - **The announcement names what each key loses and what replaces it**, and distinguishes a key
+    whose value actually moves from one that keeps it. A create overwrites its members' values with
+    the global rather than carrying them in, and this line is the operator's only warning.
 
 **What it must do, in order:**
 
