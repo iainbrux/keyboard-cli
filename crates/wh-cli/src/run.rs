@@ -925,11 +925,10 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset create")?;
                 wh_device::keyset::apply(s, &created.plan)?;
-                crate::keyset::verify_membership(
+                crate::keyset::verify_create(
                     &mut out,
                     s,
                     kind,
-                    &usages,
                     created.index.value(),
                     &created.plan,
                 )
