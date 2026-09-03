@@ -1582,6 +1582,65 @@ fn set_ap_dry_run_over_all_keys_enrolls_free_keys_and_says_so() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Task 2.19's own gap: a selection spanning **two** existing keysets, `w,a` wholly consuming
+/// keyset 1 and `s` wholly consuming keyset 2, with `d` a free key riding along. `ap_membership_for`
+/// only special-cases `Keep` when exactly one keyset loses members and the selection is exactly
+/// that keyset, so two distinct losing indices always fall through to `Split`; nothing before this
+/// test drove `wh set ap` over more than one non-zero membership index at once. A rewrite that
+/// generalises the single-keyset case to "every losing keyset is wholly consumed, so keep the
+/// lowest index" reuses index 1 for the merge instead of allocating a fresh one, and folds `d`
+/// into it uninvited; this pins the allocated index (3, one past the board's live maximum) and
+/// both losing lines against exactly that rewrite.
+#[test]
+fn set_ap_over_a_selection_spanning_two_keysets_merges_them_into_a_new_index() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 1900, 0x18, 100, 150, 1, 0)); // plan's read of a
+    lines.extend(key_settings_lines(0x16, 1800, 0x18, 100, 150, 2, 0)); // plan's read of s
+    lines.extend(key_settings_lines(0x07, 1700, 0x18, 100, 150, 0, 0)); // plan's read of d
+
+    let path = write_script("set-ap-split-two-indices", &lines);
+    let config_home = scratch_config_dir("set-ap-split-two-indices");
+    let out = run_wh(
+        &["set", "ap", "--keys", "w,a,s,d", "--set", "1.50", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // The allocated index is the board's live maximum (2) plus one, never a reuse of either
+    // losing index.
+    assert!(
+        stdout.contains("ap keyset 3: creating at 1.50mm"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("keyset 1 loses w at 2.00mm,a at 1.90mm"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("keyset 2 loses s at 1.80mm"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("enrolling free key(s) d at 1.70mm"),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// One key's `(ap, mode, rt_press, rt_release, ap_keyset, rt_keyset)`, the shape
 /// `auto_backup_lines_wasd` takes one of per board key.
 type WasdKeyState = (u16, u16, u16, u16, u16, u16);
