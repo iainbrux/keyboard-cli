@@ -232,6 +232,19 @@ rather than as settings it recognises.
     checks resting on the firmware not coupling two layouts. One line saying so satisfies the
     measure-never-infer rule.
 
+- [ ] **2.19 Pin the two-keyset merge in `wh set ap`.** `ap_membership_for` returns `Keep` only
+  when exactly one keyset loses members and the selection is exactly that keyset. Every other
+  selection produces one new keyset containing all of it, so selecting keys from two keysets merges
+  them and both original indices vanish. That branch is reachable, is now documented for users, and
+  is pinned by nothing: every unit test uses a single index and every fixture uses index 0 or 1.
+
+  It wants a test rather than a comment because the wrong implementations are plausible and all
+  pass today. A later reader who generalises the `Keep` case to "if every losing keyset is wholly
+  consumed, keep the lowest index" has written a different product that destroys a board
+  differently, with a green suite. A `Membership` with two indices and a selection spanning both,
+  asserting the `Split` and both losing entries, sits beside the existing two unit tests and costs
+  about twenty lines. Its own commit, not folded into another task's.
+
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
