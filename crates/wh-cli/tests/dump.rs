@@ -1591,6 +1591,13 @@ fn set_ap_dry_run_over_all_keys_enrolls_free_keys_and_says_so() {
 /// lowest index" reuses index 1 for the merge instead of allocating a fresh one, and folds `d`
 /// into it uninvited; this pins the allocated index (3, one past the board's live maximum) and
 /// both losing lines against exactly that rewrite.
+///
+/// A second, narrower rewrite survives the free key alone: "every losing keyset wholly consumed
+/// *and* the selection covers exactly their union" still returns `Keep`, since dropping `d` makes
+/// `total taken (3) == usages.len() (3)` true again. That rewrite would leave the board's two
+/// keysets untouched and print no announcement at all on `--keys w,a,s`, so a second `run_wh` call
+/// over exactly that selection, with the same board and no free key riding along, is what closes
+/// it: the merge must still allocate a fresh index even when nothing free is enrolled.
 #[test]
 fn set_ap_over_a_selection_spanning_two_keysets_merges_them_into_a_new_index() {
     let mut lines = matrix_lines_wasd(); // resolve_keys
@@ -1647,6 +1654,52 @@ fn set_ap_over_a_selection_spanning_two_keysets_merges_them_into_a_new_index() {
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
+
+    // Same board, `d` left out of the selection entirely: `w,a,s` is exactly the union of the two
+    // losing keysets, so `read_membership`'s sweep and w/a/s's plan reads are unchanged, but `plan`
+    // is never built over `d`, and no free-key line should print.
+    let mut lines2 = matrix_lines_wasd(); // resolve_keys
+    lines2.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 0)] {
+        lines2.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines2.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines2.extend(key_settings_lines(0x04, 1900, 0x18, 100, 150, 1, 0)); // plan's read of a
+    lines2.extend(key_settings_lines(0x16, 1800, 0x18, 100, 150, 2, 0)); // plan's read of s
+
+    let path2 = write_script("set-ap-split-two-indices-no-free", &lines2);
+    let config_home2 = scratch_config_dir("set-ap-split-two-indices-no-free");
+    let out2 = run_wh(
+        &["set", "ap", "--keys", "w,a,s", "--set", "1.50", "--dry-run"],
+        &path2,
+        &config_home2,
+    );
+    assert!(
+        out2.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out2.stdout),
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(
+        stdout2.contains("ap keyset 3: creating at 1.50mm"),
+        "got: {stdout2}"
+    );
+    assert!(
+        stdout2.contains("keyset 1 loses w at 2.00mm,a at 1.90mm"),
+        "got: {stdout2}"
+    );
+    assert!(
+        stdout2.contains("keyset 2 loses s at 1.80mm"),
+        "got: {stdout2}"
+    );
+    assert!(
+        !stdout2.contains("enrolling"),
+        "no free key rides along this selection: {stdout2}"
+    );
+
+    std::fs::remove_file(path2).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home2);
 }
 
 /// One key's `(ap, mode, rt_press, rt_release, ap_keyset, rt_keyset)`, the shape
