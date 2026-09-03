@@ -552,8 +552,34 @@ git commit -m "[feat] - Add the wh keyset command tree and wh keyset list"
 
 **Interfaces:**
 - Consumes: task 1's `resolve_index`, `global_ap_or_bail`, `global_rt_or_bail`, `kind_of`.
-- Produces, for task 4: `pub(crate) fn announce_steal(out: &mut impl Write, kind: Kind,
-  losing: &[(u16, Vec<u8>)], new_index: u16) -> std::io::Result<()>;`
+- Produces, for task 4. **These are what shipped, after task 2's review; earlier drafts of this
+  plan showed shorter signatures and task 4 must use these:**
+  ```rust
+  fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)>;
+
+  pub(crate) fn announce_steal(
+      out: &mut impl Write,
+      kind: Kind,
+      losing: &[(u16, Vec<u8>)],
+      new_index: u16,
+      target: Target,
+      usages: &[u8],
+      before: &[ops::KeySettings],
+  ) -> std::io::Result<()>;
+
+  pub(crate) fn verify_membership<T: Transport>(
+      out: &mut impl Write,
+      s: &mut Session<T>,
+      kind: Kind,
+      usages: &[u8],
+      want: u16,
+      plan: &keyset::WritePlan,
+  ) -> Result<()>;
+  ```
+  `announce_steal` grew `target`, `usages` and `before` because naming which keys are stolen
+  without naming what they lose and what replaces it is half a warning. `verify_membership` grew
+  `plan` because verification checks the value as well as the index, and `WritePlan::before()` is
+  where each key's prior settings come from.
 
 **What it must do, in order:**
 
