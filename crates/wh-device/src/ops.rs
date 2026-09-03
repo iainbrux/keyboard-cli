@@ -252,12 +252,14 @@ impl ApPlan {
 /// pre-write MODE. Reads current MODE per key but sends nothing else, so a caller can dry-run.
 ///
 /// Always writes AP. Also writes MODE, promoted to `Single`, but only when the key currently
-/// reads `Global`. The vendor writes MODE `0x18` on every actuation point change, including for
-/// keys already at `0x18`, so our rule is a strict subset of the vendor's, not a match for it.
+/// reads `Global`. Across all 27 keyset-era captures the vendor's own post-write MODE takes seven
+/// distinct values (`0x10` through `0x48`), not a fixed `0x18`; what holds over 469 measured
+/// echoes is that the vendor rewrites MODE wherever this function sends nothing at all.
 ///
-/// That MODE marker is the leading hypothesis for why a value written without it renders greyed
-/// in the vendor configurator: nibble 1 has direct write evidence in every captured actuation
-/// point change. It stays a hypothesis until the hardware session tests it.
+/// That MODE marker was the leading hypothesis for why a value written without it renders greyed
+/// in the vendor configurator. `docs/keysets.md` now ranks it unlikely to be the whole story: a
+/// single click of the global rapid trigger switch stamps nibble 1 across nearly the whole board
+/// without the user touching any key, so nibble 1 alone cannot be the marker.
 ///
 /// MODE is ordered before AP per key, matching hardware. Across keys the vendor groups all MODE
 /// writes before one AP write, measured three times over in `captures/ap-wasd-1.2.jsonl`; our

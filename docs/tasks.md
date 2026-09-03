@@ -146,12 +146,13 @@ rather than as settings it recognises.
     writes MODE twice per key per operation, we write it once.
   - `keyset.rs` says the vendor reads `0x04` from five fixed keys "at the head of every capture".
     Five of the 27 contain no `0x04` read at all.
-  - `ops.rs` says the vendor writes MODE `0x18` on every actuation point change. True of the Phase 1
-    capture it was written from; across all 27 the values are `{0x10: 154, 0x18: 40, 0x20: 376,
-    0x28: 24, 0x30: 12, 0x38: 10, 0x48: 2}`. The load-bearing half, that the vendor rewrites MODE
-    where `ap_records` sends nothing, still holds over 469 measured echoes.
-  - `ops.rs` still says a hypothesis "stays a hypothesis until the hardware session tests it". The
-    session ran on 2026-08-29 and the answer is in `docs/keysets.md`.
+  - ~~`ops.rs` said the vendor writes MODE `0x18` on every actuation point change.~~ Closed: the
+    comment now says the measured distribution across all 27 captures, `{0x10: 154, 0x18: 40,
+    0x20: 376, 0x28: 24, 0x30: 12, 0x38: 10, 0x48: 2}`, and keeps the load-bearing half, that the
+    vendor rewrites MODE where `ap_records` sends nothing, which holds over 469 measured echoes.
+  - ~~`ops.rs` still said a hypothesis "stays a hypothesis until the hardware session tests it".~~
+    Closed: the session ran on 2026-08-29, and the comment now points at `docs/keysets.md`'s own
+    ranking, that the MODE marker is unlikely to be the whole of the greying story.
   - `keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped the
     measurement. Both should stand: 618 MODE write records across the corpus, none at nibble 0.
   - `wh set rt --set` is a third pair of routes to one intent with different frames, alongside the
