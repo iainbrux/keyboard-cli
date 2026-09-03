@@ -127,9 +127,11 @@ that is part of a keyset moves the selected members into a new index, leaving th
 keyset in place (`wh set ap --keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a`
 and `d`, moves `w` and `s` into a new index and leaves `a` and `d` in the original one). A
 selection that is a whole keyset plus a free key moves the keyset and the free key together into a
-new index. A selection spanning two existing keysets moves both keysets' members into one new
-index. A newly allocated index is one more than the current maximum live index, or `1` if none
-exists. See `docs/keysets.md`, "an operator observation", for what evidence supports each shape.
+new index. A selection spanning two existing keysets moves the selected members from each into one
+new index, leaving each keyset's unselected members in place. `wh set ap --keys all` moves every
+key on the board, including every free one, into one new keyset. A newly allocated index is one
+more than the current maximum live index, or `1` if none exists. See `docs/keysets.md`, "an
+operator observation", for what evidence supports each shape.
 
 Manage stored groups:
 
@@ -291,7 +293,7 @@ These are built and tested against replay scripts, not yet confirmed on the real
   checks the readback against what it actually sent, failing the run and naming the key and both
   values (with rapid trigger state on each) if the board reports something else.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
-  packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame each, so a
+  packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's
   membership records follow, one key per frame, so the same is true there too. But across the two
   halves, a failure can now leave a key's values changed with its membership untouched, or move
