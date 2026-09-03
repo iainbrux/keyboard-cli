@@ -557,9 +557,11 @@ git commit -m "[feat] - Add the wh keyset command tree and wh keyset list"
 
   **Read their signatures from the source, not from here.** This block has gone stale three times
   in three fix rounds and each staleness was a chance to reintroduce a defect the reviews had
-  already removed. What follows is the part that does not change: the invariants those signatures
-  exist to enforce. If a signature you find in the source seems to contradict one of these,
-  the invariant is the authority and the discrepancy is worth reporting.
+  already removed. What follows is what those signatures exist to enforce. **The source is the
+  authority; this list is a guide to reading it.** An earlier version of this block said the
+  opposite, that the list outranked the source, and it was falsified by the very commit that fixed
+  the code it described. If the source and this list disagree, the source is right and this list
+  needs correcting.
 
   - **Neither `announce_steal` nor `verify_create` takes a key slice.** Both derive their key list
     from `WritePlan::before()`, whose `KeySettings` carry `.usage`. An earlier version passed
@@ -567,16 +569,22 @@ git commit -m "[feat] - Add the wh keyset command tree and wh keyset list"
     panicked after `apply` had already written the board, and an order disagreement silently
     verified one key against another key's prior settings. Do not reintroduce a parallel key list
     at any call site.
-  - **The membership a write is verified against comes from the write itself.** A key is
-    membership-checked when, and only when, the plan wrote a membership record for it, and the
-    index and layout checked are the ones in that record. `verify_create` takes no caller-supplied
-    index, because a caller that supplied a wrong one produced "2 keys verified" and exit 0 on a
-    board where no keyset had been created. This matters for `set`, which writes no membership
-    records at all.
-  - **Verification covers value as well as membership**: `0x04` for `Kind::Ap`, MODE plus `0x14`
-    and `0x15` for `Kind::Rt`. Membership alone is not verification. For a key the skip rule gave
-    no records to, the yardstick is that key's pre-write settings from `before()`, never the value
-    just read back, which would only prove the board agrees with itself.
+  - **Nothing a caller says decides what gets verified.** `verify_create` takes no index, and its
+    `kind` and `op` arguments reach nothing but the label text, which was established by deleting
+    the label and watching both parameters go dead. Every value it compares comes from the plan's
+    own records, or, for a field the plan wrote nothing for, from that key's pre-write settings in
+    `before()`. Three separate rounds each closed one leak in this rule and each left another open:
+    the key list, then the membership index, then `kind`. If you add a parameter here, prove it
+    cannot reach a comparison.
+  - **Every field is checked, on every operation, unconditionally.** Both membership layouts, MODE,
+    `0x04`, `0x14` and `0x15`, for actuation point and rapid trigger operations alike. Selecting
+    fields by kind was itself the defect: `plan` emits all four value layouts per changed key, so
+    checking only one kind's fields passes on records that were echoed back unchanged while the
+    fields that actually moved go unread.
+  - **A field the write did not touch is asserted to be unchanged, not skipped.** That is what
+    catches a `set`, which writes no membership records at all, silently dropping a key out of its
+    keyset mid-write. Never use the value just read back as its own yardstick; that only proves the
+    board agrees with itself.
   - **The announcement names what each key loses and what replaces it**, and distinguishes a key
     whose value actually moves from one that keeps it. A create overwrites its members' values with
     the global rather than carrying them in, and this line is the operator's only warning.
@@ -906,6 +914,14 @@ git commit -m "[feat] - Add wh keyset set and wh keyset delete"
 **Interfaces:**
 - Consumes: task 2's `losing_members` and `announce_steal`, `keyset::next_index`,
   `keyset::read_membership`.
+
+  **`announce_steal`'s `kind` is the last place in this interface where a caller's word decides
+  what is compared.** It picks which layouts `describe_loss` reads and which prior value it shows.
+  Inside `create` that is safe by construction, because the plan and the announcement take `kind`
+  from the same variable. A caller that passes `Kind::Ap` over a plan built from `Change::rt_on`
+  prints an actuation point the write never touches, while the sensitivities that really are about
+  to be overwritten go unmentioned. Take `kind` from the same binding that built the plan, and do
+  not thread it from anywhere else.
 
 **The rule, and where each half comes from:**
 
