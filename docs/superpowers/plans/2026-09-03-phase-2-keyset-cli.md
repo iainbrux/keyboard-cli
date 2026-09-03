@@ -923,7 +923,7 @@ git commit -m "[feat] - Add wh keyset set and wh keyset delete"
   `keyset::read_membership`.
 
   **`announce_steal`'s `kind` is the last place in this interface where a caller's word decides
-  what is compared.** It picks which layouts `describe_loss` reads and which prior value it shows.
+  what is compared.** It picks which layouts `describe_member` reads and which prior value it shows.
   Inside `create` that is safe by construction, because the plan and the announcement take `kind`
   from the same variable. A caller that passes `Kind::Ap` over a plan built from `Change::rt_on`
   prints an actuation point the write never touches, while the sensitivities that really are about
@@ -967,7 +967,7 @@ Three tests are needed, and each must pin a value, not a coordinate:
   `w,a,s,d`. **Give the two stolen keys different prior actuation points and assert both lines
   separately.** A fixture where both members hold the same value cannot tell a correct
   announcement from one that prints the first member's value twice, which is exactly the defect
-  task 3's review found in `describe_loss`. Assert the membership frames by equality too, so the
+  task 3's review found in `describe_member`, which was named `describe_loss` then. Assert the membership frames by equality too, so the
   new index is pinned rather than merely present.
 
 Run: `cargo test -p wh-cli set_ap_`
