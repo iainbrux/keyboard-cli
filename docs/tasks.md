@@ -194,9 +194,9 @@ rather than as settings it recognises.
   block the rest of the CLI, all measured rather than suspected. Two were added after this entry was
   written, and any struck through since have been closed.
 
-  - `verify_create`'s `rt_keyset` fallback to the pre-write value is correct and unpinned: changing
-    it to compare the readback against itself leaves the workspace green. One fixture closes it, an
-    actuation point create whose script drifts a key's `0xFE`, and the reviewer already wrote it.
+  - ~~`verify_write_as`'s (named `verify_create` when this was written) `rt_keyset` fallback to the
+    pre-write value was unpinned.~~ Closed: mutating it to compare the readback against itself fails
+    `keyset_set_rt_end_to_end_catches_a_membership_drift_on_the_second_member`.
   - `value_moves`'s rapid trigger arm is pinned as a unit but neither of its two comparisons
     individually, because the fixture moves both press and release. A fixture moving only one
     closes it. Consequence if the release half is lost: a create is announced as keeping a value it
