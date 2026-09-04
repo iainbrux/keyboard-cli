@@ -274,6 +274,34 @@ fn run_wh(
         .unwrap()
 }
 
+/// `run_wh` with a line on stdin, for the commands that ask for a typed confirmation. Stdin is
+/// dropped before waiting on the child: a piped stdin the child never reads (e.g. `--dry-run`,
+/// which never prompts) would otherwise leave the write end open and deadlock the wait.
+fn run_wh_stdin(
+    args: &[&str],
+    replay: &std::path::Path,
+    config_home: &std::path::Path,
+    input: &str,
+) -> std::process::Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wh"))
+        .env("WH_REPLAY", replay)
+        .env("XDG_CONFIG_HOME", config_home)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
 #[test]
 fn dump_json_via_replay() {
     let path = write_script("dump", &build_script());
@@ -1934,6 +1962,336 @@ fn set_ap_end_to_end_splits_a_keyset_and_prints_no_stale_restore_warning() {
     assert!(
         !stderr.contains("wh restore does not yet write keyset membership"),
         "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh set ap --keys all` moves every key into one new keyset, so every existing keyset loses
+/// all its members and ceases to exist. Nothing warned before this task; `wh keyset remove
+/// --keys all` already carries the same typed confirmation for the same underlying hazard
+/// reached a different route, and this pins the sibling guard on `set ap`.
+///
+/// Board: two keysets partition the whole four-key board, `w,a` in keyset 1 and `s,d` in keyset
+/// 2, so both cease to exist and every member moves into a freshly allocated index (3, one past
+/// the higher of the two).
+#[test]
+fn set_ap_over_the_whole_board_requires_a_typed_yes() {
+    let mut decline_lines = matrix_lines_wasd(); // resolve_keys
+    decline_lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        decline_lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    let decline_script = write_script("set-ap-whole-board-no", &decline_lines);
+    let decline_config_home = scratch_config_dir("set-ap-whole-board-no");
+    let decline_out = run_wh_stdin(
+        &["set", "ap", "--keys", "all", "--set", "1.50"],
+        &decline_script,
+        &decline_config_home,
+        "no\n",
+    );
+    assert!(!decline_out.status.success());
+    // The prompt itself is a diagnostic, on stderr, not stdout; the refusal that follows it once
+    // the reader answers `no` is also on stderr.
+    let decline_err = String::from_utf8_lossy(&decline_out.stderr);
+    assert!(
+        decline_err.contains("ap: --keys all moves every key into one new keyset, keyset 3"),
+        "got: {decline_err}"
+    );
+    assert!(
+        decline_err.contains("keysets 1, 2 will cease to exist, their members absorbed"),
+        "got: {decline_err}"
+    );
+    assert!(
+        decline_err.contains("wh set ap --base 1.50"),
+        "got: {decline_err}"
+    );
+    assert!(
+        decline_err.contains("was not confirmed"),
+        "got: {decline_err}"
+    );
+
+    std::fs::remove_file(decline_script).unwrap();
+    let _ = std::fs::remove_dir_all(&decline_config_home);
+
+    // `yes` proceeds: the same board, but the whole pipeline this time, `plan`'s reads, the
+    // auto-backup snapshot, the actual write frames, and the readback verification.
+    let mut accept_lines = matrix_lines_wasd();
+    accept_lines.extend(matrix_lines_wasd());
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        accept_lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        accept_lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, ks, 0));
+    }
+    accept_lines.extend(auto_backup_lines_wasd(
+        0,
+        (1200, 0x18, 100, 150, 1, 0),
+        (1200, 0x18, 100, 150, 1, 0),
+        (1200, 0x18, 100, 150, 2, 0),
+        (1200, 0x18, 100, 150, 2, 0),
+    ));
+    let value_records: Vec<KeyRecord> = [0x1Au8, 0x04, 0x16, 0x07]
+        .iter()
+        .flat_map(|&usage| {
+            [
+                KeyRecord {
+                    key: usage,
+                    layout: layout::MODE,
+                    value: 0x18,
+                },
+                KeyRecord {
+                    key: usage,
+                    layout: layout::AP,
+                    value: 1500,
+                },
+                KeyRecord {
+                    key: usage,
+                    layout: layout::RT_PRESS,
+                    value: 100,
+                },
+                KeyRecord {
+                    key: usage,
+                    layout: layout::RT_RELEASE,
+                    value: 150,
+                },
+            ]
+        })
+        .collect();
+    // Same 12/4 batching as any other 4-key whole-board write: `frames()` never splits one
+    // key's own group across a report boundary, and 16 records at 4 per key exceeds the
+    // 14-record limit.
+    for f in cmds::write_key_records(&value_records[..12]) {
+        accept_lines.push(out_line(&f));
+        accept_lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    for f in cmds::write_key_records(&value_records[12..]) {
+        accept_lines.push(out_line(&f));
+        accept_lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records: Vec<KeyRecord> = [0x1Au8, 0x04, 0x16, 0x07]
+        .iter()
+        .map(|&usage| KeyRecord {
+            key: usage,
+            layout: layout::KEYSET_AP,
+            value: 3,
+        })
+        .collect();
+    for f in cmds::write_key_records_singly(&membership_records) {
+        accept_lines.push(out_line(&f));
+        accept_lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        accept_lines.extend(key_settings_lines(usage, 1500, 0x18, 100, 150, 3, 0));
+    }
+
+    let accept_script = write_script("set-ap-whole-board-yes", &accept_lines);
+    let accept_config_home = scratch_config_dir("set-ap-whole-board-yes");
+    let accept_out = run_wh_stdin(
+        &["set", "ap", "--keys", "all", "--set", "1.50"],
+        &accept_script,
+        &accept_config_home,
+        "yes\n",
+    );
+    assert!(
+        accept_out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&accept_out.stdout),
+        String::from_utf8_lossy(&accept_out.stderr)
+    );
+    let accept_stdout = String::from_utf8_lossy(&accept_out.stdout);
+    assert!(
+        accept_stdout.contains("ap keyset 3 at 1.50mm: 4 keys verified"),
+        "got: {accept_stdout}"
+    );
+
+    std::fs::remove_file(accept_script).unwrap();
+    let _ = std::fs::remove_dir_all(&accept_config_home);
+}
+
+/// Three keysets this time, each with a single member, so all three must be named, not just the
+/// first or the last: the board this guards is 68 keys wide, and a prompt that dropped one
+/// keyset from the list would understate what is actually about to be lost.
+///
+/// Selected by spelling out every usage (`w,a,s,d`), not the literal word `all`: the trigger is
+/// the resolved selection covering the board's matrix, not that one spelling of it, so this is
+/// also the fixture that would catch a rewrite checking `--keys` for the literal string `all`
+/// instead of comparing against the membership read the arm already performs.
+#[test]
+fn set_ap_over_the_whole_board_names_every_keyset_that_will_cease_to_exist() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 2), (0x16, 3), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    let script = write_script("set-ap-whole-board-three-keysets", &lines);
+    let config_home = scratch_config_dir("set-ap-whole-board-three-keysets");
+    let out = run_wh_stdin(
+        &["set", "ap", "--keys", "w,a,s,d", "--set", "1.50"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ap: --keys all moves every key into one new keyset, keyset 4"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("keysets 1, 2, 3 will cease to exist, their members absorbed"),
+        "got: {stderr}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--dry-run` never prompts, even over the whole board: it writes nothing, so there is nothing
+/// to confirm yet. Empty stdin (`run_wh`'s default) would hang the process if the guard fired
+/// here regardless of `--dry-run`, so a clean, successful exit is itself the proof it did not.
+#[test]
+fn set_ap_over_the_whole_board_does_not_prompt_on_dry_run() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, ks, 0));
+    }
+    let path = write_script("set-ap-whole-board-dry-run", &lines);
+    let config_home = scratch_config_dir("set-ap-whole-board-dry-run");
+    let out = run_wh(
+        &["set", "ap", "--keys", "all", "--set", "1.50", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("dry run, no writes sent"), "got: {stdout}");
+    assert!(
+        !frame_lines(&stdout).is_empty(),
+        "dry run must still print frames: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("type yes to continue") && !stderr.contains("type yes to continue"),
+        "dry run must never prompt: stdout {stdout}\nstderr {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The regression guard for not over-triggering: a selection short of the whole matrix must
+/// never prompt, even over a real write with no `yes` waiting on stdin (`run_wh`'s default,
+/// `Stdio::null()`). A guard that mistakenly fired here would either hang reading an exhausted
+/// stdin or refuse with "was not confirmed"; a clean, successful exit rules out both.
+#[test]
+fn set_ap_over_a_partial_selection_does_not_prompt() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 0, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 2000, 0x18, 100, 150, 0, 0)); // plan's read of a
+    lines.extend(auto_backup_lines_wasd(
+        0,
+        (2000, 0x18, 100, 150, 0, 0),
+        (2000, 0x18, 100, 150, 0, 0),
+        (2000, 0x18, 100, 150, 0, 0),
+        (2000, 0x18, 100, 150, 0, 0),
+    ));
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::AP,
+            value: 1200,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in &cmds::write_key_records(&value_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+    ];
+    for f in &cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0));
+    lines.extend(key_settings_lines(0x04, 1200, 0x18, 100, 150, 1, 0));
+
+    let path = write_script("set-ap-partial-no-prompt", &lines);
+    let config_home = scratch_config_dir("set-ap-partial-no-prompt");
+    let out = run_wh(
+        &["set", "ap", "--keys", "w,a", "--set", "1.20"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap keyset 1 at 1.20mm: 2 keys verified"),
+        "got: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();

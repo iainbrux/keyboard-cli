@@ -1,7 +1,7 @@
-//! The typed confirmation guarding a whole-board destructive write. `wh keyset remove` calls this
-//! today, over a selection covering every key. `wh set ap --keys all` is a separate, still open
-//! task and does not call it yet: this module exists to be shared once it does, not to imply that
-//! hazard is already guarded.
+//! The typed confirmation guarding a whole-board destructive write. `wh keyset remove` and
+//! `wh set ap` both call this, each over its own selection covering every key on the board: the
+//! two commands reach the same destruction by different routes, so they share one acceptance
+//! check rather than risking two that drift apart.
 
 use anyhow::Result;
 use std::io::{BufRead, Write};

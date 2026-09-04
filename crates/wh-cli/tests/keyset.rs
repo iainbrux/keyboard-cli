@@ -4536,7 +4536,7 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
 }
 
 /// The negative half is what actually guards the split: asserting the prompt is in stderr does
-/// not stop a future change sending it to both streams, only `!decline_stdout.contains(..)` does.
+/// not stop a future change sending it to both streams, only `!stdout.contains(..)` does.
 #[test]
 fn keyset_remove_prompt_goes_to_stderr_not_stdout() {
     let mut lines = matrix_lines();

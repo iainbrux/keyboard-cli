@@ -783,6 +783,44 @@ pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembe
     })
 }
 
+/// The typed confirmation guarding `wh set ap` when the resolved selection covers every key on
+/// the board: every existing actuation point keyset loses all its members to one freshly
+/// allocated keyset, so every one of them ceases to exist. The same hazard `remove` guards
+/// through `confirm_whole_board_remove`, reached by a different route, so this reuses
+/// `crate::confirm::confirm` rather than a second acceptance check.
+///
+/// Unlike `confirm_whole_board_remove`, built straight from `ApMembership::Split`'s own fields
+/// rather than from a `WritePlan`: nothing this prompt names, the new index, the keysets losing
+/// members, the target depth, depends on a per-key read, so the caller can ask before `plan`
+/// sends a single frame.
+pub(crate) fn confirm_whole_board_ap_set(
+    out: &mut impl Write,
+    index: keyset::KeysetIndex,
+    losing: &[(u16, Vec<u8>)],
+    depth: Um,
+    input: &mut impl BufRead,
+) -> Result<()> {
+    let keysets = if losing.is_empty() {
+        "no ap keysets exist to lose".to_string()
+    } else {
+        let indices: Vec<String> = losing.iter().map(|(i, _)| i.to_string()).collect();
+        format!(
+            "keysets {} will cease to exist, their members absorbed",
+            indices.join(", ")
+        )
+    };
+    let prompt = format!(
+        "ap: --keys all moves every key into one new keyset, keyset {}\n    {keysets}\n    to \
+         change the board's base instead, leaving keysets alone: wh set ap --base {:.2}",
+        index.value(),
+        depth.to_mm()
+    );
+    if !crate::confirm::confirm(out, &prompt, input)? {
+        bail!("ap set over the whole board was not confirmed");
+    }
+    Ok(())
+}
+
 /// Confirms `plan`'s resolved actuation point target, for every key it covers, equals `depth`,
 /// the operator's own requested value. `verify_write` only ever compares the board against what
 /// `plan` sent: an internally consistent check that a conversion bug in `Change::ap` or `plan`
@@ -1370,6 +1408,62 @@ mod tests {
                 .contains("requires an actuation point membership"),
             "got: {err}"
         );
+    }
+
+    // -- confirm_whole_board_ap_set: guards `wh set ap --keys all` --
+
+    /// Pins the exact wording the operator ruled on: the new index, every losing keyset in
+    /// ascending order, and the `--base` alternative. Built straight from `ApMembership::Split`'s
+    /// own fields, so this needs no device script at all.
+    #[test]
+    fn confirm_whole_board_ap_set_names_the_new_index_the_losing_keysets_and_the_base_alternative()
+    {
+        let index = keyset::KeysetIndex::restoring(Kind::Ap, 11);
+        let losing = vec![
+            (2u16, vec![0x1Au8]),
+            (7, vec![0x04]),
+            (8, vec![0x16]),
+            (9, vec![0x07]),
+        ];
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(&mut out, index, &losing, Um(1500), &mut "yes\n".as_bytes())
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("ap: --keys all moves every key into one new keyset, keyset 11"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("keysets 2, 7, 8, 9 will cease to exist, their members absorbed"),
+            "got: {text}"
+        );
+        assert!(text.contains("wh set ap --base 1.50"), "got: {text}");
+    }
+
+    /// The branch a whole-board selection reaches when no ap keysets exist yet: nothing is lost,
+    /// but every free key still moves into the new one, so the prompt must still fire and must
+    /// not read as though nothing is about to happen.
+    #[test]
+    fn confirm_whole_board_ap_set_names_no_keysets_when_none_exist() {
+        let index = keyset::KeysetIndex::restoring(Kind::Ap, 1);
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(&mut out, index, &[], Um(2000), &mut "yes\n".as_bytes())
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("no ap keysets exist to lose"), "got: {text}");
+    }
+
+    /// Declining refuses, through the same `crate::confirm::confirm` acceptance rule `remove`
+    /// uses, not a second copy of it.
+    #[test]
+    fn confirm_whole_board_ap_set_refuses_on_no() {
+        let index = keyset::KeysetIndex::restoring(Kind::Ap, 3);
+        let losing = vec![(1u16, vec![0x1Au8])];
+        let mut out = Vec::new();
+        let err =
+            confirm_whole_board_ap_set(&mut out, index, &losing, Um(1500), &mut "no\n".as_bytes())
+                .unwrap_err();
+        assert!(err.to_string().contains("was not confirmed"), "got: {err}");
     }
 
     // -- mode_fault: the rt-state annotation --

@@ -748,6 +748,13 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             let depth = mm(set)?;
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for the whole-board confirmation, matching
+            // `KeysetWhat::Remove`'s own split: the per-key announcement below stays on stdout
+            // since it is data someone may pipe, while the prompt is a diagnostic.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
                 // `kind` is taken from `change`, the same binding that builds the plan below, and
@@ -757,6 +764,24 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 let kind = change.kind();
                 let m = wh_device::keyset::read_membership(s, kind)?;
                 let membership = crate::keyset::ap_membership_for(&m, &usages)?;
+                // Trigger on the resolved selection covering the board's matrix, read off `m`
+                // itself, never on the literal `--keys all` spelling or a fresh matrix read: a
+                // selection spelling out every usage by hand must reach this guard too. Nothing
+                // this warning names, the new index, the keysets losing members, the target
+                // depth, depends on `plan`, so this runs before `plan` sends a single frame, and
+                // `!dry_run` keeps a preview from ever prompting, since it writes nothing to
+                // confirm.
+                if !dry_run && usages.len() == m.entries().len() {
+                    if let crate::keyset::ApMembership::Split { index, losing } = &membership {
+                        crate::keyset::confirm_whole_board_ap_set(
+                            &mut prompt_out,
+                            *index,
+                            losing,
+                            depth,
+                            &mut input,
+                        )?;
+                    }
+                }
                 let index = match &membership {
                     crate::keyset::ApMembership::Keep => None,
                     crate::keyset::ApMembership::Split { index, .. } => Some(*index),
