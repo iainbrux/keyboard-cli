@@ -973,8 +973,8 @@ mod tests {
         );
     }
 
-    /// The branch finding 5 named directly: a whole-board selection with no live keysets of the
-    /// kind still moves every key to an invented value, `NO_SIGNAL_BASE` on a board of free keys
+    /// The branch a whole-board selection always reaches when no keysets exist for that kind:
+    /// it still moves every key to an invented value, `NO_SIGNAL_BASE` on a board of free keys
     /// that disagree with it, so the value clause is the only warning the operator gets and must
     /// still fire. Also pins the "no keysets exist to lose" wording, which must not read as though
     /// nothing is about to happen.

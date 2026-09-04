@@ -4260,6 +4260,13 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
         decline_stdout.contains("ap keyset(s) 1 will cease to exist"),
         "got: {decline_stdout}"
     );
+    // The value clause, not only the keyset clause: this is what a call-site refactor could
+    // drop while every unit test on `confirm_whole_board_remove` itself stays green, since
+    // those only prove the string is built correctly, not that it reaches the operator.
+    assert!(
+        decline_stdout.contains("every key moves to 2.00mm"),
+        "got: {decline_stdout}"
+    );
     let decline_err = String::from_utf8_lossy(&decline_out.stderr);
     assert!(
         decline_err.contains("was not confirmed"),
