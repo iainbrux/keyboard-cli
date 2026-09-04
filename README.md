@@ -158,7 +158,9 @@ move to, every keyset that will cease to exist, and, if any key's touch mode is 
 (rapid trigger switching off, or a key coming off "follow global travel"), a count of how many:
 otherwise a board where every key already holds the target value and no keyset exists to lose reads
 as a complete no-op right up until the write that pins every key's actuation point. `--dry-run`
-never prompts, since it writes nothing.
+never prompts, since it writes nothing. The prompt itself goes to stderr, not stdout: redirecting
+`wh keyset remove ap --keys all > log.txt` still shows it on screen and still reads the typed
+answer from stdin, rather than trapping it in the file with nothing left to answer.
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap

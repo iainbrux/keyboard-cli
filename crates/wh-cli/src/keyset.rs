@@ -414,9 +414,13 @@ fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
 /// rewrite `plan` already applies for `create` and `delete`. `will_write` must agree with whether
 /// the caller goes on to send `plan` to the device: pass `false` only when the caller's own next
 /// step is printing the plan and stopping, never applying it, since the whole-matrix confirmation
-/// below is skipped whenever it is `false`.
+/// below is skipped whenever it is `false`. `prompt_out` is separate from `out`, the announcement
+/// writer: the whole-board prompt is a diagnostic and belongs on stderr, while the per-key
+/// announcement is data someone may pipe, so a caller passes a locked stdout for `out` and a
+/// locked stderr for `prompt_out`.
 pub(crate) fn remove<T: Transport>(
     out: &mut impl Write,
+    prompt_out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
@@ -460,7 +464,7 @@ pub(crate) fn remove<T: Transport>(
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
 
     if will_write && usages.len() == m.entries().len() {
-        confirm_whole_board_remove(out, kind, &sets, target, &plan, input)?;
+        confirm_whole_board_remove(prompt_out, kind, &sets, target, &plan, input)?;
     }
 
     announce_remove(
@@ -490,22 +494,21 @@ pub(crate) fn remove<T: Transport>(
 /// to describe would let an operator say `yes` to a sentence that is true and still miss the one
 /// thing that changes.
 ///
-/// No `picker::refuse_if_not_terminal`-style guard here, deliberately, though a redirected stdout
-/// (`wh keyset remove ap --keys all > log.txt`) does send this prompt into the file and then block
-/// on stdin with nothing on screen. `--pick` refuses a non-terminal stdout because its live TUI
-/// cannot render to one at all; piping to it is not an escape hatch, it is meaningless. This
-/// prompt is one line out and one line in, and `docs/tasks.md` rules that shape as the sanctioned
-/// way to answer it, "no bypass flag, so tests pipe `yes` on stdin", for real scripted use as well
-/// as for tests.
+/// No `picker::refuse_if_not_terminal`-style guard here, deliberately: `out` is a caller-supplied
+/// stderr, not stdout, precisely so `wh keyset remove ap --keys all > log.txt` no longer traps the
+/// prompt in the redirected file with nothing on screen, the hazard measured before this writer
+/// was split from the per-key announcement's. `--pick` refuses a non-terminal stdout because its
+/// live TUI cannot render to one at all; piping to it is not an escape hatch, it is meaningless.
+/// This prompt is one line out and one line in, and `docs/tasks.md` rules that shape as the
+/// sanctioned way to answer it, "no bypass flag, so tests pipe `yes` on stdin", for real scripted
+/// use as well as for tests.
 ///
 /// To be precise about which guard this argument rules out: a bare `refuse_if_not_terminal`-style
-/// check on stdout alone, mirroring `--pick`'s, would refuse any run whose stdout is piped, tests
-/// included, since the harness pipes all three streams. That form really would break the sanctioned path, not just guard
-/// against the hang. A narrower form, refusing only when stdout is not a terminal *and* stdin is
-/// (an operator at a live prompt with the message routed away from them, the exact case measured
-/// above, never the piped-both-streams shape automation and tests use) would not break it. Not
-/// built here either, but for a different reason: moving the prompt to stderr, still open, closes
-/// the same hazard for every redirection combination with no terminal check at all.
+/// check on this writer, mirroring `--pick`'s, would refuse any run whose streams are piped, tests
+/// included, since the harness pipes all three streams. That form really would break the
+/// sanctioned path, not just guard against the hang. Sending the prompt to stderr instead needs no
+/// terminal check at all: stdin, still open, answers it the same way regardless of what carries
+/// the prompt itself.
 fn confirm_whole_board_remove(
     out: &mut impl Write,
     kind: Kind,

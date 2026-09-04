@@ -340,8 +340,8 @@ rather than as settings it recognises.
   last four introduced a defect of the class they were fixing, so an eighth round carried more risk
   than two unguarded predicates whose behaviour is measured correct.
 
-- [ ] **2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
-  should land before or with 2.23.** Measured: `wh keyset remove ap --keys all > log.txt` puts both
+- [x] ~~**2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
+  should land before or with 2.23.**~~ Measured: `wh keyset remove ap --keys all > log.txt` puts both
   prompt lines (the warning and "type yes to continue: ") in the redirected file and then blocks on
   stdin with nothing at all on the operator's screen, since `confirm` writes to whatever `Write` its
   caller hands it, and `keyset::remove`'s caller in `run.rs` hands it real stdout.
@@ -371,6 +371,14 @@ rather than as settings it recognises.
   **Land this before or with 2.23**, so `wh set ap --keys all`'s own confirmation, whenever it is
   built, calls the corrected version from the start rather than repeating the stdout choice and
   needing this fix a second time.
+
+  **Done 2026-09-04.** The hazard was measured, not supposed: `keyset::remove` now takes a second
+  writer, so `run.rs` hands it a locked stderr for the prompt and keeps the locked stdout it already
+  passed for the per-key announcement. Every end-to-end assertion on the prompt's text moved from
+  stdout to stderr, and a new test,
+  `keyset_remove_prompt_goes_to_stderr_not_stdout`, pins the negative half directly: the prompt is
+  in stderr *and* absent from stdout, so a future change routing it to both streams fails there even
+  though every other assertion on the prompt's wording would still pass.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes

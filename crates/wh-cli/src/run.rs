@@ -976,11 +976,24 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             let kind = crate::keyset::kind_of(kind);
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for the whole-board confirmation prompt: the per-key
+            // announcement above stays on stdout since it is data someone may pipe, while the
+            // prompt is a diagnostic, matching this binary's own `transport:` line.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
             let stdin = std::io::stdin();
             let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::remove(&mut out, s, kind, &usages, !dry_run, &mut input)?;
+                let plan = crate::keyset::remove(
+                    &mut out,
+                    &mut prompt_out,
+                    s,
+                    kind,
+                    &usages,
+                    !dry_run,
+                    &mut input,
+                )?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }

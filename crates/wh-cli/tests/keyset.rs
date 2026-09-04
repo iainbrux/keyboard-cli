@@ -4416,21 +4416,20 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
         "no\n",
     );
     assert!(!decline_out.status.success());
-    // The prompt itself is on stdout, the same stream `confirm` always writes to; the refusal
-    // that follows it, once the reader answers `no`, is the command's own error on stderr.
-    let decline_stdout = String::from_utf8_lossy(&decline_out.stdout);
+    // The prompt itself is on stderr, a diagnostic, not stdout: the refusal that follows it,
+    // once the reader answers `no`, is also the command's own error on stderr.
+    let decline_err = String::from_utf8_lossy(&decline_out.stderr);
     assert!(
-        decline_stdout.contains("ap keyset(s) 1 will cease to exist"),
-        "got: {decline_stdout}"
+        decline_err.contains("ap keyset(s) 1 will cease to exist"),
+        "got: {decline_err}"
     );
     // The value clause, not only the keyset clause: this is what a call-site refactor could
     // drop while every unit test on `confirm_whole_board_remove` itself stays green, since
     // those only prove the string is built correctly, not that it reaches the operator.
     assert!(
-        decline_stdout.contains("every key moves to 2.00mm"),
-        "got: {decline_stdout}"
+        decline_err.contains("every key moves to 2.00mm"),
+        "got: {decline_err}"
     );
-    let decline_err = String::from_utf8_lossy(&decline_out.stderr);
     assert!(
         decline_err.contains("was not confirmed"),
         "got: {decline_err}"
@@ -4536,6 +4535,42 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
     let _ = std::fs::remove_dir_all(&accept_config_home);
 }
 
+/// The negative half is what actually guards the split: asserting the prompt is in stderr does
+/// not stop a future change sending it to both streams, only `!decline_stdout.contains(..)` does.
+#[test]
+fn keyset_remove_prompt_goes_to_stderr_not_stdout() {
+    let mut lines = matrix_lines();
+    lines.extend(matrix_lines());
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 1), (0x07, 1)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, 1, 0));
+    }
+    let script = write_script("keyset-remove-prompt-stream", &lines);
+    let config_home = scratch_config_dir("keyset-remove-prompt-stream");
+    let out = run_wh_stdin(
+        &["keyset", "remove", "ap", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stderr.contains("type yes to continue"),
+        "the prompt must reach stderr: got stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("type yes to continue"),
+        "the prompt must not also reach stdout: got stdout: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The measured board a per-key announcement alone cannot save: four free keys, no ap keysets,
 /// every one already at 2.00mm. The value clause and the keyset clause are both literally true and
 /// both read as a no-op. What actually happens, promoting every key off touch nibble 0 ("follow
@@ -4564,18 +4599,18 @@ fn keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_
         "no\n",
     );
     assert!(!out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("every key moves to 2.00mm"),
-        "the value clause alone reads as a no-op here: {stdout}"
+        stderr.contains("every key moves to 2.00mm"),
+        "the value clause alone reads as a no-op here: {stderr}"
     );
     assert!(
-        stdout.contains("no ap keysets exist to lose"),
-        "got: {stdout}"
+        stderr.contains("no ap keysets exist to lose"),
+        "got: {stderr}"
     );
     assert!(
-        stdout.contains("4 key(s) move off global travel onto their own actuation point"),
-        "the mode transition must be in the prompt itself, before the operator answers: {stdout}"
+        stderr.contains("4 key(s) move off global travel onto their own actuation point"),
+        "the mode transition must be in the prompt itself, before the operator answers: {stderr}"
     );
 
     std::fs::remove_file(script).unwrap();
@@ -4609,10 +4644,10 @@ fn keyset_remove_whole_board_prompt_counts_only_the_keys_that_actually_move() {
         "no\n",
     );
     assert!(!out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("2 key(s) move off global travel onto their own actuation point"),
-        "two of four move, not four of four: {stdout}"
+        stderr.contains("2 key(s) move off global travel onto their own actuation point"),
+        "two of four move, not four of four: {stderr}"
     );
 
     std::fs::remove_file(script).unwrap();
@@ -4643,14 +4678,14 @@ fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_nothing_moves() {
         "no\n",
     );
     assert!(!out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("this selects every key on the board: every key moves to 2.00mm, and no ap keysets exist to lose"),
-        "the prompt must end there, with no mode clause appended: {stdout}"
+        stderr.contains("this selects every key on the board: every key moves to 2.00mm, and no ap keysets exist to lose"),
+        "the prompt must end there, with no mode clause appended: {stderr}"
     );
     assert!(
-        !stdout.contains("move off global travel"),
-        "nothing moves here, the clause must be absent entirely, not \"0 key(s)\": {stdout}"
+        !stderr.contains("move off global travel"),
+        "nothing moves here, the clause must be absent entirely, not \"0 key(s)\": {stderr}"
     );
 
     std::fs::remove_file(script).unwrap();
