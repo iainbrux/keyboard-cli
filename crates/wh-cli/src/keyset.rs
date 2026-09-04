@@ -312,6 +312,107 @@ pub(crate) fn delete<T: Transport>(
     Ok(plan)
 }
 
+/// Takes named keys out of whatever keyset each is in, returning them to the global value and
+/// leaving every other member of those keysets untouched. The vendor sends the ordinary per-key
+/// template for the removed key alone, ending in one `0xFF = 0` record, and writes nothing for
+/// the members that stay (`docs/keysets.md`). A keyset that loses its last member simply ceases
+/// to exist, so there is no emptying case to handle here.
+pub(crate) fn remove<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    kind: Kind,
+    usages: &[u8],
+    value: Option<Um>,
+    rt: Option<(Um, Um)>,
+) -> Result<keyset::WritePlan> {
+    let m = keyset::read_membership(s, kind)?;
+    let sets = keyset::group(&m);
+    let leaving: Vec<(u16, u8)> = usages
+        .iter()
+        .filter_map(|&u| {
+            sets.iter()
+                .find(|k| k.members.contains(&u))
+                .map(|k| (k.index, u))
+        })
+        .collect();
+    if leaving.is_empty() {
+        bail!(
+            "none of those keys is in an {} keyset; nothing to remove",
+            kind_name(kind)
+        );
+    }
+    // The same two branches `delete` uses, because the vendor sends the same template for a
+    // single-key removal as for a whole-keyset delete. Rt writes touch nibble 1 and the global
+    // sensitivity, and deliberately does not touch layout 0x04: the removed key keeps its own
+    // actuation point (`ks-remove-one-rt`).
+    let (change, target) = match kind {
+        Kind::Ap => {
+            let v = match value {
+                Some(v) => v,
+                None => global_ap_or_bail(s, &m, "--value")?,
+            };
+            (keyset::Change::ap(v), Target::Ap(v))
+        }
+        Kind::Rt => {
+            let (p, r) = match rt {
+                Some(v) => v,
+                None => global_rt_or_bail(s, &m, "--press and --release")?,
+            };
+            (keyset::Change::rt_off(p, r), Target::Rt(p, r))
+        }
+    };
+    let moving: Vec<u8> = leaving.iter().map(|&(_, u)| u).collect();
+    let free: Vec<u8> = usages
+        .iter()
+        .copied()
+        .filter(|u| !moving.contains(u))
+        .collect();
+    let cleared = keyset::KeysetIndex::clear(kind);
+    let plan = keyset::plan(s, &moving, &change, Some(cleared))?;
+    announce_remove(out, kind, &leaving, &free, target, &plan)?;
+    Ok(plan)
+}
+
+/// Announces a remove's effect on every key that actually left a keyset, and names any selected
+/// key that was already free so that case is never silent: a removal that dropped a free key
+/// wordlessly would leave the operator thinking it moved when it never held anything to leave.
+/// `free` is derived from `usages` rather than `plan.before()`, since `plan` is built only over
+/// the leaving keys and never reads a free one at all.
+fn announce_remove(
+    out: &mut impl Write,
+    kind: Kind,
+    leaving: &[(u16, u8)],
+    free: &[u8],
+    target: Target,
+    plan: &keyset::WritePlan,
+) -> std::io::Result<()> {
+    for &(index, u) in leaving {
+        let prior = plan
+            .before()
+            .iter()
+            .find(|ks| ks.usage == u)
+            .expect("leaving keys were the selection plan was built over");
+        let prior_value = value_display(kind, prior);
+        writeln!(
+            out,
+            "{}: removing {} from keyset {index}, {prior_value} to {}",
+            kind_name(kind),
+            key_label(u),
+            target.display()
+        )?;
+    }
+    if !free.is_empty() {
+        let names: Vec<String> = free.iter().map(|&u| key_label(u)).collect();
+        writeln!(
+            out,
+            "{}: {} were already in no keyset, left alone",
+            kind_name(kind),
+            names.join(",")
+        )?;
+    }
+    Ok(())
+}
+
 /// Announces a delete's effect on every member before it writes: what each currently holds and
 /// what it is about to become. Reuses `describe_member`'s vocabulary, the same one `announce_steal`
 /// uses when a create takes a member from another keyset, since a delete is the same kind of loss.

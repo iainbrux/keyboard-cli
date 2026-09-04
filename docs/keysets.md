@@ -320,6 +320,27 @@ Confirmed off the board rather than off the configurator's cache. With the brows
 `wh keyset list ap` read `0xFF` live and returned four keysets, none of them 10, and
 `wh get ap --keys j,k,l` returned `2.00mm keyset none` for all three.
 
+**The rapid trigger case, measured separately.** `captures/ks-remove-one-rt.jsonl`, 2026-09-04.
+`N` and `M` were rapid trigger keyset 1, both at MODE `0x30` (touch nibble 3) with press `300` and
+release `400`; the global sensitivity was `100`. Removing `N` sent five frames naming only `N`, and
+`M` carried no records at all, the same shape as the actuation point case above:
+
+```
+n/0x08 = 16                            MODE, touch nibble 1
+n/0x04 = 1100                          its own actuation point, rewritten unchanged
+n/0x08 = 16, n/0x14 = 100, n/0x15 = 100
+n/0x16 = 0,  n/0x17 = 0
+n/0xFE = 0
+```
+
+Two things are measured here, plainly, not inferred. **The MODE record goes to touch nibble 1,
+rapid trigger off, not nibble 2 (following the board's global).** This is the same target
+`ks-delete-rt`'s whole-keyset delete writes. **`N`'s own actuation point, `1100`, is preserved, not
+reset to the global `2000`.** A rapid trigger removal does not touch layout `0x04` at all; the value
+sent for it is `N`'s own prior reading, unchanged. `wh keyset remove rt` implements exactly this:
+`keyset::Change::rt_off` turns rapid trigger off and resets the sensitivities to the global, and
+never sets a target actuation point, so `plan` echoes the key's own back.
+
 ## Touch nibble 2 is global rapid trigger
 
 Nibble `2` is rapid trigger following the board's global settings, and both transitions are

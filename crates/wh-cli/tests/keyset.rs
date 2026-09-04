@@ -3071,6 +3071,250 @@ fn keyset_delete_rt_end_to_end_catches_a_mode_that_never_turned_off_on_the_secon
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The measured `ks-remove-one-rt` shape (`docs/keysets.md`): removing a member from a rapid
+/// trigger keyset turns rapid trigger off (touch nibble 1, not nibble 2, following the global) and
+/// resets the sensitivities to the global, but leaves the key's own actuation point untouched.
+/// `w`'s AP, `1.10mm`, is the whole point of this test: a rewrite that reused the actuation point
+/// branch would send the global `2.00mm` there instead, and every other record in the frame would
+/// still look right.
+#[test]
+fn keyset_remove_rt_turns_rapid_trigger_off_and_keeps_the_actuation_point() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    // global_rt reads the press/release sensitivity of the keys outside every keyset: s and d.
+    lines.extend(layout_read_lines(0x16, layout::RT_PRESS, 100));
+    lines.extend(layout_read_lines(0x16, layout::RT_RELEASE, 100));
+    lines.extend(layout_read_lines(0x07, layout::RT_PRESS, 100));
+    lines.extend(layout_read_lines(0x07, layout::RT_RELEASE, 100));
+    // plan's own per-key read of w: own AP 1.10mm, rt keyset 1, press/release 0.30/0.40mm.
+    lines.extend(key_settings_lines(0x1A, 1100, 0x30, 300, 400, 0, 1));
+
+    let script = write_script("keyset-remove-rt", &lines);
+    let config_home = scratch_config_dir("keyset-remove-rt");
+    let out = run_wh(
+        &["keyset", "remove", "rt", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("rt: removing w from keyset 1, 0.30/0.40mm to 0.10/0.10mm"),
+        "got: {stdout}"
+    );
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x10,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 1100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 100,
+        },
+    ];
+    let mut expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&[KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_RT,
+            value: 0,
+        }])
+        .iter()
+        .map(|f| hex(f)),
+    );
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "MODE goes to touch nibble 1, AP stays at w's own 1100, not the global: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--press`/`--release` are meaningless on an ap remove, the same refusal `create`/`set`/`delete`
+/// already enforce.
+#[test]
+fn keyset_remove_ap_refuses_press_and_release() {
+    let config_home = scratch_config_dir("keyset-remove-ap-refuse");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w", "--press", "0.10"],
+        std::path::Path::new("/nonexistent-keyset-remove-refuse.jsonl"),
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--press"), "got: {err}");
+
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Selecting only keys that are already outside every keyset must refuse rather than silently
+/// succeed and write nothing: a no-op that reports success would leave the operator believing a
+/// removal happened.
+#[test]
+fn keyset_remove_refuses_keys_that_are_in_no_keyset() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+
+    let script = write_script("keyset-remove-none", &lines);
+    let config_home = scratch_config_dir("keyset-remove-none");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w"],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("nothing to remove"), "got: {err}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The full script for `wh keyset remove ap --keys w`, over a board where w,a,s hold ap keyset 3
+/// at 1.20mm and d is free at 2.00mm: `resolve_keys`'s matrix read, `read_membership`'s matrix and
+/// 0xFF sweep, `global_ap`'s one read over the free key d, `plan`'s six-layout read for w alone,
+/// the auto-backup snapshot, the value batch, the one membership frame, then the readback for w.
+fn remove_ap_end_to_end_script() -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(matrix_lines()); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 3u16), (0x04, 3), (0x16, 3), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000)); // d, free
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 3, 0)); // plan's read of w
+
+    lines.extend(auto_backup_lines(
+        0,
+        (1200, 0x18, 100, 150, 3, 0), // w
+        (1200, 0x18, 100, 150, 3, 0), // a
+        (1200, 0x18, 100, 150, 3, 0), // s
+        (2000, 0x00, 0, 0, 0, 0),     // d
+    ));
+
+    let value_records = vec![
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for f in cmds::write_key_records(&value_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    let membership_records = vec![KeyRecord {
+        key: 0x1A,
+        layout: layout::KEYSET_AP,
+        value: 0,
+    }];
+    for f in cmds::write_key_records_singly(&membership_records) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    lines.extend(key_settings_lines(0x1A, 2000, 0x18, 100, 150, 0, 0)); // w readback: correct
+    lines
+}
+
+/// Removing one member of a three-key keyset must leave the other two exactly where they were:
+/// after `wh keyset remove ap --keys w` runs for real, a fresh `wh keyset list ap` call, scripted
+/// against a board reflecting the result, still reports keyset 3 with its remaining members `a`
+/// and `s` and their value. A `remove` that cleared the whole keyset's membership instead of just
+/// the named key, the same shape as `delete`, would leave no keyset 3 for this second call to find.
+#[test]
+fn keyset_remove_leaves_the_keyset_alive_when_others_remain() {
+    let write_lines = remove_ap_end_to_end_script();
+    let write_script_path = write_script("keyset-remove-alive-write", &write_lines);
+    let write_config_home = scratch_config_dir("keyset-remove-alive-write");
+    let write_out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w"],
+        &write_script_path,
+        &write_config_home,
+    );
+    assert!(
+        write_out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&write_out.stdout),
+        String::from_utf8_lossy(&write_out.stderr)
+    );
+
+    let mut list_lines = matrix_lines();
+    for (usage, ks) in [(0x1Au8, 0u16), (0x04, 3), (0x16, 3), (0x07, 0)] {
+        list_lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    list_lines.extend(layout_read_lines(0x04, layout::AP, 1200));
+    list_lines.extend(layout_read_lines(0x16, layout::AP, 1200));
+    let list_script_path = write_script("keyset-remove-alive-list", &list_lines);
+    let list_config_home = scratch_config_dir("keyset-remove-alive-list");
+    let list_out = run_wh(
+        &["keyset", "list", "ap"],
+        &list_script_path,
+        &list_config_home,
+    );
+    assert!(
+        list_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&list_out.stderr)
+    );
+    let text = String::from_utf8_lossy(&list_out.stdout);
+    assert!(text.contains("3 1.20mm  a,s"), "got: {text}");
+    assert!(
+        !text
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .any(|tok| tok == "w"),
+        "w left keyset 3, it must not still be listed as a member: {text}"
+    );
+
+    std::fs::remove_file(write_script_path).unwrap();
+    let _ = std::fs::remove_dir_all(&write_config_home);
+    std::fs::remove_file(list_script_path).unwrap();
+    let _ = std::fs::remove_dir_all(&list_config_home);
+}
+
 /// `--help` output is never covered by the run-over-replay tests above, since it exits before
 /// `WH_REPLAY` is ever read. `set rt`'s value help once claimed a single `--press` or `--release`
 /// sufficed, the exact false claim B5 removed from the error message; this pins that it cannot
@@ -3339,4 +3583,170 @@ fn keyset_list_rt_shows_a_disagreement_when_only_release_differs() {
 
     std::fs::remove_file(script).unwrap();
     let _ = std::fs::remove_dir_all(scratch_config_dir("keyset-list-rt-disagree"));
+}
+
+/// The measured vendor shape for taking one key out of a keyset: the removed key gets the whole
+/// per-key template ending in `0xFF = 0`, and the members that stay get no records at all
+/// (`ks-remove-one-key`, `docs/keysets.md`). Exact frame equality is what pins the second half:
+/// `a` and `s` must appear nowhere in the plan, which a rewrite that rewrote every member of the
+/// keyset would break while still clearing `w`'s membership correctly.
+#[test]
+fn keyset_remove_ap_writes_only_the_removed_key_and_clears_its_membership() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 3u16), (0x04, 3), (0x16, 3), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    // global_ap reads the actuation point of the keys outside every keyset. `d` is the only one.
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000));
+    // plan's own per-key read of w, in plan's read order.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 3, 0));
+
+    let script = write_script("keyset-remove-ap", &lines);
+    let config_home = scratch_config_dir("keyset-remove-ap");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // The keyset it leaves, its prior value and the value it returns to are all pinned, and all
+    // three differ, so a mutation that printed any one of them in another's place fails here.
+    assert!(
+        stdout.contains("ap: removing w from keyset 3, 1.20mm to 2.00mm"),
+        "got: {stdout}"
+    );
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let mut expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&[KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 0,
+        }])
+        .iter()
+        .map(|f| hex(f)),
+    );
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "only w is written, membership last and alone: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// A selection mixing a keyset member with a free key: `wh keyset remove ap --keys w,d` where `w`
+/// is in keyset 3 and `d` is already free. `d` has nothing to leave, so it must carry no record at
+/// all and get its own line saying so, rather than being folded into `plan` alongside `w`: a
+/// `remove` that passed the whole selection to `plan` instead of only the leaving keys would give
+/// `d` an unconditional membership-clear record and, on a board where `d`'s value differed from
+/// the target, a value rewrite too, even though `d` was never in a keyset to begin with.
+#[test]
+fn keyset_remove_ignores_a_free_key_selected_alongside_a_member() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 3u16), (0x04, 3), (0x16, 3), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000)); // global_ap over d, the only free key
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 3, 0)); // plan's read of w alone
+
+    let script = write_script("keyset-remove-mixed", &lines);
+    let config_home = scratch_config_dir("keyset-remove-mixed");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w,d", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap: removing w from keyset 3, 1.20mm to 2.00mm"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("ap: d were already in no keyset, left alone"),
+        "got: {stdout}"
+    );
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let mut expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&[KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 0,
+        }])
+        .iter()
+        .map(|f| hex(f)),
+    );
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "d is free and must carry no record of any kind, only w's: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
 }

@@ -103,6 +103,7 @@ wh keyset create ap --keys u,i,o,p --value 1.5
 wh keyset create rt --keys j,k,l --press 0.3 --release 0.5
 wh keyset set ap 3 --value 1.2
 wh keyset delete ap 3
+wh keyset remove ap --keys w
 ```
 
 `wh keyset list` with no kind lists both `ap` and `rt`; naming one lists that kind. Each keyset is
@@ -111,11 +112,20 @@ shown with its index, value, and member keys: one shared value when the members 
 (`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt` does not write `0xFE`; running it on part of
 an rt keyset's members can leave that keyset's members holding different values, which
 `wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
-keyset's value in place. `create`, `delete`, `wh set ap` below, and `wh restore` (for keys whose
-snapshot recorded it, see below) each write keyset membership. `create` and `delete` both take
-`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value,
-and passing it is required when the keys outside every keyset disagree, or when none are left
-outside one.
+keyset's value in place. `create`, `delete`, `remove`, `wh set ap` below, and `wh restore` (for keys
+whose snapshot recorded it, see below) each write keyset membership. `create`, `delete`, and
+`remove` all take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's
+current global value, and passing it is required when the keys outside every keyset disagree, or
+when none are left outside one.
+
+**`wh keyset remove` takes named keys out of their keyset without deleting the rest of it.** It
+returns each named key to the board's global value (for `ap`, the actuation point; for `rt`, both
+sensitivities, with rapid trigger turned off, `--press`/`--release` refused for `ap` the same way
+they are on `create`/`set`/`delete`), and leaves every other member of that keyset exactly where it
+was: `wh keyset remove ap --keys w`, with `w` one of three members of a keyset, moves only `w` and
+leaves the other two in place. A named key that is already outside every keyset is left alone and
+named on its own line, since it has nothing to leave. Removing a keyset's last member is the same
+write as any other; there is no separate case for a keyset that ends up empty (`docs/keysets.md`).
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
@@ -185,8 +195,8 @@ wh selftest
 
 ## A safety note before you write anything
 
-`wh set`, `wh keyset create|set|delete`, `wh restore`, and `wh selftest` write to the physical
-keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete` accept `--dry-run`
+`wh set`, `wh keyset create|set|delete|remove`, `wh restore`, and `wh selftest` write to the physical
+keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete|remove` accept `--dry-run`
 (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports a real run would
 send, and sends nothing. Use it to check a command before it touches hardware, especially the first
 time you type a new key selector. `wh restore` and `wh selftest` have no `--dry-run`; `wh restore`
@@ -194,7 +204,7 @@ takes its own auto-backup before writing (see below), and `wh selftest` only eve
 to the value it already read.
 
 Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
-`keyset list|create|set|delete`, `profile`) names which transport it opened, on stderr, one line,
+`keyset list|create|set|delete|remove`, `profile`) names which transport it opened, on stderr, one line,
 before doing anything else: `transport: hardware (real keyboard)` or `transport: replay (<path>)`.
 Check that line before trusting that a run did what you expected, especially when driving `wh` from
 a script or another tool where the rest of the output might scroll past. `wh keys list` and
@@ -279,8 +289,9 @@ cached to go stale.
 
 Two things look like exceptions and are not:
 
-- `set rt`, `set ap`, and `keyset create`/`set`/`delete` each read a key's current settings, then
-  write back a change built from that read (the last three through the same `keyset::plan`).
+- `set rt`, `set ap`, and `keyset create`/`set`/`delete`/`remove` each read a key's current
+  settings, then write back a change built from that read (the last four through the same
+  `keyset::plan`).
   `selftest` does the same at the board level, not a key's: it reads the global travel and dead
   zones and writes back the identical values, a no-op write that proves the path rather than
   changing anything. Between a read and its write, the board could in principle be changed by hand

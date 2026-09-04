@@ -837,8 +837,8 @@ fn profile_cmd(number: Option<u8>) -> Result<()> {
     })
 }
 
-/// `Create`/`Set`/`Delete` are named explicitly, not matched by `_`, so a renamed or added
-/// `KeysetWhat` variant is a compile error here rather than a silent "not yet implemented".
+/// `Create`/`Set`/`Delete`/`Remove` are named explicitly, not matched by `_`, so a renamed or
+/// added `KeysetWhat` variant is a compile error here rather than a silent "not yet implemented".
 /// Decided before `with_session` opens the device, since the vendor HID collection is exclusive.
 fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
     use crate::cli::KeysetWhat;
@@ -966,6 +966,43 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 auto_backup(s, store, "keyset delete")?;
                 wh_device::keyset::apply(s, &plan)?;
                 crate::keyset::verify_write(&mut out, s, kind, "delete", &plan)
+            })
+        }
+        KeysetWhat::Remove {
+            kind,
+            keys,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset remove rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
+            let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let usages = resolve_keys(s, &keys, store)?;
+                let plan = crate::keyset::remove(&mut out, s, kind, &usages, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &plan.frames());
+                }
+                auto_backup(s, store, "keyset remove")?;
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_write(&mut out, s, kind, "remove", &plan)
             })
         }
     }

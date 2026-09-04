@@ -111,21 +111,26 @@ rather than as settings it recognises.
   Shipped: an all-free selection now allocates a keyset, and a selection that is exactly one
   keyset's members still keeps its index.
 
-- [ ] **2.21 `wh keyset remove` to take individual keys out of a keyset. Depends on 2.20.** Ruled
-  with 2.20: because setting a value never removes a key from its keyset, membership needs its own
-  command. `wh keyset delete <kind> <index>` already deletes a whole keyset and returns every member
-  to the base value; what is missing is `wh keyset remove <kind> --keys j`, which clears `0xFF` (or
-  `0xFE`) for the named keys only, writes them back to the base value, and leaves the rest of the
-  keyset alone.
+- [x] ~~**2.21 `wh keyset remove` to take individual keys out of a keyset. Depends on 2.20.**~~
+  Ruled with 2.20: because setting a value never removes a key from its keyset, membership needs its
+  own command. `wh keyset delete <kind> <index>` already deletes a whole keyset and returns every
+  member to the base value; what was missing was `wh keyset remove <kind> --keys j`, which clears
+  `0xFF` (or `0xFE`) for the named keys only, writes them back to the base value, and leaves the rest
+  of the keyset alone.
 
-  Both open questions were measured on 2026-09-04 and the answers make this straightforward. The
+  Both open questions were measured on 2026-09-04 and the answers made this straightforward. The
   vendor sends the ordinary five-step template for the removed key alone, ending in one `0xFF = 0`
   record, and writes nothing at all for the members that stay (`ks-remove-one-key`). The MODE record
   stays at touch nibble `1`, so the removed key must not be dropped to nibble `0`. Removing the last
   member is the same five frames with no teardown of any kind (`ks-remove-to-empty`), confirmed
   afterwards by `wh keyset list ap` reading `0xFF` live with the keyset gone, so there is no
-  empty-keyset case to handle. Build it as `keyset::plan` with the base value and a membership clear.
+  empty-keyset case to handle. Built as `keyset::plan` with the base value and a membership clear.
   See `docs/keysets.md`.
+
+  Shipped: both kinds. The rapid trigger side was unmeasured when this task was first written; it is
+  now measured in `ks-remove-one-rt`, and confirms the removed key's own MODE goes to touch nibble
+  `1` (rapid trigger off, not nibble `2` following the global) and that its actuation point is
+  preserved rather than reset to the base, since a rapid trigger removal never touches `0x04`.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
