@@ -120,15 +120,23 @@ one.
 
 **`wh keyset remove` resets named keys to the board's base value and to no keyset at all**, whether
 or not they were in one: it takes no value flags, since its job is a destination, not a choice. For
-`ap`, that base is the actuation point; for `rt`, both sensitivities, with rapid trigger turned off.
-The base comes from the free keys the selection leaves behind, the same keys the removed ones would
-otherwise agree with. If those remaining free keys disagree on it, `remove` refuses and names each
-value and how many keys hold it, saying to include them in the selection so they are reset too,
-rather than inventing a winner. If none are left outside the selection at all, `ap` falls back to
-`2.00mm`, a chosen default for that one unanswerable case (the measured dominant `0x04` reading, not
-a measured factory setting); `rt` has no equivalent default and refuses instead, since no capture
-has ever shown a rapid trigger sensitivity reset to a fixed constant rather than to whatever the
-global held at the time.
+`ap`, that base is the actuation point, and a key still on touch nibble 0 ("follow global travel")
+is promoted to nibble 1, a pinned per-key actuation point, the same promotion `create`/`set`/`delete`
+already apply; for `rt`, both sensitivities, with rapid trigger turned off. The base comes from the
+free keys the selection leaves behind, the same keys the removed ones would otherwise agree with. If
+those remaining free keys disagree on it, `remove` refuses and names each value and how many keys
+hold it, saying to include them in the selection so they are reset too, rather than inventing a
+winner. If none are left outside the selection at all, `ap` falls back to `2.00mm`, a chosen default
+for that one unanswerable case (the measured dominant `0x04` reading, not a measured factory
+setting), and says so in the announcement rather than letting the invented value read as one read
+from the board; `rt` has no equivalent default and refuses instead, since no capture has ever shown
+a rapid trigger sensitivity reset to a fixed constant rather than to whatever the global held at the
+time. A key already at the base still gets its membership rewritten unconditionally (`plan`'s own
+rule, harmless since it is idempotent), so the announcement says "membership rewritten, value
+unchanged" rather than "nothing to do", since a frame really is sent. Taking a keyset's last member
+is named too, "keyset N ceases to exist", whether it happens on its own or as part of a larger
+selection.
+
 `wh keyset remove ap --keys w`, with `w` one of three members of a keyset, moves only `w` and leaves
 the other two in place. Where two commands used to be needed to clear a stray key (`wh set ap` to
 put it in a keyset, then `wh keyset remove` to take it back out), one now does it directly: `wh
@@ -144,9 +152,13 @@ over each keyset's existing members only, leaving an already-free key at whateve
 held, while `wh` writes every selected key including free ones, rewriting that stray value to the
 base too. The traffic differs the same way: no `0xFF`/`0xFE` record for a key that was already free
 from `RESET KEYSETS`, an unconditional one from `wh`, matching `plan`'s existing rule for `create`
-and `delete`. `remove` asks for a typed `yes` before a whole-board write, naming the value every key
-is about to move to and every keyset that will cease to exist; `--dry-run` never prompts, since it
-writes nothing.
+and `delete`. `remove` asks for a typed `yes` before a whole-board write, built after computing
+what the write actually contains rather than before, so it names the value every key is about to
+move to, every keyset that will cease to exist, and, if any key's touch mode is about to move too
+(rapid trigger switching off, or a key coming off "follow global travel"), a count of how many:
+otherwise a board where every key already holds the target value and no keyset exists to lose reads
+as a complete no-op right up until the write that pins every key's actuation point. `--dry-run`
+never prompts, since it writes nothing.
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap

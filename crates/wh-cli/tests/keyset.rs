@@ -3691,12 +3691,15 @@ fn keyset_remove_writes_a_free_key_selected_alongside_a_member() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // Both w and d are excluded from the base read (both are in this selection), and d was the
+    // only free key on the board, so nothing is left to read: the base is the invented default,
+    // and both lines say so.
     assert!(
-        stdout.contains("ap: removing w from keyset 3, 1.20mm to 2.00mm"),
+        stdout.contains("ap: removing w from keyset 3, 1.20mm to 2.00mm (no key outside a keyset to read a base from, using the default)"),
         "got: {stdout}"
     );
     assert!(
-        stdout.contains("ap: returning d to 2.00mm, already in no ap keyset"),
+        stdout.contains("ap: returning d to 2.00mm (no key outside a keyset to read a base from, using the default), already in no ap keyset"),
         "got: {stdout}"
     );
 
@@ -3858,10 +3861,10 @@ fn keyset_remove_returns_a_free_key_to_the_base() {
 /// A free key already at the base gets no value record, `plan`'s own skip rule. It still carries
 /// the membership-clear record `plan` writes unconditionally for every selected key
 /// (`plan_skip_rule_skips_a_key_already_at_every_target_but_still_writes_membership`), so the wire
-/// is not literally silent, but nothing the operator asked for actually changes: the announcement
-/// says so, and `wh-device`'s own comment on that record ("whether the vendor skips such a key is
-/// unmeasured, and an unconditional rewrite is non-destructive") is why `remove` does not try to
-/// suppress it.
+/// is not literally silent: the announcement says "membership rewritten, value unchanged", not
+/// "nothing to do", since a real frame is sent even though it is idempotent and destroys nothing.
+/// `wh-device`'s own comment on that record ("whether the vendor skips such a key is unmeasured,
+/// and an unconditional rewrite is non-destructive") is why `remove` does not try to suppress it.
 #[test]
 fn keyset_remove_writes_only_membership_for_a_key_already_at_the_base() {
     let mut lines = matrix_lines();
@@ -3888,7 +3891,9 @@ fn keyset_remove_writes_only_membership_for_a_key_already_at_the_base() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ap: w already at 2.00mm in no ap keyset, nothing to do"),
+        stdout.contains(
+            "ap: w already at 2.00mm in no ap keyset, membership rewritten, value unchanged"
+        ),
         "got: {stdout}"
     );
 
@@ -4388,6 +4393,11 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 1), (0x07, 1)] {
         decline_lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
     }
+    // `plan` is built before the confirmation now, so it reads all four keys even on the
+    // declined half: only the write that follows a `yes` is what the decline never reaches.
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        decline_lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, 1, 0));
+    }
     let decline_script = write_script("keyset-remove-whole-board-no", &decline_lines);
     let decline_config_home = scratch_config_dir("keyset-remove-whole-board-no");
     let decline_out = run_wh_stdin(
@@ -4515,4 +4525,128 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
 
     std::fs::remove_file(accept_script).unwrap();
     let _ = std::fs::remove_dir_all(&accept_config_home);
+}
+
+/// The measured board a per-key announcement alone cannot save: four free keys, no ap keysets,
+/// every one already at 2.00mm. The value clause and the keyset clause are both literally true and
+/// both read as a no-op. What actually happens, promoting every key off touch nibble 0 ("follow
+/// global travel") onto its own pinned actuation point, only shows up in the per-key lines that
+/// print after the prompt is already answered. The prompt itself must name it, as a count, so the
+/// operator has it in front of them before answering rather than after.
+#[test]
+fn keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    // No base read at all: every key is in the selection, so none is left outside it. `plan`'s own
+    // six-layout read for every key: already at 2.00mm, MODE 0x08 (Global, touch nibble 0).
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 2000, 0x08, 100, 150, 0, 0));
+    }
+
+    let script = write_script("keyset-remove-whole-board-mode-only-prompt", &lines);
+    let config_home = scratch_config_dir("keyset-remove-whole-board-mode-only-prompt");
+    let out = run_wh_stdin(
+        &["keyset", "remove", "ap", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("every key moves to 2.00mm"),
+        "the value clause alone reads as a no-op here: {stdout}"
+    );
+    assert!(
+        stdout.contains("no ap keysets exist to lose"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("4 key(s) move off global travel onto their own actuation point"),
+        "the mode transition must be in the prompt itself, before the operator answers: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The measured case where an invented value renders exactly like a real one: every key on this
+/// board is in ap keyset 1, so no free key exists anywhere, not merely outside this selection.
+/// `wh keyset remove ap --keys w` reaches `NoneOutsideAKeyset` from a single-key selection, no
+/// whole-board confirmation gate in the way, and the announcement must say the value was invented
+/// rather than let `2.00mm` print indistinguishably from a value the board actually held.
+#[test]
+fn keyset_remove_ap_names_the_base_as_invented_when_every_key_is_already_in_a_keyset() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 1));
+    }
+    // No free-key read at all: every key on the board is in keyset 1, none outside it anywhere.
+    lines.extend(key_settings_lines(0x1A, 300, 0x18, 100, 150, 1, 0)); // plan's read of w
+
+    let script = write_script("keyset-remove-ap-invented-base", &lines);
+    let config_home = scratch_config_dir("keyset-remove-ap-invented-base");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap: removing w from keyset 1, 0.30mm to 2.00mm (no key outside a keyset to read a base from, using the default)"),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Taking a keyset's only member empties it, the same fact the whole-board prompt already names
+/// for every keyset at once. `w` alone is ap keyset 1; `a`, `s`, `d` are free and agree at 2.00mm.
+/// The per-key announcement must say the keyset ceases to exist, not just that `w` left it, since a
+/// partial removal (this is not a whole-board selection at all) triggers no confirmation to say so
+/// any other way.
+#[test]
+fn keyset_remove_ap_names_a_keyset_that_ceases_to_exist_from_a_partial_removal() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 0), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    // global_ap_excluding reads the actuation point of the free keys: a, s, d, all agreeing.
+    lines.extend(layout_read_lines(0x04, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x16, layout::AP, 2000));
+    lines.extend(layout_read_lines(0x07, layout::AP, 2000));
+    // plan's own read of w, the keyset's only member.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0));
+
+    let script = write_script("keyset-remove-ap-last-member", &lines);
+    let config_home = scratch_config_dir("keyset-remove-ap-last-member");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap: removing w from keyset 1, 1.20mm to 2.00mm, keyset 1 ceases to exist"),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
 }

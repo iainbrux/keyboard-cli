@@ -325,12 +325,18 @@ const NO_SIGNAL_BASE: Um = Um(2000);
 /// Resolves `remove`'s target: the base actuation point read from the free keys `usages` leaves
 /// behind, or `NO_SIGNAL_BASE` when none are left to read. A disagreement among those remaining
 /// keys refuses rather than picking one, the same rule `global_ap_or_bail` applies, since
-/// overriding it would write a value nobody chose.
-fn remove_base_ap<T: Transport>(s: &mut Session<T>, m: &Membership, usages: &[u8]) -> Result<Um> {
+/// overriding it would write a value nobody chose. The second element is true exactly when the
+/// value is `NO_SIGNAL_BASE`, so a caller can say the value was invented rather than read, the same
+/// distinction the rt side makes by refusing outright instead of ever reaching this silently.
+fn remove_base_ap<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+    usages: &[u8],
+) -> Result<(Um, bool)> {
     match keyset::global_ap_excluding(s, m, usages)? {
-        Global::Agreed(v) => Ok(v),
+        Global::Agreed(v) => Ok((v, false)),
         Global::Split(counts) => bail!("{}", remove_split_message("actuation point", &counts)),
-        Global::NoneOutsideAKeyset => Ok(NO_SIGNAL_BASE),
+        Global::NoneOutsideAKeyset => Ok((NO_SIGNAL_BASE, true)),
     }
 }
 
@@ -428,24 +434,45 @@ pub(crate) fn remove<T: Transport>(
         })
         .collect();
 
-    let (change, target) = match kind {
+    let (change, target, base_invented) = match kind {
         Kind::Ap => {
-            let v = remove_base_ap(s, &m, usages)?;
-            (keyset::Change::ap(v), Target::Ap(v))
+            let (v, invented) = remove_base_ap(s, &m, usages)?;
+            // `Change::ap`, not `Change::ap_keeping_touch`: `remove` promotes touch nibble 0
+            // ("follow global travel") to nibble 1, a per-key pinned actuation point, the same
+            // promotion `create`/`set`/`delete` already apply, matching the vendor's own measured
+            // behaviour on an actuation point change (`ks-value-ap`). `ap_keeping_touch` exists for
+            // an operation that must never move a key off global travel; nothing about resetting a
+            // key to the base is that operation, so nothing here should reach for it instead.
+            (keyset::Change::ap(v), Target::Ap(v), invented)
         }
         Kind::Rt => {
             let (p, r) = remove_base_rt(s, &m, usages)?;
-            (keyset::Change::rt_off(p, r), Target::Rt(p, r))
+            (keyset::Change::rt_off(p, r), Target::Rt(p, r), false)
         }
     };
 
-    if will_write && usages.len() == m.entries().len() {
-        confirm_whole_board_remove(out, kind, &sets, target, input)?;
-    }
-
+    // `plan` is built before the whole-matrix confirmation, not after: the prompt below describes
+    // what `plan` actually contains, so the operator answers with that in front of them rather than
+    // deciding first and reading what happened only afterward. `plan` only reads the device; no
+    // write happens until the caller applies the returned plan, so reordering this costs nothing
+    // but an earlier read.
     let cleared = keyset::KeysetIndex::clear(kind);
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
-    announce_remove(out, kind, &leaving, usages, target, &plan)?;
+
+    if will_write && usages.len() == m.entries().len() {
+        confirm_whole_board_remove(out, kind, &sets, target, &plan, input)?;
+    }
+
+    announce_remove(
+        out,
+        kind,
+        &leaving,
+        usages,
+        target,
+        base_invented,
+        &sets,
+        &plan,
+    )?;
     Ok(plan)
 }
 
@@ -453,7 +480,15 @@ pub(crate) fn remove<T: Transport>(
 /// keyset of this kind ceases to exist once nothing is left to be a member of anything, and every
 /// key moves to `target` regardless of what it held before, including a whole-board selection with
 /// no live keysets at all, where `target` is the only thing about to change and so the only thing
-/// worth naming. `--dry-run` never reaches here, since it writes nothing to confirm.
+/// worth naming, unless a touch mode also moves and says so too. `--dry-run` never reaches here,
+/// since it writes nothing to confirm.
+///
+/// Called after `plan` is built, not before: the value and keyset clauses can both read as a
+/// no-op, every key already at the target and no keyset to lose, on a board where every key's
+/// touch mode still moves (measured: four free keys already at the base, no keysets, `remove`
+/// promoting all of them off "follow global travel"). Answering the prompt before that fact exists
+/// to describe would let an operator say `yes` to a sentence that is true and still miss the one
+/// thing that changes.
 ///
 /// No `picker::refuse_if_not_terminal`-style guard here, deliberately, though a redirected stdout
 /// (`wh keyset remove ap --keys all > log.txt`) does send this prompt into the file and then block
@@ -476,6 +511,7 @@ fn confirm_whole_board_remove(
     kind: Kind,
     sets: &[Keyset],
     target: Target,
+    plan: &keyset::WritePlan,
     input: &mut impl BufRead,
 ) -> Result<()> {
     let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
@@ -488,8 +524,27 @@ fn confirm_whole_board_remove(
             indices.join(", ")
         )
     };
+    // A count, not a per-key list: the board this guards is 68 keys wide, and the value and
+    // keyset clauses above can both read as a no-op (every key already at the target, no keysets
+    // to lose) while every key's touch mode still moves. Read from `plan` itself, built just
+    // above, not inferred from `target` or `sets`: the mode transition is a property of what the
+    // plan actually sends, the same reason `announce_remove` reads it from `plan` per key.
+    let moved_modes = plan
+        .before()
+        .iter()
+        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
+        .count();
+    let mode_clause = if moved_modes == 0 {
+        String::new()
+    } else {
+        let what = match kind {
+            Kind::Ap => "move off global travel onto their own actuation point",
+            Kind::Rt => "have rapid trigger switched off",
+        };
+        format!(", {moved_modes} key(s) {what}")
+    };
     let prompt = format!(
-        "this selects every key on the board: every key moves to {}, and {keysets}",
+        "this selects every key on the board: every key moves to {}, and {keysets}{mode_clause}",
         target.display()
     );
     if !crate::confirm::confirm(out, &prompt, input)? {
@@ -517,16 +572,33 @@ fn confirm_whole_board_remove(
 /// value *and* have its touch mode move in the same write. A key with its own non-base rapid
 /// trigger settings is the ordinary reason to run `wh keyset remove rt` at all, not the exception,
 /// so naming the mode transition only in the case where the value happens to already sit at the
-/// base would leave it silent in the cases the command is normally used for. Each key's current
-/// value comes from `plan.before()`, the same source `announce_delete` uses.
+/// base would leave it silent in the cases the command is normally used for.
+///
+/// Two more things named wherever `target` is shown: `base_invented` (`Kind::Ap` only, see
+/// `remove_base_ap`) says the value is a chosen default, not one read from the board, so it never
+/// renders indistinguishably from a real reading; and a `removing` line whose keyset has no member
+/// left outside `leaving` says that keyset ceases to exist, the same fact the whole-board prompt
+/// already names for every keyset at once, now named for a partial removal that empties just one.
+/// Each key's current value comes from `plan.before()`, the same source `announce_delete` uses.
+#[allow(clippy::too_many_arguments)]
 fn announce_remove(
     out: &mut impl Write,
     kind: Kind,
     leaving: &[(u16, u8)],
     usages: &[u8],
     target: Target,
+    base_invented: bool,
+    sets: &[Keyset],
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
+    // `Kind::Ap` only, since `remove_base_rt` refuses rather than ever reaching an invented value:
+    // says so wherever `target` is shown, rather than letting an invented number render exactly
+    // like one read from the board.
+    let invented_suffix = if base_invented {
+        " (no key outside a keyset to read a base from, using the default)"
+    } else {
+        ""
+    };
     for &u in usages {
         let prior = plan
             .before()
@@ -540,17 +612,25 @@ fn announce_remove(
             .map(|change| format!(", {change}"))
             .unwrap_or_default();
         if let Some(&(index, _)) = leaving.iter().find(|&&(_, lu)| lu == u) {
+            let disappear_suffix = if keyset_disappears(sets, leaving, index) {
+                format!(", keyset {index} ceases to exist")
+            } else {
+                String::new()
+            };
             writeln!(
                 out,
-                "{}: removing {} from keyset {index}, {prior_value} to {}{mode_suffix}",
+                "{}: removing {} from keyset {index}, {prior_value} to {}{mode_suffix}{invented_suffix}{disappear_suffix}",
                 kind_name(kind),
                 key_label(u),
                 target.display()
             )?;
         } else if !plan.value_records().iter().any(|r| r.key == u) {
+            // Not "nothing to do": the membership record still goes out unconditionally (`plan`'s
+            // own rule), even though it is idempotent here and destroys nothing. Naming a real
+            // frame as nothing at all is the exact shape CLAUDE.md now warns against.
             writeln!(
                 out,
-                "{}: {} already at {} in no {} keyset, nothing to do",
+                "{}: {} already at {}{invented_suffix} in no {} keyset, membership rewritten, value unchanged",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
@@ -559,7 +639,7 @@ fn announce_remove(
         } else if value_moves(kind, plan, prior, u) {
             writeln!(
                 out,
-                "{}: returning {} to {}{mode_suffix}, already in no {} keyset",
+                "{}: returning {} to {}{mode_suffix}{invented_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
@@ -568,7 +648,7 @@ fn announce_remove(
         } else if let Some(change) = mode_change_here {
             writeln!(
                 out,
-                "{}: {} keeps {prior_value}, {change}, already in no {} keyset",
+                "{}: {} keeps {prior_value}{invented_suffix}, {change}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 kind_name(kind)
@@ -581,7 +661,7 @@ fn announce_remove(
             // did change. Kept defensively, matching `describe_member`'s own fourth case.
             writeln!(
                 out,
-                "{}: {} keeps {prior_value}, already in no {} keyset",
+                "{}: {} keeps {prior_value}{invented_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 kind_name(kind)
@@ -589,6 +669,20 @@ fn announce_remove(
         }
     }
     Ok(())
+}
+
+/// Whether removing every key in `leaving` empties `index` entirely, so `announce_remove` can name
+/// a keyset that is about to cease to exist the same way the whole-board prompt already does for
+/// every keyset at once. Compares `index`'s full member list, not just the ones in `leaving`: a
+/// keyset with a member outside this selection survives, and only `sets`, read fresh at the top of
+/// `remove`, knows what that full list is.
+fn keyset_disappears(sets: &[Keyset], leaving: &[(u16, u8)], index: u16) -> bool {
+    let Some(ks) = sets.iter().find(|k| k.index == index) else {
+        return false;
+    };
+    ks.members
+        .iter()
+        .all(|member| leaving.iter().any(|&(li, lu)| li == index && lu == *member))
 }
 
 /// Announces a delete's effect on every member before it writes: what each currently holds and
@@ -1025,13 +1119,21 @@ mod tests {
     /// clause, keeping only the keyset clause, fails here rather than passing every other test.
     #[test]
     fn confirm_whole_board_remove_names_the_value_and_the_keysets_lost() {
+        use wh_device::replay::ReplayTransport;
         let sets = [ks(1, &[0x1A]), ks(3, &[0x04])];
+        // A plan with no mode transition in it: this test is only about the value and keyset
+        // clauses, which `keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide`
+        // (an end-to-end test) covers on its own.
+        let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let plan = keyset::plan(&mut s, &[0x1A], &keyset::Change::ap(Um(2000)), None).unwrap();
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
             Kind::Ap,
             &sets,
             Target::Ap(Um(2000)),
+            &plan,
             &mut "yes\n".as_bytes(),
         )
         .unwrap();
@@ -1050,12 +1152,17 @@ mod tests {
     /// nothing is about to happen.
     #[test]
     fn confirm_whole_board_remove_names_the_value_when_no_keysets_exist() {
+        use wh_device::replay::ReplayTransport;
+        let lines = settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let plan = keyset::plan(&mut s, &[0x1A], &keyset::Change::ap(Um(1800)), None).unwrap();
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
             Kind::Ap,
             &[],
             Target::Ap(Um(1800)),
+            &plan,
             &mut "yes\n".as_bytes(),
         )
         .unwrap();

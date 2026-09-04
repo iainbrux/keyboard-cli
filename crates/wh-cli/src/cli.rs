@@ -229,6 +229,9 @@ pub enum KeysetWhat {
         dry_run: bool,
     },
     /// Reset keys to the board's base value and no keyset: wh keyset remove ap --keys j
+    ///
+    /// For ap, this promotes a key still on touch nibble 0 ("follow global travel") to nibble 1,
+    /// a pinned per-key actuation point, the same promotion create/set/delete already apply.
     Remove {
         kind: KeysetKindArg,
         #[command(flatten)]
