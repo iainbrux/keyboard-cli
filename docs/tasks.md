@@ -301,6 +301,33 @@ rather than as settings it recognises.
   construction shape, parameterised over an already-resolved value each caller keeps producing its
   own way.
 
+- [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
+  Found by a cold reviewer that built its own replay generator and drove the binary, after the
+  committed behaviour had already been measured correct in both cases. **The shipped code is right;
+  what is missing is a test that would notice if it stopped being.** Each is one fixture.
+
+  **The mode count can be over-claimed on a board the three current fixtures cannot distinguish.**
+  The whole-board prompt counts keys whose touch nibble moves. Two wrong predicates survive the
+  suite green, counting keys with any value record, and counting keys with a MODE record. Both agree
+  with the correct answer on the shipped fixtures (4 of 4, 2 of 4, 0 of 4) and diverge only on a
+  whole board where every key is already at nibble 1 and holds a stray value: every key gets value
+  records, no nibble moves, and the mutant prints "4 key(s) move off global travel" when none do.
+  Missing fixture: that board, asserting the clause is absent.
+
+  The under-reporting direction, which is the dangerous one, is already pinned: counting only keys
+  whose owned value also moves, and counting only `Rt` transitions while missing the nibble-0
+  promotion, are each killed by two tests. The prompt cannot silently omit a mode change.
+
+  **`keyset_disappears` can be under-claimed.** Rewriting it as `leaving.len() == ks.members.len()`
+  survives the suite green. Measured on two keysets, 1 holding `w,a` and 2 holding `s,d`, removing
+  `w,a,s`: keyset 1 is emptied and the mutant omits "keyset 1 ceases to exist". Consequence is mild,
+  since the operator still sees a `removing` line for every member, so the destruction stays
+  inferable. Missing fixture: two keysets, remove all of one plus part of the other.
+
+  Deliberately not fixed in the branch that found them. Seven fix rounds ran there and three of the
+  last four introduced a defect of the class they were fixing, so an eighth round carried more risk
+  than two unguarded predicates whose behaviour is measured correct.
+
 - [ ] **2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
   should land before or with 2.23.** Measured: `wh keyset remove ap --keys all > log.txt` puts both
   prompt lines (the warning and "type yes to continue: ") in the redirected file and then blocks on
