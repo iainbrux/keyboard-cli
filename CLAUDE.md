@@ -45,14 +45,21 @@ why there is no daemon and why long-running features are backlogged rather than 
 stale value where the web configurator can. The only exception is the read-modify-write window
 above.
 
-**The board has four profiles and every per-key layout is per profile.** Two profiles were measured
-carrying different actuation points, different sensitivities and different keysets at the same time.
-Two consequences bite constantly. A snapshot belongs to the profile it was taken on, which is why
-`wh restore` refuses a mismatch outright. And **only five of the 36 captures record which profile
-they were on**, so comparing values between two captures is invalid unless both sides are
-established, and for most pairs that cannot be done from the frames at all. `cmd 0x00` payload
-`70 0xFF` reads the active profile; `70 <index>` selects one. One Phase 1 capture, `profile-switch`,
-is profile 2 despite everything around it being profile 1.
+**The board has four profiles and every per-key layout is per profile.** `cmd 0x00` payload
+`70 0xFF` reads the active profile; `70 <index>` selects one. A snapshot belongs to the profile it
+was taken on, which is why `wh restore` refuses a mismatch outright.
+
+**Only five of the 36 captures record which profile they were on**, so a value comparison between
+two captures is invalid unless both sides are established, and for most pairs that cannot be done
+from the frames at all. `layout-16-by-profile` measures only profile 1: it selects index `1` as its
+last outbound frame and stops, so it contains no profile 2 read. That the two profiles held
+different values on the same day is therefore measured on one side and corroborated on the other by
+the operator's note, not measured on both. Do not flatten that to "measured".
+
+`profile-switch` is the trap: it selects index `1` as its first frame, so despite sitting among the
+2026-08-28 captures every read in it is profile 2. Seven of the ten Phase 1 files record no profile
+at all, so "the others are profile 1" is itself the unestablished inference this paragraph warns
+against.
 
 ## Commands
 
@@ -103,6 +110,11 @@ either.
 **Never loosen `ReplayTransport`'s byte-for-byte frame matching** to make a test pass. If a fixture
 stops matching, the code changed under it and the fixture is what should change.
 
+**Prove a destructive hardware test was undone, do not eyeball it.** `wh keyset list` showing the
+right keysets is not evidence the board is back. Take `wh dump` before and after, and diff every key
+on every field: actuation point, MODE, both sensitivities, both memberships. A 68-key restore that
+looks right in the keyset list can still differ in a nibble nothing prints.
+
 **Rebuild the cross-compiled binary before running the shim test.**
 `bin_wh_shim_propagates_wh_replay_and_never_touches_hardware` executes the real `wh.exe`, so a stale
 one makes that test pass or fail for reasons unrelated to the diff.
@@ -134,17 +146,29 @@ the code is wrong**, not merely that it passes when the code is right. Mutate th
 claims to check, watch it fail, restore, and say so in the report. Several tests in this repo were
 found to be decorative exactly that way.
 
-**The recurring mechanism is a string assertion something else can satisfy.** Four have shipped:
-`contains("mismatch")` also matched `ReplayTransport`'s own "send mismatch" wording, so the test
-passed on a broken fixture; `contains("--press")` also matched clap's "unexpected argument '--press'
-found", so it passed when the refusal it checked was unreachable; an assertion on a confirmation
-prompt kept passing after the prompt lost half its content; and a refusal message was pinned by a
-test whose fixture was the only board that message was true of. Assert text only `wh`'s own code can
-emit, and prefer a phrase no other component would produce.
+**Three shapes have shipped here, and they are not the same shape.**
 
-**Also mutate the thing one level up.** Unit tests proving a string is built correctly do not prove
-it reaches the operator. One gap here survived because the only end-to-end assertion was on a
-different substring of the same line.
+*A string something else can also emit.* `contains("mismatch")` matches `ReplayTransport`'s own
+"send mismatch" wording, so the test cannot tell a real readback mismatch from a broken fixture.
+`contains("--press")` matches clap's "unexpected argument '--press' found", so it cannot tell the
+code's refusal from the flag not existing. Both were caught by review and strengthened, and both
+patterns are still live elsewhere in `crates/wh-cli/tests/`. Assert text only `wh`'s own code emits.
+
+*A string true only of its own fixture.* A rapid trigger refusal named one cause for two different
+board states, and the test pinning it was built on the one board where that cause was true, so it
+could never fail. Ask which other boards reach the line, and whether the assertion still holds there.
+
+*An assertion too narrow for the line it guards.* A confirmation prompt was asserted by one
+substring, so half the prompt could be deleted with the suite green. Found by mutation, not shipped.
+
+**And mutate one level up.** Unit tests proving a string is built correctly do not prove it reaches
+the operator through the real command path. Those are different claims and need different tests.
+
+**The fixtures do not look like the real board, in one specific way.** Measured 2026-09-04: all 68
+keys on the operator's board hold MODE `0x10`, advanced nibble 0. The fixtures use `0x18` 104 times
+against `0x10` once in `tests/keyset.rs`, and 38 against 8 in `tests/dump.rs`. The commonest real
+value is close to untested, and a fixture built by copying its neighbours inherits a board shape
+that does not exist. When a change touches MODE, add a case at `0x10`.
 
 ## What the code does and what it says are separate claims
 
