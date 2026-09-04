@@ -136,7 +136,8 @@ Selecting the whole board with `--keys all` follows the same rule as any other s
 leaves every keyset's membership as it is only when one keyset already holds every key on the
 board (the value written still changes); on any board where that is not so, including a board
 where every key is already free, it creates one new keyset holding every key, and every keyset
-that existed before ends with no members. See `docs/keysets.md`, "an operator observation", for
+that existed before ends with no members. See `docs/keysets.md`, "Changing a value over a selection
+that is not exactly one keyset", for
 what evidence supports each shape.
 
 Manage stored groups:

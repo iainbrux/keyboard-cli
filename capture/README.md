@@ -45,6 +45,12 @@ A capture whose profile is unknown cannot be compared with any other.
    that actually owns the WebHID call, which may not be the top-level page
    if the configurator UI is embedded.
 
+   The mirror failure also exists and is harder to spot: `ks-create-rt-2`
+   in the current corpus holds 408 consecutive inbound frames with no
+   outbound counterpart, so part of that session's outgoing traffic was
+   never recorded. Check both directions look balanced before trusting a
+   capture as complete.
+
    If the shim was pasted in **after** the page had already opened the
    device (a page reload was skipped, or the device was already connected
    from a previous test), `open()` never gets called again and the shim's

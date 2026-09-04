@@ -409,7 +409,7 @@ These are known unknowns from the hardware session, listed so nobody re-derives 
 
 ### Unidentified commands
 
-- `0x18`, now 8 frames. Suspected RGB or LED control. See the LED item above. A fresh sample was
+- `0x18`, now 10 request and reply pairs across five files. Suspected RGB or LED control. See the LED item above. A fresh sample was
   captured on 2026-08-29 in `captures/custom-value-nudge-after-restore.jsonl`.
 - ~~`0x2C`~~ **Identified 2026-08-29: SOCD.** Query is `[rw, key, 0xFF]`, reply is
   `[status, keyA, keyB, 0, keyB, keyA]`, the pair given both ways round. Measured `w` with `s` and

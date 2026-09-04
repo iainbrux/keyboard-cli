@@ -4,7 +4,7 @@ Live checklist for `wh`. Items are struck through and ticked as they complete. A
 keyboard physically present is marked **[hardware]**.
 
 Evidence for every protocol claim below is in `docs/protocol.md`, `docs/protocol-inventory.md` and
-`docs/keysets.md`, measured from 5344 frames of real device traffic across 31 capture files.
+`docs/keysets.md`, measured from 5860 frames of real device traffic across 36 capture files.
 
 ## Phase 1
 
@@ -403,7 +403,7 @@ rather than as settings it recognises.
 
 ### Protocol gaps
 
-- [ ] **Command `0x18`.** Suspected RGB or LED control, 8 frames. `0x2c` was resolved on
+- [ ] **Command `0x18`.** Suspected RGB or LED control, 10 request and reply pairs across five files. `0x2c` was resolved on
   2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
 - [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
   by anything in Phase 1.

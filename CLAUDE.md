@@ -121,7 +121,7 @@ found to be decorative exactly that way.
 | `docs/tasks.md` | The live checklist. Start here |
 | `docs/protocol.md` | The wire protocol |
 | `docs/protocol-inventory.md` | Measured frame counts the protocol doc rests on |
-| `docs/keysets.md` | Keyset semantics, measured 2026-08-29 |
+| `docs/keysets.md` | Keyset semantics, measured 2026-08-29 and 2026-09-04 |
 | `docs/backlog.md` | Unscheduled work, with what is known and unknown for each |
 | `capture/README.md` | How to capture real device traffic |
 

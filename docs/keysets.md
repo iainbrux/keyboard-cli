@@ -2,7 +2,7 @@
 
 How the vendor configurator creates, values and deletes a keyset, and what the global rapid trigger
 switch does, measured on 2026-08-29 against a real K-001 running firmware `App_V1.1.046000`.
-Fifteen keyset capture scenarios across two sittings, each changing one thing.
+Twenty-two keyset capture scenarios across four sittings, each changing one thing.
 
 This document is the evidence base for task 2.4. It is reliable about frame shapes and less reliable
 about board state: only five of the 36 captures read layouts `0xFF` or `0xFE` at all, and only one
@@ -410,7 +410,9 @@ recorded delete.
 - Write membership one record per frame, always last.
 - Write the value template for a key only if one of the operation's owned values differs.
 - Rewrite every non-owned layout at the key's current value, read first. That includes `0x16` and
-  `0x17`: read them, do not send a constant.
+  `0x17`: read them, do not send a constant. **`wh` diverges here deliberately and does not write
+  them at all**, on the grounds that it never reads them and a constant would be an invented value.
+  See `crates/wh-device/src/keyset.rs`.
 - A new keyset's value is the global, not the member's previous value.
 - Creating a keyset over a key already in one steals it, with a plain membership rewrite.
 - Deleting must not touch the other layout's membership or its values.
@@ -428,9 +430,13 @@ point keysets and two rapid trigger ones still present after that restore.
 actuation point keyset is created membership first, values second, and that rapid trigger keysets
 reverse it. Both were readings of a single capture in which the members were already at the global
 value, so the create wrote membership alone and the value change was a separate user action seconds
-later. Measured now over nine captures: **values always precede membership**, for both layouts, in
-every operation. `ks-create-ap-1` and `ks-create-ap-3` do open with membership at frame 0, with
-their value writes 6.8 and 4.4 seconds later, which the timestamps support as separate user actions.
+later. Measured over the corpus: **values precede membership in 15 captures**, for both layouts.
+Three do not, and all three are explained rather than counter-examples. `ks-create-ap-1` and
+`ks-create-ap-3` open with membership at frame 0, with their value writes 6.8 and 4.4 seconds later,
+which the timestamps support as separate user actions. `ks-steal-equal-value` writes membership at
+frame 1 and no value record at all, because its members already held the target value and the skip
+rule gave the vendor nothing to write. An earlier revision of this paragraph said values precede
+membership "in every operation", which those three falsify as an absolute.
 
 **A rapid trigger keyset delete is no longer uncaptured.** It was previously listed as never
 observed, and the plan was to compose it from two measured behaviours. That composition would have

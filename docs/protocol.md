@@ -144,21 +144,24 @@ Ported from `research/proto/package/src/utils/pack.ts` and `recdata.ts`
 ## Layout ids
 
 Counted from `cmd 0x23` records only (`0x2b` DEFKEY replies use a different record shape entirely;
-parsing them as layout records produces nonsense).
+parsing them as layout records produces nonsense). **Record counts exclude padding slots**, the
+unused 4-byte slots at the end of a frame, which carry usage `0` and layout `0`. An earlier version
+of this table counted them for every layout except `0x00`, where including them would have added
+every padding slot in the session to that one row.
 
 | layout | records | Distinct values | Meaning |
 |---|---|---|---|
 | `0x00` | 418 | 74 | **Base layer key mapping**, measured. Values are HID usages matching each physical key |
-| `0x01` | 420 | 69 | **FN layer key mapping**, measured. See "The FN layer is measured" below |
-| `0x04` | 1858 | 7 | Actuation point, micrometres. Modelled and used by `wh` |
+| `0x01` | 408 | 69 | **FN layer key mapping**, measured. See "The FN layer is measured" below |
+| `0x04` | 1806 | 7 | Actuation point, micrometres. Modelled and used by `wh` |
 | `0x08` | 2252 | 5 | Mode (touch mode nibble plus advanced-key nibble). Modelled and used by `wh` |
-| `0x14` | 1858 | 3 | RT press depth, micrometres. Modelled and used by `wh` |
-| `0x15` | 1858 | 4 | RT release depth, micrometres. Modelled and used by `wh` |
-| `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Read `0` on profile 1 throughout 2026-08-28, `100` on profile 1 from 2026-08-29 onward, and `0` in every 2026-09-04 keyset capture, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
-| `0x17` | 1858 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
-| `0x19` | 700 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 36-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
-| `0xff` | 420 | 3 | Actuation point keyset index, host-written, measured to `9`. Recorded here as read-but-never-written from a corpus that had never created a keyset. Read and used by `wh` (Phase 2) |
+| `0x14` | 1806 | 3 | RT press depth, micrometres. Modelled and used by `wh` |
+| `0x15` | 1806 | 4 | RT release depth, micrometres. Modelled and used by `wh` |
+| `0x16` | 1806 | 1 | Recorded as always `0` from a corpus with no keysets in it. Read `0` on profile 1 throughout 2026-08-28, `100` on profile 1 from 2026-08-29 onward, and `0` in every 2026-09-04 keyset capture, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
+| `0x17` | 1806 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
+| `0x19` | 680 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
+| `0xfe` | 412 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 36-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
+| `0xff` | 408 | 3 | Actuation point keyset index, host-written, measured to `9`. Recorded here as read-but-never-written from a corpus that had never created a keyset. Read and used by `wh` (Phase 2) |
 
 
 The record counts above are what these ten captured scenarios happened to exercise, not each field's
