@@ -246,7 +246,7 @@ rather than as settings it recognises.
 
   - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
     any other non-owned layout, matching what each capture that reads them reads: `0` in all 38
-    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 412 from the
+    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 414 from the
     profile 2 ones. `keyset::plan` never writes them, and its stated reason, that a constant would be
     an invented value, turns out to be right for a reason it did not know. Of the 34 captures before
     `layout-16-by-profile`, 25 both read and write them, four read without writing, four do neither,

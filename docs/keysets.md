@@ -25,7 +25,8 @@ Two per-key layouts hold membership, and they are **independent groupings over t
 | `0xFE` | rapid trigger keyset | `0`, `1`, `2` |
 
 `0` means the key is in no keyset of that kind. Measured over the 36 files: written values are
-`0, 3, 5, 6, 7, 8, 9` and read values are `0, 1, 2, 3, 4, 5, 6, 7, 9`. An earlier version of this table
+`0, 3, 5, 6, 7, 8, 9` and read values are `0, 1, 2, 3, 4, 5, 6, 7, 9`. An earlier version of this
+table
 said `7` and `8` were never written; the 2026-09-04 captures write both. The read values above `5`
 all come from `layout-16-by-profile`, the only capture that reads membership on profile 1 after the
 2026-08-29 sitting.
@@ -171,8 +172,8 @@ matching what the board read back at the time. Grouped by capture group:
 Where a file both reads and writes them, the written value equals the value it read for that key. Of
 the 34 captures that predate `layout-16-by-profile` and `ks-remove-one-rt`, 25 both read and write
 them, four read without writing, four do neither, and `ks-create-ap-1` writes eight records of
-`100` while containing no read
-frames at all. Hard-coding either value would write it over the other. An earlier draft said they are
+`100` while containing no read frames at all. Hard-coding either value would write it over the
+other. An earlier draft said they are
 written `100` in every template, which is false for three of the seven rows above.
 
 **The `100` to `0` difference is the profile, not time and not a reset.** See below.
@@ -459,8 +460,8 @@ point keysets and two rapid trigger ones still present after that restore.
 actuation point keyset is created membership first, values second, and that rapid trigger keysets
 reverse it. Both were readings of a single capture in which the members were already at the global
 value, so the create wrote membership alone and the value change was a separate user action seconds
-later. Measured over the corpus: **values precede membership in 16 of the 19 captures that
-write it**, for both layouts.
+later. Measured over the corpus: **values precede membership in 16 of the 19 captures that write
+it**, for both layouts.
 Three do not, and all three are explained rather than counter-examples. `ks-create-ap-1` and
 `ks-create-ap-3` open with membership at frame 0, with their value writes 6.8 and 4.4 seconds later,
 which the timestamps support as separate user actions. `ks-steal-equal-value` writes membership at
@@ -571,7 +572,7 @@ in the frames at all, so most such pairs cannot be established from the corpus a
 records that every hardware result taken on 2026-09-04 was on profile 2, which rests on the
 operator's note rather than on a capture.
 
-## The configurator never re-reads membership
+## The configurator does not re-read membership during a value change
 
 Measured across all three 2026-09-04 removal captures. The configurator re-reads six layouts for
 all 68 keys before every single-key change, which is why two removals cost 142 frames. A sweep is
@@ -587,6 +588,14 @@ own nine write frames. Only the outbound request half is missing from the file, 
 requests finds nothing while the replies sit there in full. This section previously said "none of
 the 22 keyset captures reads membership once", which is false of the device and true only of what
 the shim recorded.
+
+**Two structural facts make "read" safe despite the missing request half.** Every `cmd 0x23` frame
+in the corpus carries one of exactly two length bytes, 57 or 5. Length 5 occurs 408 times, all
+inbound, all inside this window, while every write echo in this same file is length 57, so these
+frames cannot be echoes of any write shape the corpus records. And the window opens 52.8 seconds
+after the last write, immediately after the inbound handshake `0x81 0x80 0xa9 0xab 0xab 0xab` that
+also opens `initial-load` and `custom-value-nudge-after-restore`, so it follows a reconnect. The
+request shape that would produce a length-5 reply is unattested anywhere in the corpus.
 
 So the honest claim is narrower than the heading suggests: **the configurator does not re-read
 membership before or during a single-key value change**, measured over the three removal captures
