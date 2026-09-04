@@ -285,13 +285,30 @@ Two things look like exceptions and are not:
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
 
-## Hardware verification still outstanding
+## Hardware verification
+
+### Confirmed on the real board, 2026-09-04
+
+- **`wh keyset create`, `set`, `delete`, and `wh set ap`'s split all work against the keyboard.**
+  Each verified its own readback and took an auto-backup first. `create` over three free keys
+  already at the global emitted membership records only, the skip rule; `set` emitted values and no
+  membership; `delete` returned its members to the global and cleared membership last, one record
+  per frame; and `wh set ap` over two of a four-member keyset moved exactly those two into a fresh
+  index and left the other two where they were.
+- **The vendor cannot tell `wh`'s keysets from its own.** Operator observation of the interface, not
+  a frame measurement: with two keysets made by the vendor and two produced by `wh`, the
+  configurator's actuation point tab listed all four in its own pane, in ascending index order, with
+  their values rendered normally. Every key `wh` had written showed its value undimmed, which is
+  evidence against the greying hypothesis in `docs/backlog.md` without settling its cause.
+
+### Still outstanding
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- `wh set ap` on an untouched key should no longer render greyed in the vendor UI. That the MODE
-  touch nibble is what causes the greying is a hypothesis, not an established cause: see
-  `docs/backlog.md`.
+- `wh set ap` on an **untouched** key, one that has never left touch nibble 0, should no longer
+  render greyed. The keys checked above were all already at nibble 1, so they do not test it. That
+  the MODE touch nibble is what causes the greying remains a hypothesis, not an established cause:
+  see `docs/backlog.md`.
 - `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `keyset::plan` resends
   the key's own touch nibble unchanged, since it only ever promotes nibble 0 (`Global`), and `wh`
   checks the readback against what it actually sent, failing the run and naming the key and both

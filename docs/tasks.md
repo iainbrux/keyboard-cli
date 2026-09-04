@@ -54,6 +54,19 @@ rather than as settings it recognises.
   produce, since `next_index`'s max-plus-one rule cannot). `ops::ap_records` and `ops::set_ap`
   remain in the tree, exercised only by their own unit tests: `wh set ap` moved onto
   `keyset::plan`/`Change::ap` (2.14), so `run.rs` no longer calls either. Documented in `README.md`.
+- [x] ~~**Hardware verification of the keyset write path.**~~ Run 2026-09-04 against the real board
+  on firmware `App_V1.1.046000`, profile 2. `wh keyset create`, `set`, `delete` and `wh set ap`'s
+  split all wrote correctly and verified their own readback, each taking an auto-backup first. The
+  split moved exactly the selected keys into a fresh index and left the remainder in place, which is
+  the behaviour the same session measured the vendor performing in `ks-span-two`.
+
+  Operator observation of the interface, weaker than the frames above and recorded as such: with two
+  vendor-made keysets and two made by `wh` live at once, the configurator listed all four in its own
+  pane with values rendered normally. It does not distinguish our writes from its own.
+
+  Still not exercised on hardware: `wh restore`, `wh set ap --keys all` at scale, `wh profile`, a
+  timed `wh dump`, and `wh set ap` on a key still at touch nibble 0. See `README.md`.
+
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
