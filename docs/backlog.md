@@ -385,6 +385,26 @@ The board really is that fast; this is presentation.
 modal spinner would be a different thing from a one-shot CLI flourish. Decide when the TUI exists
 rather than now.
 
+### A write that sends nothing still rotates a backup
+
+**Measured 2026-09-04**, on `wh set ap --base` and confirmed to be repo-wide rather than that
+command's own defect. A run whose plan turns out empty, every free key already at the target and
+none of them on touch nibble 0, still calls `auto_backup`, writes a snapshot, and evicts the oldest
+of the twenty kept by `KEEP_BACKUPS`. Zero frames reach the board. The operator sees
+`(backed up to ...)` on stderr, which is true but reports work that had no subject.
+
+**Why it is parked rather than fixed.** No write path guards on an empty plan. Fixing it in one
+command would make that command inconsistent with every other, and the announcement is honest about
+what it did, so this is noise rather than a false claim.
+
+**What it costs.** One of twenty rollback points per no-op run. A script calling `--base` in a loop
+on an already-correct board would empty the useful history without ever touching the keyboard.
+
+**What to decide, if it is picked up.** Whether the guard belongs in `auto_backup` itself, where it
+would cover every command at once, or at each call site. The first is one change and risks
+suppressing a backup some caller wants; the second is several and will be applied unevenly. The
+plan is already built at every call site, so `plan.is_empty()` is available either way.
+
 ## Post 1.0, not necessary
 
 Parked deliberately. Neither of these is needed for the tool to do its job, and both should wait
