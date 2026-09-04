@@ -48,14 +48,19 @@ above.
 ## Commands
 
 ```bash
-cargo test --workspace                                    # 417 tests
+cargo test --workspace --no-fail-fast                     # the whole suite
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo build -p wh-cli --release --target x86_64-pc-windows-gnu   # the real binary
 ./bin/wh dump                                             # runs it, needs the board
 ```
 
-All three gate commands must pass before any commit.
+All three gate commands must pass before any commit. Use `--no-fail-fast`: the plain form stops at
+the first failing target and has masked a real result here.
+
+The suite's size is deliberately not written down. It was stated as a number twice and rotted within
+a day both times, and a stale count is worse than none: a reader who sees fewer tests than the file
+claims cannot tell whether coverage was lost or the number was simply old.
 
 `scripts/check-doc-repeats.py $(git ls-files '*.md' ':!research/*')` flags a phrase repeated back to
 back in prose, which is what an edit appending text that was already there looks like. It found one
