@@ -3,7 +3,7 @@
 Generated from all ten capture files of the 2026-08-28 hardware session. Everything here is counted
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
-**Every count here is of that ten-file sample and no other.** The corpus is now 36 files and 5860
+**Every count here is of that ten-file sample and no other.** The corpus is now 39 files and 6280
 frames, and several values were first seen after this session. Where a row and `docs/protocol.md` or
 `docs/keysets.md` disagree, those two are current and this is a record of what the first session
 measured. Any absolute in a row below, "always", "never", "only ever", is a statement about these

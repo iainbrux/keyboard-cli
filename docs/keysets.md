@@ -659,7 +659,7 @@ layout neither `wh` nor the configurator reads would not show up here.
 
 ## Corpus
 
-Thirty-six capture files, 5860 frames, all decoding with correct framing and checksums and no hard
+Thirty-nine capture files, 6280 frames, all decoding with correct framing and checksums and no hard
 failures. Up from ten files and 1224 frames after Phase 1, and twenty-seven after the 2026-08-29
 sittings.
 

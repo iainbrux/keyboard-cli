@@ -6,7 +6,7 @@ golden` has something real to check the codec against. It has been run five
 times: task 19's hardware session (ten scenarios, 1224 frames), two keyset sittings
 on 2026-08-29, and two sittings on 2026-09-04, one verifying keyset semantics and
 one measuring keyset member removal. The corpus now
-stands at thirty-six files and 5860 frames, with zero framing or checksum
+stands at thirty-nine files and 6280 frames, with zero framing or checksum
 failures in any of them. The results are
 recorded in `docs/protocol-inventory.md`, `docs/protocol.md` and
 `docs/keysets.md`. This document describes the procedure so it can be run

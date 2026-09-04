@@ -190,6 +190,32 @@ supports mouse as well as arrows; `crossterm` can capture mouse events, so that 
 to change many settings quickly was the worst place to discover a write bug, and that risk is now
 retired.
 
+**Populate on open, and listen for the board.** Reading the whole board costs about 40ms, measured:
+a nine-layout sweep of 68 keys ran in 28ms and 41ms in two captures. So the TUI reads once at
+startup and holds that model, which is exactly what the configurator does, and needs no polling and
+no cache-invalidation machinery. An earlier draft of this entry worried about staleness; the concern
+was misplaced, because the device is exclusive and nothing else can change the board while the TUI
+holds it.
+
+Except the board itself, and the board says so. Sub-order `0xbe` arrives unsolicited when the
+operator uses the keyboard's own AP or RT keys, `be 00` on entering adjust mode and `be 01` on
+leaving, and the configurator re-reads everything on the second one and ignores the first
+(`docs/protocol.md`). A TUI does the same and is then never stale. This does mean `Transport` needs
+a way to receive an unsolicited report, which is the one genuine architectural addition here: it is
+strictly request-then-response today.
+
+**Two design consequences fall out of one measured fact.** While the board is in adjust mode it
+stops being a keyboard, so a TUI driven from that keyboard becomes unnavigable at the same instant,
+through no fault of its own. Mouse support is therefore load-bearing rather than a nicety, since it
+is the only input that still works. And the TUI should render the locked state explicitly, a banner
+saying the board is being adjusted on the device, because the alternative is an interface that
+silently stops responding to the keys.
+
+**That banner is a deliberate improvement on the target, and the first one.** The vendor UI shows
+nothing at all for this state. Diverging in what is displayed is not the same as diverging in what
+is written: the goal of matching the configurator is about frames on the wire, and a banner sends
+none.
+
 ### A Windows installer with a licence acceptance step
 
 **The idea.** Ship a proper graphical installer, the familiar window with Next, Next, Finish, rather

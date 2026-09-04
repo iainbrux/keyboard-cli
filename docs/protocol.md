@@ -73,8 +73,10 @@ wire's integer micrometres and the millimetre values a human types or reads.
 
 ## Command table
 
-Every command in the corpus is perfectly request/reply balanced: for every request seen, exactly one
-reply was seen, and vice versa.
+Every command in the ten-file Phase 1 corpus is perfectly request/reply balanced: for every request
+seen, exactly one reply was seen, and vice versa. **That is a statement about those captures, not
+about the device.** Sub-order `0xbe` is device-initiated and has no request at all, measured in the
+two board-side captures; see "The board announces its own adjust mode" below.
 
 | cmd | requests | replies | Meaning |
 |---|---|---|---|
@@ -90,8 +92,12 @@ reply was seen, and vice versa.
 
 `cmd 0x00` (CMD) carries a sub-order in `payload[0]`, with the rest of the payload and reply shape
 depending on which sub-order it is. Every sub-order below is request/reply balanced and none was
-ever seen to fail. These ten rows account for all 42 `cmd 0x00` request/reply pairs in the corpus
-(the counts sum to exactly 42), so this table is a complete accounting, not a sample.
+ever seen to fail. These ten rows account for all 42 `cmd 0x00` request/reply pairs in the ten-file
+Phase 1 corpus (the counts sum to exactly 42), so the table is a complete accounting of that sample.
+
+**It is not a complete accounting of the sub-orders the device uses.** Sub-order `0xbe` exists and
+is device-initiated, so it never appears as a request at all. See "The board announces its own
+adjust mode" below.
 
 | sub-order | pairs | Meaning |
 |---|---|---|
@@ -320,6 +326,50 @@ returned the same value it always had for that physical position, while the key'
 under a keypress, and its `cmd 0x23` layout `0x00` record, had changed. This is why `wh` can address
 keys by their DEFKEY-reported usage even after an operator has remapped them: the matrix identifies
 where a key physically is, not what it currently does.
+
+## The board announces its own adjust mode, and it is the only device-initiated frame measured
+
+Measured 2026-09-04 in `captures/board-side-ap-change.jsonl` and
+`captures/board-side-rt-change.jsonl`, the first two captures ever taken while the operator used the
+keyboard's own AP and RT keys rather than the configurator.
+
+The board sends an **unsolicited** frame with no outbound request before it:
+
+```
+5c 03 80 14 00 be 00      entering adjust mode
+5c 03 80 15 00 be 01      leaving it
+```
+
+`0x80` is the reply bit over `cmd 0x00`, so this is sub-order `0xbe`, which appears in no request
+anywhere in the corpus and in no other capture of the 39.
+
+**What the host does with each is measured and asymmetric.** After `be 00`, nothing. Both captures
+sit for ten seconds with the board locked and not one frame is sent, 10.4s in one and 9.6s in the
+other, zero frames between the two notifications in each. After `be 01`, the configurator waits
+about 210ms and then re-reads the whole board: `cmd 0x00` sub-order `0xa1`, two `cmd 0x29` global
+reads, `0xa1` again, sub-order `0x22`, then nine layouts in this order for all 68 keys:
+
+```
+0x04  0x14  0x15  0x16  0x17  0x08  0x19  0xFF  0xFE
+```
+
+Both captures produce that sequence identically, so the notification and the response are the same
+for an actuation point edit and a rapid trigger one. Note this read is **nine** layouts and includes
+membership, where the sweep before a single-key value change is six and excludes it
+(`docs/keysets.md`).
+
+**While the board is in adjust mode it stops being a keyboard.** The operator reports it will not
+type, and pressing the AP key again is what unlocks it. That is what makes `0xbe` worth having: the
+host is being told the device has gone modal, not merely that a value may change.
+
+The `be 00` and `be 01` reading rests on two captures plus the operator's account of what their
+hands did, which explains the ten-second gap. It is well supported rather than exhaustively
+measured: what the third payload byte means beyond `00` and `01` is unknown, and whether the board
+auto-commits on a timeout has not been tested.
+
+**This falsifies a claim made elsewhere in this document.** Request/reply balance across the corpus
+was true of every capture taken before these two, and it was a statement about the sample rather
+than about the device.
 
 ## Profiles
 
