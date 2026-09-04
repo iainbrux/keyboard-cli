@@ -31,7 +31,7 @@ runs against the second one, which is why the matching must never be loosened.
 
 **Writes are read-modify-write.** A settings write reads the key's current MODE first, so that
 changing one thing cannot silently clear another. `wh set ap`'s live path is `keyset::plan` with
-`Change::ap`, whose `apply_touch` promotes touch nibble 0 to 1 and deliberately leaves 1, 3, 4 and
+`Change::ap`, whose `apply_touch` promotes touch nibble 0 to 1 and deliberately leaves 1, 2, 3, 4 and
 unknown nibbles alone; `ops::ap_records` still does the same but is no longer on that path.
 `rt_records` preserves `RtContinuous`. This is the single most important invariant in the codebase
 and it exists because clobbering a nibble silently disables a feature the user set from the vendor
@@ -92,11 +92,14 @@ Running one test, or one suite:
 cargo test -p wh-device ap_records                     # by name substring
 cargo test -p wh-proto --test golden -- --nocapture    # decodes captures/, prints its summary
 cargo test -p wh-cli --test dump                       # end-to-end CLI over replay scripts
+cargo test -p wh-cli --test keyset                     # the wh keyset tree, the largest suite
 ```
 
 `--nocapture` matters for `golden`: without it cargo swallows the summary on a passing run and you
-see only `ok`. The two integration suites are `wh-proto/tests/golden.rs`, which decodes real captured
-traffic, and `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays.
+see only `ok`. There are three integration suites: `wh-proto/tests/golden.rs`, which decodes real
+captured traffic; `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays; and
+`wh-cli/tests/keyset.rs`, the largest of the three and the only end-to-end cover of the `wh keyset`
+command tree.
 
 ## Safety rules, each one learned the hard way
 
@@ -173,9 +176,10 @@ write `0x18` 104 times against `0x10` once in `tests/keyset.rs`, and 38 against 
 profile 2 on 2026-09-04 read `0x10` on all 68 keys, and `layout-16-by-profile` read it on 64 of 68
 on profile 1 the same day. So a change touching MODE should add a case at `0x10`.
 
-The fixtures are not fabricated, and an earlier draft of this paragraph said they were. In those two
-files every `0x18` fixture sits on `w`, `a`, `s` or `d`, and those four keys really did hold `0x18`
-on profile 1 on 2026-09-04. (`wh-device`'s own tests are not so confined.) They are a real board shape, just not the common one.
+The fixtures are not fabricated, and an earlier draft of this paragraph said they were. In those
+two files every `0x18` fixture sits on `w`, `a`, `s` or `d`, and those four keys really did hold
+`0x18` on profile 1 on 2026-09-04. (`wh-device`'s own tests are not so confined.) They are a real
+board shape, just not the common one.
 
 ## What the code does and what it says are separate claims
 

@@ -335,10 +335,11 @@ Two things look like exceptions and are not:
 
 ### Confirmed on the real board, 2026-09-04
 
-Every result below was measured on **profile 2**. Per-key state is per profile. `layout-16-by-profile` measures
-profile 1 only, since it selects profile 2 as its last frame and stops; that the two profiles held
-different actuation points, sensitivities and keysets that day is measured on the profile 1 side and
-corroborated on the other by the operator's own note. Nothing here has been checked on profile 1.
+Every result below was measured on **profile 2**. Per-key state is per profile.
+`layout-16-by-profile` measures profile 1 only, since it selects profile 2 as its last frame and
+stops; that the two profiles held different actuation points, sensitivities and keysets that day is
+measured on the profile 1 side and corroborated on the other by the operator's own note. Nothing
+here has been checked on profile 1.
 
 - **`wh set ap` on a free key allocates a keyset.** `H` sat at the global 2.00mm in no keyset;
   `wh set ap --keys h --set 1.5` created keyset 10 over it alone and read back `h: ap 1.50mm
