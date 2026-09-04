@@ -351,12 +351,13 @@ impl WritePlan {
 /// dropped from that four when it would only echo an unchanged touch nibble 0 back: nibble 0
 /// means "follow global travel", so writing it unchanged would be a semantic change, not an echo.
 ///
-/// Deliberate divergences from the vendor: layouts `0x16`/`0x17` are never written, since we
-/// have never read them and a constant would be an invented value; records are emitted key-major
-/// rather than the vendor's layout-major order, the same divergence `ops::ap_records` documents,
-/// so a mid-batch failure stops at a few keys rather than every key selected; and `frames()`
-/// packs whole per-key groups rather than the vendor's own layout-major batching, so a failure
-/// can only ever land on a key boundary, never inside one key's own records.
+/// Deliberate divergences from the vendor: layouts `0x16`/`0x17` are never written, on the
+/// grounds that `wh` never reads them and a constant would be an invented value; records are
+/// emitted key-major rather than the vendor's layout-major order, the same divergence
+/// `ops::ap_records` documents, so a mid-batch failure stops at a few keys rather than every key
+/// selected; and `frames()` packs whole per-key groups rather than the vendor's own layout-major
+/// batching, so a failure can only ever land on a key boundary, never inside one key's own
+/// records.
 pub fn plan<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],

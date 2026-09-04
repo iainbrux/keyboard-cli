@@ -2855,6 +2855,41 @@ fn set_ap_base_writes_every_free_key_and_no_membership() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Round 4's Finding 1: every `--base` fixture above has four free keys, so `key_or_keys(total)`
+/// has never actually been asked for the singular. A two-key board, 'w' in a keyset and 'a' the
+/// only free key, exercises it: the count must read "1 key", not "1 keys".
+#[test]
+fn set_ap_base_uses_the_singular_when_only_one_free_key_moves() {
+    let mut lines = matrix_lines(); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 1)); // w, keyset member
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_AP, 0)); // a, the only free key
+    lines.extend(key_settings_lines(0x04, 2000, 0x18, 100, 150, 0, 0)); // plan's read of a
+
+    let path = write_script("set-ap-base-singular", &lines);
+    let config_home = scratch_config_dir("set-ap-base-singular");
+    let out = run_wh(
+        &["set", "ap", "--base", "1.95", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}
+stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("the actuation point outside every keyset moves to 1.95mm on 1 key,"),
+        "got: {stdout}"
+    );
+    assert!(!stdout.contains("1 keys"), "got: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// One free key's `(usage, ap, mode)` for building a mixed-state four-free-key fixture: rt
 /// press/release fixed at 100/150 and no keyset membership of either kind, matching every other
 /// `--base` fixture above. Lets the tests below give each of the four free keys its own starting
@@ -2917,13 +2952,20 @@ fn set_ap_base_does_not_claim_movement_when_every_free_key_already_holds_the_bas
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("4 keys outside every keyset already at 1.95mm, nothing to write"),
+        stdout.contains(
+            "the actuation point outside every keyset already matches 1.95mm on 4 keys, \
+             nothing written"
+        ),
         "got: {stdout}"
     );
     assert!(
-        !stdout.contains("move to 1.95mm"),
+        !stdout.contains("moves to 1.95mm"),
         "must not claim movement that did not happen: {stdout}"
     );
+    // `plan.is_empty()` means no key got a record at all, so no touch mode moved either: this
+    // is what proves the round-2 comment claiming `mode_clause` is always empty here, since a
+    // board where it fired here would still pass on wording alone if this line were absent.
+    assert!(!stdout.contains("global travel"), "got: {stdout}");
     assert!(stdout.contains("4 keys verified"), "got: {stdout}");
 
     std::fs::remove_file(path).unwrap();
@@ -3101,7 +3143,10 @@ fn set_ap_base_names_a_mixed_move_count_when_only_some_free_keys_move() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("2 of 4 keys outside every keyset move to 1.95mm, the rest already there"),
+        stdout.contains(
+            "the actuation point outside every keyset moves to 1.95mm on 2 of 4 keys; the \
+             actuation point on the rest already matches 1.95mm"
+        ),
         "got: {stdout}"
     );
 
@@ -3161,6 +3206,50 @@ fn set_ap_base_names_a_mixed_move_count_when_only_some_free_keys_move() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// Round 4's Finding 4, checked against the shape it names explicitly: the mixed-move case
+/// where a non-mover is also on touch nibble 0. `s` and `d` both keep their actuation point
+/// (already at the target), but `s` still promotes off global travel while `d` does not; `e`
+/// and `b` both move their actuation point, and `e` also promotes. The two clauses must stay
+/// independent: "the rest already there" for the two non-movers, alongside a mode count of 2
+/// (`s` and `e`) that includes one mover and one non-mover, neither implying the other skipped.
+#[test]
+fn set_ap_base_keeps_the_value_and_mode_clauses_independent_in_the_mixed_case() {
+    let specs = [
+        (0x16u8, 1950u16, 0x00u16), // s: keeps its ap, promotes off global travel
+        (0x07, 1950, 0x18),         // d: keeps its ap, already off global travel
+        (0x08, 2000, 0x00),         // e: moves, promotes off global travel
+        (0x05, 2000, 0x18),         // b: moves, already off global travel
+    ];
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_custom(&specs));
+
+    let path = write_script("set-ap-base-mixed-both", &lines);
+    let config_home = scratch_config_dir("set-ap-base-mixed-both");
+    let out = run_wh(
+        &["set", "ap", "--base", "1.95", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "the actuation point outside every keyset moves to 1.95mm on 2 of 4 keys; the \
+             actuation point on the rest already matches 1.95mm, keysets untouched, 2 key(s) \
+             move off global travel onto their own actuation point"
+        ),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// Finding 5's coverage gap: the mode clause had an all-move and a none-move test but no mixed
 /// one, where the sibling `--keys` path has all three
 /// (`confirm_whole_board_ap_set_names_the_new_index_the_losing_keysets_the_mode_count_and_the_base_alternative`).
@@ -3193,8 +3282,8 @@ fn set_ap_base_names_a_mixed_mode_count_when_only_some_free_keys_are_at_global_t
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(
-            "4 keys outside every keyset move to 1.95mm, keysets untouched, \
-             2 key(s) move off global travel onto their own actuation point"
+            "the actuation point outside every keyset moves to 1.95mm on 4 keys, keysets \
+             untouched, 2 key(s) move off global travel onto their own actuation point"
         ),
         "got: {stdout}"
     );
