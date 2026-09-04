@@ -198,10 +198,22 @@ rather than as settings it recognises.
       to change the board's base instead, leaving keysets alone: wh set ap --base 1.50
   ```
 
-  **Announce and proceed, do not prompt.** Every write already takes an auto-backup and
-  `wh restore --last` rolls it back, and `wh` is non-interactive by design, driven through a shim
-  across the WSL boundary where a prompt would sit badly. This matches `create`, which announces the
-  keysets it steals from and proceeds.
+  **Prompt, and accept only the exact word.** Ruled by the operator on 2026-09-04, overriding an
+  earlier recommendation in this entry to announce and proceed. After printing the warning, read one
+  line from stdin and act only if it is exactly `yes`. `y`, `ye`, `yess` and everything else are
+  rejected and nothing is written. EOF counts as a rejection, so a closed or empty stdin is safe.
+
+  The objection that `wh` cannot prompt was wrong and is recorded here so it is not raised again:
+  `bin/wh` ends in `exec`, so `wh.exe` inherits stdin straight from the WSL shell and a prompt
+  reaches the operator normally.
+
+  Two consequences to build for. `--dry-run` must **not** prompt, since it writes nothing. And there
+  is deliberately no `--yes` flag: a bypass would defeat the ruling, so the tests cover the confirmed
+  path by piping `yes` on stdin rather than by skipping the prompt.
+
+  Implementer's choice to confirm with the operator: the match is currently specified as exact and
+  case-sensitive, so `YES` is rejected too. That follows the ruling's wording literally and is a
+  one-word change if it proves annoying.
 
   Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
   ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
