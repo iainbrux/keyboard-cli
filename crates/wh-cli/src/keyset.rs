@@ -194,9 +194,10 @@ fn agreement_line<V: PartialEq + Copy>(
 
 /// The value an operation resolved to write, whatever its source: `create`/`delete` from
 /// `--value`/`--press`/`--release` or the board's global, `remove` from the base read excluding
-/// its own selection, or `NO_SIGNAL_BASE` when nothing is left to read. Carried alongside the plan
-/// so `announce_steal`, `announce_delete` and `announce_remove` can show what each affected member
-/// is about to move to or lose it for.
+/// its own selection, or, `Kind::Ap` only, `NO_SIGNAL_BASE` when nothing is left to read;
+/// `remove_base_rt` refuses in that case instead, so a `Target::Rt` never comes from the constant.
+/// Carried alongside the plan so `announce_steal`, `announce_delete` and `announce_remove` can show
+/// what each affected member is about to move to or lose it for.
 #[derive(Clone, Copy)]
 pub(crate) enum Target {
     Ap(Um),
@@ -358,8 +359,8 @@ fn remove_base_rt<T: Transport>(
         Global::NoneOutsideAKeyset => {
             // Same `Global` variant, two different board states: no key is free at all, or every
             // free key is also in this selection. `m.entries()` already has what is needed to
-            // tell them apart, no extra read; conflating them sends an operator looking for
-            // keysets that do not exist on a board where they plainly do.
+            // tell them apart, no extra read; conflating them would send an operator looking for
+            // keysets that do not exist, on a board where the free keys causing this plainly do.
             if m.entries().iter().any(|&(_, membership)| membership == 0) {
                 bail!(
                     "every key outside a rapid trigger keyset is also in this selection, so there \
@@ -460,8 +461,16 @@ pub(crate) fn remove<T: Transport>(
 /// cannot render to one at all; piping to it is not an escape hatch, it is meaningless. This
 /// prompt is one line out and one line in, and `docs/tasks.md` rules that shape as the sanctioned
 /// way to answer it, "no bypass flag, so tests pipe `yes` on stdin", for real scripted use as well
-/// as for tests. Refusing a redirected stdout here would break that sanctioned path, not just
-/// guard against a hang.
+/// as for tests.
+///
+/// To be precise about which guard this argument rules out: a bare `refuse_if_not_terminal`-style
+/// check on stdout alone, mirroring `--pick`'s, would refuse every piped-stdin run, tests included,
+/// since those pipe both streams. That form really would break the sanctioned path, not just guard
+/// against the hang. A narrower form, refusing only when stdout is not a terminal *and* stdin is
+/// (an operator at a live prompt with the message routed away from them, the exact case measured
+/// above, never the piped-both-streams shape automation and tests use) would not break it. Not
+/// built here either, but for a different reason: moving the prompt to stderr, still open, closes
+/// the same hazard for every redirection combination with no terminal check at all.
 fn confirm_whole_board_remove(
     out: &mut impl Write,
     kind: Kind,
@@ -501,8 +510,15 @@ fn confirm_whole_board_remove(
 /// but whose touch mode moves, most often rapid trigger switching off underneath an unchanged
 /// sensitivity, or a key promoted off "follow global travel" at an unchanged actuation point, names
 /// the mode transition instead of describing it as a value move: the same `mode_change` vocabulary
-/// `describe_member` already renders as "mode Rt to Single". Each key's current value comes from
-/// `plan.before()`, the same source `announce_delete` uses.
+/// `describe_member` already renders as "mode Rt to Single".
+///
+/// The mode transition is not only that fourth case's whole line: `removing` and `returning` each
+/// append it too, whenever `mode_change` reports one, since a key can leave a keyset or reach a new
+/// value *and* have its touch mode move in the same write. A key with its own non-base rapid
+/// trigger settings is the ordinary reason to run `wh keyset remove rt` at all, not the exception,
+/// so naming the mode transition only in the case where the value happens to already sit at the
+/// base would leave it silent in the cases the command is normally used for. Each key's current
+/// value comes from `plan.before()`, the same source `announce_delete` uses.
 fn announce_remove(
     out: &mut impl Write,
     kind: Kind,
@@ -518,10 +534,15 @@ fn announce_remove(
             .find(|ks| ks.usage == u)
             .expect("every selected key was read into plan.before()");
         let prior_value = value_display(kind, prior);
+        let mode_change_here = mode_change(plan, prior, u);
+        let mode_suffix = mode_change_here
+            .as_ref()
+            .map(|change| format!(", {change}"))
+            .unwrap_or_default();
         if let Some(&(index, _)) = leaving.iter().find(|&&(_, lu)| lu == u) {
             writeln!(
                 out,
-                "{}: removing {} from keyset {index}, {prior_value} to {}",
+                "{}: removing {} from keyset {index}, {prior_value} to {}{mode_suffix}",
                 kind_name(kind),
                 key_label(u),
                 target.display()
@@ -538,13 +559,13 @@ fn announce_remove(
         } else if value_moves(kind, plan, prior, u) {
             writeln!(
                 out,
-                "{}: returning {} to {}, already in no {} keyset",
+                "{}: returning {} to {}{mode_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
                 kind_name(kind)
             )?;
-        } else if let Some(change) = mode_change(plan, prior, u) {
+        } else if let Some(change) = mode_change_here {
             writeln!(
                 out,
                 "{}: {} keeps {prior_value}, {change}, already in no {} keyset",
@@ -553,6 +574,11 @@ fn announce_remove(
                 kind_name(kind)
             )?;
         } else {
+            // Unreachable given `Change::ap`/`Change::rt_off`'s fixed field sets: a value bundle
+            // is emitted only when the mode value or the kind's own owned value differs, and
+            // `Change::ap` leaves rt targets equal to `prior` while `Change::rt_off` leaves ap
+            // equal, so "bundle emitted and the kind's own value unchanged" always means the mode
+            // did change. Kept defensively, matching `describe_member`'s own fourth case.
             writeln!(
                 out,
                 "{}: {} keeps {prior_value}, already in no {} keyset",

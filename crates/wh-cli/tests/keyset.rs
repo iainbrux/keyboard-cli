@@ -3103,7 +3103,9 @@ fn keyset_delete_rt_end_to_end_catches_a_mode_that_never_turned_off_on_the_secon
 /// resets the sensitivities to the global, but leaves the key's own actuation point untouched.
 /// `w`'s AP, `1.10mm`, is the whole point of this test: a rewrite that reused the actuation point
 /// branch would send the global `2.00mm` there instead, and every other record in the frame would
-/// still look right.
+/// still look right. This is also the ordinary shape `wh keyset remove rt` runs against, a member
+/// with its own non-base sensitivity, so the announcement must name the mode transition alongside
+/// the new value, not only in the free-key case where the value happens to sit at the base already.
 #[test]
 fn keyset_remove_rt_turns_rapid_trigger_off_and_keeps_the_actuation_point() {
     let mut lines = matrix_lines(); // resolve_keys
@@ -3133,7 +3135,9 @@ fn keyset_remove_rt_turns_rapid_trigger_off_and_keeps_the_actuation_point() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("rt: removing w from keyset 1, 0.30/0.40mm to 0.10/0.10mm"),
+        stdout.contains(
+            "rt: removing w from keyset 1, 0.30/0.40mm to 0.10/0.10mm, mode Rt to Single"
+        ),
         "got: {stdout}"
     );
 
@@ -3900,6 +3904,94 @@ fn keyset_remove_writes_only_membership_for_a_key_already_at_the_base() {
         frame_lines(&stdout),
         expected,
         "no value record, only the unconditional membership clear: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The commoner case the mode-only fix missed: a free key with its *own* non-base sensitivity, so
+/// the value genuinely moves and the mode transition would otherwise be silent, dropped by
+/// `value_moves` taking priority with nothing to append it. `w` is outside every rt keyset at
+/// 0.20/0.25mm, touch nibble `Rt` (own settings); the base, read from the other free keys, is
+/// 0.10/0.15mm. `remove`'s `rt_off` change both resets the sensitivity and turns rapid trigger off,
+/// MODE `0x0038` to `0x0018`, in the same write, and the announcement must say both: a value that
+/// changed from 0.20/0.25mm to 0.10/0.15mm reads as "the new rapid trigger setting" unless the mode
+/// clause makes clear there will be no rapid trigger at all.
+#[test]
+fn keyset_remove_rt_names_the_mode_transition_alongside_a_value_that_also_moves() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
+    }
+    // remove_base_rt reads the press/release of every free key except w: a, s, d.
+    for usage in [0x04u8, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::RT_PRESS, 100));
+        lines.extend(layout_read_lines(usage, layout::RT_RELEASE, 150));
+    }
+    // plan's own read of w: rt keyset 0 (free), MODE 0x38 (Rt, own settings), own sensitivity
+    // 0.20/0.25mm, away from the base.
+    lines.extend(key_settings_lines(0x1A, 2000, 0x38, 200, 250, 0, 0));
+
+    let script = write_script("keyset-remove-rt-value-and-mode", &lines);
+    let config_home = scratch_config_dir("keyset-remove-rt-value-and-mode");
+    let out = run_wh(
+        &["keyset", "remove", "rt", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .contains("rt: returning w to 0.10/0.15mm, mode Rt to Single, already in no rt keyset"),
+        "got: {stdout}"
+    );
+
+    let value_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let mut expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&[KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_RT,
+            value: 0,
+        }])
+        .iter()
+        .map(|f| hex(f)),
+    );
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "MODE 0x0038 to 0x0018 and the sensitivity reset both really are on the wire: {stdout}"
     );
 
     std::fs::remove_file(script).unwrap();

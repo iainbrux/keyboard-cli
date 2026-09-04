@@ -174,9 +174,14 @@ rather than as settings it recognises.
   when `w` is the only free rt key on the board, not only `--keys all`. `wh keyset delete rt
   <index>`, which still takes `--press`/`--release`, is the route past this refusal.
 
-  **Announcement needs three cases**, since "free key(s) d left alone, already in no ap keyset"
-  becomes false: removed from keyset N with its old and new value; returned to the base from a stray
-  value while already outside every keyset; and already at the base, nothing done.
+  **Announcement needs four reachable cases**, not three, since "free key(s) d left alone,
+  already in no ap keyset" becomes false: removed from keyset N with its old and new value;
+  returned to the base from a stray value while already outside every keyset; already at the base,
+  nothing done; and a fourth found only during review, a free key whose owned value already sits at
+  the base but whose touch mode still moves (rapid trigger switching off, or a key promoted off
+  "follow global travel"), which must name the mode transition rather than read as either of the
+  other two. The first two also append the mode transition when it applies alongside them, the same
+  fix.
 
   **One existing test inverts.** `keyset_remove_ignores_a_free_key_selected_alongside_a_member`
   asserted free keys are dropped from the plan. They are now included, so it became a test that they
@@ -201,7 +206,7 @@ rather than as settings it recognises.
   Shipped: both kinds, the base read excluding the reset selection, and the `Split` refusal. The
   `NoneOutsideAKeyset` case ships differently per kind and stays that way on purpose: `ap` falls
   back to `2000`, `rt` refuses whenever every key currently free of an rt keyset is also in the
-  selection, whole-board or not. Also shipped: the three-case announcement, and the whole-matrix
+  selection, whole-board or not. Also shipped: the four-case announcement, and the whole-matrix
   confirmation reusing `crate::confirm::confirm`. `--value`, `--press` and `--release` are gone
   from the clap variant and from the `Kind::Ap` refusal, which had nothing left to refuse and was
   deleted with them.
@@ -288,6 +293,33 @@ rather than as settings it recognises.
   `NoneOutsideAKeyset` behaviour without meaning to, either direction. Share only the `Change`
   construction shape, parameterised over an already-resolved value each caller keeps producing its
   own way.
+
+- [ ] **2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
+  should land before or with 2.23.** Measured: `wh keyset remove ap --keys all > log.txt` puts both
+  prompt lines (the warning and "type yes to continue: ") in the redirected file and then blocks on
+  stdin with nothing at all on the operator's screen, since `confirm` writes to whatever `Write` its
+  caller hands it, and `keyset::remove`'s caller in `run.rs` hands it real stdout.
+
+  Writing to stderr instead closes this for every redirection combination (`> log.txt`,
+  `2>&1 > log.txt`, either stream piped alone), needs no `is_terminal()` check and so no
+  platform-dependent behaviour on the Windows target, matches what this binary already does with
+  its own `transport: replay|hardware` line, and leaves the piped-stdin confirmation mechanism
+  (2.22's own "no bypass flag, so tests pipe `yes` on stdin") completely untouched: stdin is not
+  stdout, so nothing about how the prompt is answered changes.
+
+  **The cost, exactly.** One more writer threaded through `keyset::remove` from `run.rs`, alongside
+  the `out` it already takes for the announcement, since the prompt and the announcement are meant
+  for different streams now. One end-to-end assertion moves from checking `decline_stdout` to
+  checking the equivalent on stderr, in
+  `keyset_remove_over_the_whole_board_requires_a_typed_yes`, plus the comment explaining which
+  stream carries what. No other behaviour changes: the announcement itself (`removing`/`returning`/
+  `nothing to do`) still goes to stdout, since that is what `--dry-run` prints and what
+  `wh keyset remove ap --keys all > log.txt` is presumably being redirected to capture in the first
+  place.
+
+  **Land this before or with 2.23**, so `wh set ap --keys all`'s own confirmation, whenever it is
+  built, calls the corrected version from the start rather than repeating the stdout choice and
+  needing this fix a second time.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes

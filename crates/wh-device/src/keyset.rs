@@ -467,7 +467,12 @@ pub enum Global<T> {
     /// They do not. Each distinct value with the number of keys holding it, descending by count,
     /// so a caller can name the odd ones out; `wh-device` does not pick a winner itself.
     Split(Vec<(T, usize)>),
-    /// No key is outside a keyset, so nothing can report it.
+    /// No key is outside a keyset, so nothing can report it. For `global_ap_excluding` and
+    /// `global_rt_excluding` this variant carries a second, distinct cause: a free key can exist
+    /// while every one of them is in `exclude`, which reads identically to none existing at all.
+    /// A caller building an error from this variant must not assume the first cause without
+    /// checking, or it will name a hazard ("no keysets exist") that is false on a board where they
+    /// plainly do.
     NoneOutsideAKeyset,
 }
 
@@ -510,6 +515,11 @@ pub fn global_ap<T: Transport>(
 /// The board's base actuation point, read from `0x04` of every key holding no actuation point
 /// membership, ignoring any key in `exclude`. Callers resetting keys to the base pass those keys
 /// here: they are frequently the reason the remaining keys disagree.
+///
+/// `NoneOutsideAKeyset` is ambiguous here in a way it is not for `global_ap`: it can mean no key on
+/// the board is free, or it can mean free keys exist but every one of them is in `exclude`. A
+/// caller reporting this case must decide which happened, from `m.entries()` if it matters, rather
+/// than reusing wording that assumes the first.
 pub fn global_ap_excluding<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
@@ -543,7 +553,8 @@ pub fn global_rt<T: Transport>(
 
 /// The board's base rapid trigger sensitivity, read from `0x14`/`0x15` of every key holding no
 /// rapid trigger membership, ignoring any key in `exclude`. See `global_ap_excluding` for why a
-/// caller resetting keys to the base needs this.
+/// caller resetting keys to the base needs this, and for the same ambiguity in
+/// `NoneOutsideAKeyset`: no free key at all, or every free key excluded, read identically here too.
 pub fn global_rt_excluding<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
