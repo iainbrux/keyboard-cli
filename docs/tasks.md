@@ -178,13 +178,36 @@ rather than as settings it recognises.
   setting: it is what every key outside a keyset holds in layout `0x04`, which is also why 2.10
   exists. So setting it means writing the value to every free key and touching no membership.
 
-  `wh set ap --keys all --set X` does **not** do it. Since 2.20 that enrols all 68 keys into one
-  keyset, which is measured vendor behaviour (`ks-value-over-all` writes `0xFF = 3` to all 68), but
-  it is the opposite of setting a base.
+  `--base` takes no `--keys` and refuses alongside `--set`: it names the board, not a selection.
+  The flag is `--base` and not `--mm` by the operator's ruling, since `--mm` is reserved for 2.10's
+  `"MM" CUSTOM VALUE`, which is a different setting the docs already record as easy to confuse with
+  this one.
+
+  **`wh set ap --keys all --set X` stays, and is not the same thing.** Since 2.20 it enrols all 68
+  keys into one new keyset, which is measured vendor behaviour (`ks-value-over-all` writes
+  `0xFF = 3` to all 68) and the configurator supports it, so `wh` should not diverge by removing it.
+  But it is rarely what someone means, and it is destructive in a way that is not obvious: every key
+  moves into the new index, so **every existing keyset loses all its members and ceases to exist**.
+
+  So it must say so before it writes, naming what is lost, in the style `announce_steal` already
+  uses. Something of this shape:
+
+  ```
+  ap: --keys all moves every key into one new keyset, keyset 11
+      keysets 2, 7, 8, 9 will cease to exist, their members absorbed
+      to change the board's base instead, leaving keysets alone: wh set ap --base 1.50
+  ```
+
+  **Announce and proceed, do not prompt.** Every write already takes an auto-backup and
+  `wh restore --last` rolls it back, and `wh` is non-interactive by design, driven through a shim
+  across the WSL boundary where a prompt would sit badly. This matches `create`, which announces the
+  keysets it steals from and proceeds.
 
   Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
-  ACTUATION POINT field is changed. If it writes `0x04` to every non-member key with no membership
-  record, this task is that write. `begin("ks-set-global-ap")`, change the field, copy.
+  ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
+  `0x04` to every non-member key is the only way to set it; what is not known is whether the vendor
+  sends anything else alongside, a MODE record for instance. `begin("ks-set-global-ap")`, change the
+  field, copy.
 
 - [ ] **2.24 Extract the shared kind branch from `keyset::delete` and `keyset::remove`.** The two
   hold a verbatim-identical sixteen-line block: `Kind::Ap` to `Change::ap`, `Kind::Rt` to
@@ -423,6 +446,12 @@ rather than as settings it recognises.
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
+
+  **`--mm` is reserved for this, and must not be spent elsewhere.** Ruled by the operator on
+  2026-09-04 while naming 2.23's flag. `"MM" CUSTOM VALUE` is the one term the configurator uses for
+  this setting, and it is the exact term this task exists to stop being confused with the actuation
+  point. Any flag `wh` grows for it should be `--mm`; 2.23 uses `--base` for the actuation point so
+  the two cannot collide.
 - [ ] **2.11 Stop writing zero dead zones on restore.** The vendor's `cmd 0x29` write always carries
   `press_dead=200` and `release_dead=200`, constants in its own SDK template. The board reports both
   as `0` on read, so `wh restore` writes `0, 0` where the vendor has only ever written `200, 200`.
