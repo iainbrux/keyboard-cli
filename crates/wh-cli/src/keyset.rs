@@ -464,8 +464,8 @@ pub(crate) fn remove<T: Transport>(
 /// as for tests.
 ///
 /// To be precise about which guard this argument rules out: a bare `refuse_if_not_terminal`-style
-/// check on stdout alone, mirroring `--pick`'s, would refuse every piped-stdin run, tests included,
-/// since those pipe both streams. That form really would break the sanctioned path, not just guard
+/// check on stdout alone, mirroring `--pick`'s, would refuse any run whose stdout is piped, tests
+/// included, since the harness pipes all three streams. That form really would break the sanctioned path, not just guard
 /// against the hang. A narrower form, refusing only when stdout is not a terminal *and* stdin is
 /// (an operator at a live prompt with the message routed away from them, the exact case measured
 /// above, never the piped-both-streams shape automation and tests use) would not break it. Not
@@ -758,7 +758,7 @@ pub(crate) fn announce_steal(
 }
 
 /// One member's line, describing what a create's steal, a create's plain enrollment of a free
-/// key, or a delete's own write does to it. Three cases, since a value record can be present
+/// key, or a delete's own write does to it. Four cases, since a value record can be present
 /// without the value it carries actually moving: `plan` echoes a key's own value back unchanged
 /// whenever anything else about it (its touch mode, say) changes, so "a record exists" is not
 /// "the value changes".

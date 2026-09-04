@@ -309,8 +309,8 @@ rather than as settings it recognises.
 
   **The cost, exactly.** One more writer threaded through `keyset::remove` from `run.rs`, alongside
   the `out` it already takes for the announcement, since the prompt and the announcement are meant
-  for different streams now. One end-to-end assertion moves from checking `decline_stdout` to
-  checking the equivalent on stderr, in
+  for different streams now. Two end-to-end assertions move from checking `decline_stdout` to
+  checking the equivalent on stderr, the keyset line and the value line, both in
   `keyset_remove_over_the_whole_board_requires_a_typed_yes`, plus the comment explaining which
   stream carries what. No other behaviour changes: the announcement itself (`removing`/`returning`/
   `nothing to do`) still goes to stdout, since that is what `--dry-run` prints and what

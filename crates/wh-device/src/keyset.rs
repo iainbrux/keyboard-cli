@@ -470,9 +470,9 @@ pub enum Global<T> {
     /// No key is outside a keyset, so nothing can report it. For `global_ap_excluding` and
     /// `global_rt_excluding` this variant carries a second, distinct cause: a free key can exist
     /// while every one of them is in `exclude`, which reads identically to none existing at all.
-    /// A caller building an error from this variant must not assume the first cause without
-    /// checking, or it will name a hazard ("no keysets exist") that is false on a board where they
-    /// plainly do.
+    /// A caller building an error from this variant must check `m.entries()` for a key holding
+    /// membership `0` before naming a cause. Assuming the first one reports "no key is outside a
+    /// keyset" on a board where every key is.
     NoneOutsideAKeyset,
 }
 
