@@ -26,10 +26,9 @@ Two per-key layouts hold membership, and they are **independent groupings over t
 
 `0` means the key is in no keyset of that kind. Measured over the 36 files: written values are
 `0, 3, 5, 6, 7, 8, 9` and read values are `0, 1, 2, 3, 4, 5, 6, 7, 9`. An earlier version of this
-table
-said `7` and `8` were never written; the 2026-09-04 captures write both. The read values above `5`
-all come from `layout-16-by-profile`, the only capture that reads membership on profile 1 after the
-2026-08-29 sitting.
+table said `7` and `8` were never written; the 2026-09-04 captures write both. The read values
+above `5` all come from `layout-16-by-profile`, the only capture that reads membership on
+profile 1 after the 2026-08-29 sitting.
 
 **A key can sit in one of each at the same time. Measured.** `ks-create-rt-2`'s 68-key read at 22:08
 returns `u` and `i` holding `0xFF = 3` and `0xFE = 1` at once. An earlier revision of this paragraph
@@ -173,8 +172,8 @@ Where a file both reads and writes them, the written value equals the value it r
 the 34 captures that predate `layout-16-by-profile` and `ks-remove-one-rt`, 25 both read and write
 them, four read without writing, four do neither, and `ks-create-ap-1` writes eight records of
 `100` while containing no read frames at all. Hard-coding either value would write it over the
-other. An earlier draft said they are
-written `100` in every template, which is false for three of the seven rows above.
+other. An earlier draft said they are written `100` in every template, which is false for three of
+the seven rows above.
 
 **The `100` to `0` difference is the profile, not time and not a reset.** See below.
 
@@ -461,13 +460,13 @@ actuation point keyset is created membership first, values second, and that rapi
 reverse it. Both were readings of a single capture in which the members were already at the global
 value, so the create wrote membership alone and the value change was a separate user action seconds
 later. Measured over the corpus: **values precede membership in 16 of the 19 captures that write
-it**, for both layouts.
-Three do not, and all three are explained rather than counter-examples. `ks-create-ap-1` and
-`ks-create-ap-3` open with membership at frame 0, with their value writes 6.8 and 4.4 seconds later,
-which the timestamps support as separate user actions. `ks-steal-equal-value` writes membership at
-frame 1 and no value record at all, because its members already held the target value and the skip
-rule gave the vendor nothing to write. An earlier revision of this paragraph said values precede
-membership "in every operation", which those three falsify as an absolute.
+it**, for both layouts. Three do not, and all three are explained rather than counter-examples.
+`ks-create-ap-1` and `ks-create-ap-3` open with membership at frame 0, with their value writes 6.8
+and 4.4 seconds later, which the timestamps support as separate user actions.
+`ks-steal-equal-value` writes membership at frame 1 and no value record at all, because its members
+already held the target value and the skip rule gave the vendor nothing to write. An earlier
+revision of this paragraph said values precede membership "in every operation", which those three
+falsify as an absolute.
 
 **A rapid trigger keyset delete is no longer uncaptured.** It was previously listed as never
 observed, and the plan was to compose it from two measured behaviours. That composition would have
@@ -592,13 +591,17 @@ the shim recorded.
 **Two structural facts make "read" safe despite the missing request half.** Every `cmd 0x23` frame
 in the corpus carries one of exactly two length bytes, 57 or 5. Length 5 occurs 408 times, all
 inbound, all inside this window, while every write echo in this same file is length 57, so these
-frames cannot be echoes of any write shape the corpus records. And the window opens 52.8 seconds
-after the last write, immediately after the inbound handshake `0x81 0x80 0xa9 0xab 0xab 0xab` that
-also opens `initial-load` and `custom-value-nudge-after-restore`, so it follows a reconnect. The
-request shape that would produce a length-5 reply is unattested anywhere in the corpus.
+frames cannot be echoes of any write shape the corpus records. And the read itself begins 52.8
+seconds after the last write, at frame 146, immediately after six inbound replies at frames 140 to
+145 whose types are connect-shaped: a `0x81` device-info reply, a `0x80` profile reply and three
+`0xab` matrix replies. That is not the identical sequence that opens `initial-load`,
+`custom-value-nudge-after-restore` and `remap-matrix-read`, which carry two `0x81` and no `0xa9`,
+so the reply types support a reconnect while the exact sequence differs. The request shape that
+would produce a length-5 reply is unattested anywhere in the corpus.
 
-So the honest claim is narrower than the heading suggests: **the configurator does not re-read
-membership before or during a single-key value change**, measured over the three removal captures
+So the claim this section can support is the narrow one in its heading: **the configurator does not
+re-read membership before or during a single-key value change**, measured over the three removal
+captures
 and the value changes. Whether it re-reads at other moments is not settled, and `ks-create-rt-2`
 shows it doing so at least once mid-sitting.
 

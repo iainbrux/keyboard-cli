@@ -46,8 +46,8 @@ A capture whose profile is unknown cannot be compared with any other.
    if the configurator UI is embedded.
 
    The mirror failure also exists and is harder to spot: `ks-create-rt-2`
-   in the current corpus holds 415 consecutive inbound frames with no
-   outbound counterpart, so part of that session's outgoing traffic was
+   in the current corpus holds 415 consecutive inbound frames, 414 of
+   them with no outbound counterpart, so part of that session's outgoing traffic was
    never recorded. Check both directions look balanced before trusting a
    capture as complete.
 
