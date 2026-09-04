@@ -110,8 +110,37 @@ fn run_wh(
         .env("WH_REPLAY", replay)
         .env("XDG_CONFIG_HOME", config_home)
         .args(args)
+        .stdin(std::process::Stdio::null())
         .output()
         .unwrap()
+}
+
+/// `run_wh` with a line on stdin, for the commands that ask for a typed confirmation.
+/// Not yet called; allowed dead until a destroy command test needs it.
+#[allow(dead_code)]
+fn run_wh_stdin(
+    args: &[&str],
+    replay: &std::path::Path,
+    config_home: &std::path::Path,
+    input: &str,
+) -> std::process::Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wh"))
+        .env("WH_REPLAY", replay)
+        .env("XDG_CONFIG_HOME", config_home)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 /// One `read_layout_value` roundtrip: a single-record read request for `usage`/`layout`, and the

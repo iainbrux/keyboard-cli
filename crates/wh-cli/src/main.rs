@@ -1,4 +1,5 @@
 mod cli;
+mod confirm;
 mod keyset;
 mod picker;
 mod run;
