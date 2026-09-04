@@ -45,11 +45,19 @@ why there is no daemon and why long-running features are backlogged rather than 
 stale value where the web configurator can. The only exception is the read-modify-write window
 above.
 
+**The board can change under you, and it says so.** The keyboard's own AP and RT keys edit settings
+without the host involved, and while that is happening the board stops being a keyboard at all: it
+will not type until the key is pressed again. It announces both edges with an unsolicited `cmd 0x00`
+sub-order `0xbe`, `be 00` entering and `be 01` leaving, and the vendor configurator ignores the
+first and re-reads the whole board on the second. Measured, see `docs/protocol.md`. `Transport` is
+strictly request-then-response today and cannot receive it, which is the one real blocker for any
+long-running interface.
+
 **The board has four profiles and every per-key layout is per profile.** `cmd 0x00` payload
 `70 0xFF` reads the active profile; `70 <index>` selects one. A snapshot belongs to the profile it
 was taken on, which is why `wh restore` refuses a mismatch outright.
 
-**Only five of the 36 captures record which profile they were on**, so a value comparison between
+**Only five of the 39 captures record which profile they were on**, so a value comparison between
 two captures is invalid unless both sides are established, and for most pairs that cannot be done
 from the frames at all. `layout-16-by-profile` measures only profile 1: it selects index `1` as its
 last outbound frame and stops, so it contains no profile 2 read. That the two profiles held
