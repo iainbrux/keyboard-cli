@@ -2018,6 +2018,13 @@ fn set_ap_over_the_whole_board_requires_a_typed_yes() {
         decline_err.contains("was not confirmed"),
         "got: {decline_err}"
     );
+    // All four keys sit at MODE 0x18 here, none on touch nibble 0, so `moved_modes` is 0 and the
+    // mode clause must be absent: an over-counting regression would otherwise tell the operator
+    // keys are about to move off global travel when none are, a fabricated claim in the prompt.
+    assert!(
+        !decline_err.contains("move off global travel"),
+        "got: {decline_err}"
+    );
     // The negative half is what actually guards the split: asserting the prompt is present on
     // stderr does not stop a future change sending it to both streams, only this does. Checks
     // both the "type yes" line `confirm` itself prints and the warning text above it, since a
@@ -2163,6 +2170,10 @@ fn set_ap_over_the_whole_board_names_every_keyset_that_will_cease_to_exist() {
         stderr.contains("ap keyset(s) 1, 2, 3 will cease to exist, their members absorbed"),
         "got: {stderr}"
     );
+    // Without this, a mutation that ignores `confirm`'s result and writes anyway still exits
+    // non-zero here, since the unconfirmed write then runs into the exhausted decline script:
+    // a status and prompt text that fire either way cannot tell a refusal from that accident.
+    assert!(stderr.contains("was not confirmed"), "got: {stderr}");
 
     std::fs::remove_file(script).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -2203,6 +2214,9 @@ fn set_ap_over_the_whole_board_names_the_mode_count_when_promoting_off_global_tr
         "got: {stderr}"
     );
     assert!(stderr.contains("wh set ap --base 2.00"), "got: {stderr}");
+    // Same reasoning as the test above: a status and prompt text that fire whatever the answer
+    // cannot tell a refusal from the unconfirmed write hitting the exhausted decline script.
+    assert!(stderr.contains("was not confirmed"), "got: {stderr}");
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -2395,6 +2409,10 @@ fn set_ap_over_the_whole_board_prompt_goes_to_stderr_not_stdout() {
             && !stdout.contains("this selection moves every key into one new keyset"),
         "the prompt must not also reach stdout: got stdout: {stdout}"
     );
+    // Same reasoning as the other two whole-board decline tests touched this round: a status
+    // that fires whatever the answer cannot tell a refusal from the unconfirmed write hitting
+    // the exhausted decline script.
+    assert!(stderr.contains("was not confirmed"), "got: {stderr}");
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
