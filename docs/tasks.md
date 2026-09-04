@@ -76,6 +76,23 @@ rather than as settings it recognises.
   rapid trigger keyset, since the board carried none; and a restore over a board left half-written
   by a genuine failure. See `README.md`.
 
+- [ ] **2.20 Decide whether `wh set ap` on all-free keys should create a keyset.** Opened by the
+  2026-09-04 greying result, which settled that the configurator distinguishes a recognised setting
+  from a loose override on keyset membership alone, not on the MODE nibble and not on the value.
+
+  `wh set ap` over a selection that is entirely free keys writes values and no membership. That is
+  measured vendor behaviour for the frames (`ap-wasd-1.2` writes no `0xFF` record), but in the
+  configurator's own interface a per-key actuation point cannot be set without creating a keyset, so
+  the vendor never reaches that state through its UI. The result is that those keys render grey,
+  which is the exact outcome Phase 2 was opened to avoid.
+
+  Three ways out and none is obviously right: leave it, matching the measured frames; create a
+  keyset, matching the interface; or offer a flag. It needs a ruling, not a fix.
+
+  This also retires task 2.2's stated rationale. The nibble 0 to 1 promotion stays, because the
+  vendor demonstrably does it, but "so our writes stop rendering greyed" was the wrong reason and is
+  now measured false.
+
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
