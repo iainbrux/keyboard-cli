@@ -655,26 +655,26 @@ rather than as settings it recognises.
 ### Protocol gaps
 
 - [ ] **Command `0x18`.** Suspected RGB or LED control, 10 request and reply pairs across five
-files. `0x2c` was resolved on 2026-08-29: it is SOCD, measured, see `docs/keysets.md`. - [ ] **Nine
-`cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed by anything
-in Phase 1. - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never
-once observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every
-key of profile 1 from 2026-08-29 onward, measured in `custom-value-nudge-after-restore` for that
-date and in `layout-16-by-profile` for 2026-09-04, and `0` on every key of profile 2, measured in
-`profile-switch`. All three establish their own profile from their own frames. An earlier revision
-cited `layout-16-by-profile` for both halves; it contains no profile 2 read at all. They are not
-the global rapid trigger sensitivity, measured 2026-08-29: they stayed at `100` through two global
-changes that moved `0x14`/`0x15` to `150` and then `200`. What moved them on profile 1 is
-unmeasured, and `wh` never writes them so it is not ours. `0x19` is still only ever `0x0000` or
-`0x3e2c`. - [ ] **Where the global rapid trigger sensitivity is stored.** No global command carries
-it. It appears only in `0x14`/`0x15` of keys outside a rapid trigger keyset, which would also be
-how the configurator reads it back. Plausible and testable, not measured. Needed to name the reset
-target of a rapid trigger keyset delete as something other than "what the vendor wrote". - [ ]
-**Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
-remapping FN away and FN is how you reach the layer that would let you undo that. - [ ] **Widen
-what a snapshot captures.** It currently records global travel, four layouts per key, and the
-profile. It does not record key mappings, the FN layer, SOCD, dynamic keystroke, mod tap, gamepad
-configuration, RGB, or polling rate.
+  files. `0x2c` was resolved on 2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
+- [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
+  by anything in Phase 1.
+- [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
+  observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every key of
+  profile 1 from 2026-08-29 onward, measured in `layout-16-by-profile`, and `0` on every key of
+  profile 2, measured in `profile-switch`, which establishes its own profile from its frames. An
+  earlier revision cited `layout-16-by-profile` for both halves; it contains no profile 2 read. They are not the global rapid trigger sensitivity, measured 2026-08-29:
+  they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.
+  What moved them on profile 1 is unmeasured, and `wh` never writes them so it is not ours. `0x19`
+  is still only ever `0x0000` or `0x3e2c`.
+- [ ] **Where the global rapid trigger sensitivity is stored.** No global command carries it. It
+  appears only in `0x14`/`0x15` of keys outside a rapid trigger keyset, which would also be how the
+  configurator reads it back. Plausible and testable, not measured. Needed to name the reset target
+  of a rapid trigger keyset delete as something other than "what the vendor wrote".
+- [ ] **Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
+  remapping FN away and FN is how you reach the layer that would let you undo that.
+- [ ] **Widen what a snapshot captures.** It currently records global travel, four layouts per key,
+  and the profile. It does not record key mappings, the FN layer, SOCD, dynamic keystroke, mod tap,
+  gamepad configuration, RGB, or polling rate.
 
 ## Done
 
