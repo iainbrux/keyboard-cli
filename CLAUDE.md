@@ -45,6 +45,15 @@ why there is no daemon and why long-running features are backlogged rather than 
 stale value where the web configurator can. The only exception is the read-modify-write window
 above.
 
+**The board has four profiles and every per-key layout is per profile.** Two profiles were measured
+carrying different actuation points, different sensitivities and different keysets at the same time.
+Two consequences bite constantly. A snapshot belongs to the profile it was taken on, which is why
+`wh restore` refuses a mismatch outright. And **only five of the 36 captures record which profile
+they were on**, so comparing values between two captures is invalid unless both sides are
+established, and for most pairs that cannot be done from the frames at all. `cmd 0x00` payload
+`70 0xFF` reads the active profile; `70 <index>` selects one. One Phase 1 capture, `profile-switch`,
+is profile 2 despite everything around it being profile 1.
+
 ## Commands
 
 ```bash
@@ -124,6 +133,30 @@ A test that passes for the wrong reason is worse than no test. Establish that ea
 the code is wrong**, not merely that it passes when the code is right. Mutate the thing the test
 claims to check, watch it fail, restore, and say so in the report. Several tests in this repo were
 found to be decorative exactly that way.
+
+**The recurring mechanism is a string assertion something else can satisfy.** Four have shipped:
+`contains("mismatch")` also matched `ReplayTransport`'s own "send mismatch" wording, so the test
+passed on a broken fixture; `contains("--press")` also matched clap's "unexpected argument '--press'
+found", so it passed when the refusal it checked was unreachable; an assertion on a confirmation
+prompt kept passing after the prompt lost half its content; and a refusal message was pinned by a
+test whose fixture was the only board that message was true of. Assert text only `wh`'s own code can
+emit, and prefer a phrase no other component would produce.
+
+**Also mutate the thing one level up.** Unit tests proving a string is built correctly do not prove
+it reaches the operator. One gap here survived because the only end-to-end assertion was on a
+different substring of the same line.
+
+## What the code does and what it says are separate claims
+
+The frames can be right while the operator is told something false, and that defect survives review
+because everything looks green. A `wh keyset remove` reported "nothing to do" while sending a frame
+that turned rapid trigger off; the wire was correct and the sentence was not. It took three fix
+rounds to kill, because each round addressed a narrower case than the one before: first the wording,
+then the mode-only case, then the far commoner case where the value moves too.
+
+So when a write's announcement is built from anything other than the plan it is announcing, treat
+that as a defect. `plan.value_records()` is the predicate for "did anything actually change for this
+key", and comparing only the value a command owns will miss a MODE change the same write makes.
 
 ## Docs
 
