@@ -733,8 +733,9 @@ fn auto_backup_lines_with_modes(profile_idx: u8, mode_w: u16, mode_a: u16) -> Ve
 /// The full script for `wh set ap --keys w --set 1.2` against the two-key board, routed through
 /// `keyset::plan`: `resolve_keys`' matrix read, `keyset::read_membership`'s own matrix read and
 /// `0xFF` sweep over both keys (neither is a member), `plan`'s own six-layout read of 'w', the
-/// auto-backup phase, the write batch, then the readback verification for 'w'. `readback_ap` lets
-/// the happy-path and mismatch tests below share this builder and diverge only on that one number.
+/// auto-backup phase, the value write batch, the membership write allocating keyset 1 for 'w'
+/// since it was free, then the readback verification. `readback_ap` lets the happy-path and
+/// mismatch tests below share this builder and diverge only on that one number.
 ///
 /// 'w' reads back MODE 0x0220 (touch `RtGlobal`), which the actuation point promotion never
 /// touches. `plan` still sends MODE in the write batch, echoing 0x0220 back: it only drops MODE
@@ -778,22 +779,34 @@ fn set_ap_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
-    // verify_write's readback: all six layouts for 'w'.
+    // 'w' was free, so the plan allocates keyset 1 and writes it.
+    let membership = cmds::write_key_records_singly(&[KeyRecord {
+        key: 0x1A,
+        layout: layout::KEYSET_AP,
+        value: 1,
+    }]);
+    for f in &membership {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
+    // verify_write's readback: all six layouts for 'w', ap_keyset now 1.
     lines.extend(key_settings_lines(
         0x1A,
         readback_ap,
         0x0220,
         500,
         500,
-        0,
+        1,
         0,
     ));
     lines
 }
 
-/// `set ap --keys w --set 1.2` end to end: the auto-backup phase, the write batch, and a
-/// readback that matches (1200um = 1.20mm). Exit 0, "verified" in stdout, and a real backup
-/// file on disk, not just the message claiming one.
+/// `set ap --keys w --set 1.2` end to end: 'w' was free, so giving it its own value creates keyset 1 for
+/// it, then the auto-backup phase, the write batch, and a readback that matches (1200um =
+/// 1.20mm). Exit 0, "verified" in stdout, and a real backup file on disk, not just the message
+/// claiming one.
 #[test]
 fn set_ap_end_to_end_backs_up_writes_and_verifies() {
     let path = write_script("set-ap-ok", &set_ap_script(1200));
@@ -811,10 +824,18 @@ fn set_ap_end_to_end_backs_up_writes_and_verifies() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Exact label, not a bare "verified": the label must name the depth actually verified and
-    // must not claim a keyset operation that never happened, since no key here is in a keyset.
+    // Exact label, not a bare "verified": the label must name the keyset the create allocated,
+    // and the announcement must name 'w' as the free key it enrolled.
     assert!(
-        stdout.contains("ap 1.20mm: 1 key verified"),
+        stdout.contains("ap keyset 1: creating at 1.20mm"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("enrolling free key(s) w at 1.00mm"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("ap keyset 1 at 1.20mm: 1 key verified"),
         "unexpected stdout: {stdout}"
     );
 
@@ -828,7 +849,10 @@ fn set_ap_end_to_end_backs_up_writes_and_verifies() {
 }
 
 /// The mismatch twin of the test above: the board reads back 1100um (1.10mm) where 1200um
-/// (1.20mm) was written. Non-zero exit, "mismatch" in stderr.
+/// (1.20mm) was written. Non-zero exit, and the per-key fault line naming both values, not just
+/// the word "mismatch": `ReplayTransport`'s own violation wording also contains "mismatch" (a
+/// script that never got extended to cover an added membership frame reads as this same word), so
+/// a bare `contains("mismatch")` cannot tell a real readback mismatch from a broken fixture.
 #[test]
 fn set_ap_end_to_end_reports_mismatch_on_readback() {
     let path = write_script("set-ap-mismatch", &set_ap_script(1100));
@@ -845,7 +869,10 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("mismatch"), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("w: ") && stderr.contains("1.10mm") && stderr.contains("1.20mm"),
+        "the failure must name the key and both ap values, got: {stderr}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -894,14 +921,26 @@ fn set_ap_promotes_script(readback_ap: u16) -> Vec<String> {
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
+    // 'a' was free, so the plan allocates keyset 1 and writes it.
+    let membership = cmds::write_key_records_singly(&[KeyRecord {
+        key: 0x04,
+        layout: layout::KEYSET_AP,
+        value: 1,
+    }]);
+    for f in &membership {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
     // verify_write's readback: all six layouts for 'a'; MODE now comes back 0x10, reflecting the
-    // promotion just written.
-    lines.extend(key_settings_lines(0x04, readback_ap, 0x10, 0, 0, 0, 0));
+    // promotion just written, and ap_keyset now 1.
+    lines.extend(key_settings_lines(0x04, readback_ap, 0x10, 0, 0, 1, 0));
     lines
 }
 
 /// `set ap --keys a --set 1.2` against a `Global` key: the write batch gains a MODE record
-/// (nibble promoted to `Single`), and the run still succeeds and verifies.
+/// (nibble promoted to `Single`), 'a' was free so giving it its own value also allocates keyset 1 for
+/// it, and the run still succeeds and verifies.
 #[test]
 fn set_ap_end_to_end_promotes_a_global_key_to_single() {
     let path = write_script("set-ap-promote", &set_ap_promotes_script(1200));
@@ -920,7 +959,7 @@ fn set_ap_end_to_end_promotes_a_global_key_to_single() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ap 1.20mm: 1 key verified"),
+        stdout.contains("ap keyset 1 at 1.20mm: 1 key verified"),
         "unexpected stdout: {stdout}"
     );
 
@@ -973,15 +1012,27 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16, readback_mode: u16) -
     }
     // No SAVE order follows the write batch: the vendor was never observed sending one.
 
+    // 'w' was free, so the plan allocates keyset 1 and writes it.
+    let membership = cmds::write_key_records_singly(&[KeyRecord {
+        key: 0x1A,
+        layout: layout::KEYSET_AP,
+        value: 1,
+    }]);
+    for f in &membership {
+        lines.push(out_line(f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+
     // verify_write's readback: all six layouts for 'w'. `readback_mode` is compared against the
     // 0x38 MODE the write batch actually sent, not a fallback, since MODE was sent this time.
+    // ap_keyset now 1.
     lines.extend(key_settings_lines(
         0x1A,
         readback_ap,
         readback_mode,
         500,
         500,
-        0,
+        1,
         0,
     ));
     lines
@@ -989,7 +1040,8 @@ fn set_ap_preserves_rapid_trigger_script(readback_ap: u16, readback_mode: u16) -
 
 /// `set ap --keys w --set 1.2` against a key with rapid trigger on: the write batch's MODE record
 /// echoes 0x38 back unchanged, so rapid trigger survives because the same value was resent, not
-/// because MODE was omitted. The run still succeeds and verifies AP and MODE both.
+/// because MODE was omitted. 'w' was free, so giving it its own value also allocates keyset 1 for it. The
+/// run still succeeds and verifies AP and MODE both.
 #[test]
 fn set_ap_end_to_end_preserves_rapid_trigger() {
     let path = write_script(
@@ -1011,7 +1063,7 @@ fn set_ap_end_to_end_preserves_rapid_trigger() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ap 1.20mm: 1 key verified"),
+        stdout.contains("ap keyset 1 at 1.20mm: 1 key verified"),
         "unexpected stdout: {stdout}"
     );
 
@@ -1163,8 +1215,9 @@ fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 /// matrix, and `keyset::read_membership` and `keyset::plan` still read the board, since a preview
 /// has to be of an operation that could actually happen against this board. 'w' reads back MODE
 /// 0x18 (`Single`, not `Global`), so `plan` still echoes it back in the write batch: dropping MODE
-/// only happens when the touch nibble would stay literally `Global` (0) unchanged. The script is
-/// exactly those reads; a stray write or SAVE afterwards would hit the exhausted script and
+/// only happens when the touch nibble would stay literally `Global` (0) unchanged. 'w' is free, so
+/// giving a free key its own value also previews a membership record allocating keyset 1. The script is exactly
+/// those reads; a stray write or SAVE afterwards would hit the exhausted script and
 /// `ReplayTransport` would reject it.
 #[test]
 fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
@@ -1192,7 +1245,7 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
 
     // The exact frame set, not just that some frame appears: an added, removed, or reordered
     // frame, including a reinstated SAVE frame, would not otherwise be caught.
-    let expected: Vec<String> = cmds::write_key_records(&[
+    let mut expected: Vec<String> = cmds::write_key_records(&[
         KeyRecord {
             key: 0x1A,
             layout: layout::MODE,
@@ -1217,6 +1270,15 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
     .iter()
     .map(|f| hex(f))
     .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&[KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        }])
+        .iter()
+        .map(|f| hex(f)),
+    );
     assert_eq!(
         frame_lines(&stdout),
         expected,
@@ -1227,15 +1289,17 @@ fn set_ap_dry_run_reads_the_matrix_but_sends_no_write_or_save() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// Row one of the `wh set ap` membership rule: no selected key is in a keyset, so the write
-/// carries no `0xFF` record at all. `ap-wasd-1.2` measures the absence of a `0xFF` write over an
-/// actuation point change; whether the keys involved were actually free is not itself read back
-/// (`docs/keysets.md`), so this fixture's free-keys board is the simplest state consistent with
-/// that capture, not a measured fact in its own right. Asserted by exact frame equality against a
-/// hand-built `cmds::write_key_records`, not a substring check, so "no membership record" is
-/// proved by the whole frame sequence rather than the absence of one string.
+/// The ruling: a selection where every key is free must still allocate a keyset, so giving a
+/// free key its own actuation point always enrolls it. The one piece of counter-evidence,
+/// recorded rather than softened: `ap-wasd-1.2` measures the absence of a `0xFF` write over an
+/// actuation point change on four keys with no keyset traffic anywhere in the file; whether those
+/// keys were actually free is itself unmeasured (`docs/keysets.md`), but if they were, that
+/// capture contradicts the rule this test pins, and the operator ruled anyway. Asserted by exact
+/// frame equality against a hand-built `cmds::write_key_records`/`write_key_records_singly`, not
+/// a substring check, so the create is proved by the whole frame sequence rather than the
+/// presence of one string.
 #[test]
-fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
+fn set_ap_dry_run_over_free_keys_creates_a_keyset() {
     let mut lines = matrix_lines(); // resolve_keys
     lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
     lines.extend(layout_read_lines(0x1A, layout::KEYSET_AP, 0)); // w, free
@@ -1257,6 +1321,15 @@ fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("ap keyset 1: creating at 1.20mm"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("enrolling free key(s) w at 2.00mm,a at 2.00mm"),
+        "got: {stdout}"
+    );
 
     let value_records = [
         KeyRecord {
@@ -1300,31 +1373,48 @@ fn set_ap_dry_run_over_free_keys_writes_no_membership_record() {
             value: 150,
         },
     ];
-    let expected: Vec<String> = cmds::write_key_records(&value_records)
+    let membership_records = [
+        KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+        KeyRecord {
+            key: 0x04,
+            layout: layout::KEYSET_AP,
+            value: 1,
+        },
+    ];
+    let mut expected: Vec<String> = cmds::write_key_records(&value_records)
         .iter()
         .map(|f| hex(f))
         .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&membership_records)
+            .iter()
+            .map(|f| hex(f)),
+    );
     assert_eq!(
         frame_lines(&stdout),
         expected,
-        "no key is in a keyset, so no 0xFF record should appear anywhere in the plan: {stdout}"
+        "both free keys must be enrolled into the newly allocated keyset: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// Row two of the `wh set ap` membership rule: the selection is exactly one keyset's members, so
+/// The mirror case to the free-key create above: the selection is exactly one keyset's members, so
 /// it keeps its index and the write still carries no `0xFF` record. `ks-value-ap` measures a value
 /// change over three keys writing no `0xFF` record; whether the selection was exactly one keyset's
-/// members is not itself measured. `docs/keysets.md` gives two readings, and the other one is not
-/// the harmless row-one case: it is an operation over three keys of which one (`x`) was free and
-/// two (`w`, `s`) were already members of another keyset, a mixed selection, which is row three's
-/// scenario, not row one's. Under that reading the vendor wrote no `0xFF` record on exactly the
-/// kind of selection `wh` now splits, the one piece of evidence in the corpus that argues against
-/// row three rather than for this row. Same board and frames as the free-key test above, only the
-/// pre-write `ap_keyset` differs (1 for both, not 0), proving membership itself does not drive
-/// whether a record gets sent.
+/// members is not itself measured. `docs/keysets.md` gives two readings of that capture: a
+/// selection that is exactly one keyset's members, this test's scenario, or a mixed selection of
+/// free and already-member keys, the scenario the split test below covers and which now writes a
+/// `0xFF` record under the ruling. Same board and value records as the free-key test above, but a
+/// different pre-write `ap_keyset` (1 for both, not 0): that test's board state allocates a keyset
+/// and writes two membership records, this one's, already a whole keyset, writes none, so together
+/// the pair prove membership state before the write, not the depth being written, is what decides
+/// whether a `0xFF` record appears.
 #[test]
 fn set_ap_dry_run_over_a_whole_keyset_keeps_its_index() {
     let mut lines = matrix_lines(); // resolve_keys
@@ -1405,11 +1495,11 @@ fn set_ap_dry_run_over_a_whole_keyset_keeps_its_index() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// Row three of the `wh set ap` membership rule: the selection is a strict subset of keyset 1
+/// The third case of the `wh set ap` membership rule: the selection is a strict subset of keyset 1
 /// (`w,s` out of `w,a,s,d`), so `wh set ap` allocates a new index, writes it to every selected
 /// key, and announces the split first. Unlike the vendor's own create flow, no capture in the
 /// corpus shows the vendor splitting a keyset this way; what was observed is its UI copying a
-/// mixed selection into a new one, so this row is inferred, not measured (`docs/keysets.md`).
+/// mixed selection into a new one, so this case is inferred, not measured (`docs/keysets.md`).
 ///
 /// 'w' and 's' are given different prior actuation points (2.00mm and 1.80mm) on purpose: a
 /// fixture where both members hold the same value cannot tell a correct announcement from one

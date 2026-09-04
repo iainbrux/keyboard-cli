@@ -6,7 +6,7 @@ golden` has something real to check the codec against. It has been run five
 times: task 19's hardware session (ten scenarios, 1224 frames), two keyset sittings
 on 2026-08-29, and two sittings on 2026-09-04, one verifying keyset semantics and
 one measuring keyset member removal. The corpus now
-stands at thirty-five files and 5788 frames, with zero framing or checksum
+stands at thirty-six files and 5860 frames, with zero framing or checksum
 failures in any of them. The results are
 recorded in `docs/protocol-inventory.md`, `docs/protocol.md` and
 `docs/keysets.md`. This document describes the procedure so it can be run
@@ -44,6 +44,12 @@ A capture whose profile is unknown cannot be compared with any other.
    "top") is probably pointed at the wrong frame: it must be on the frame
    that actually owns the WebHID call, which may not be the top-level page
    if the configurator UI is embedded.
+
+   The mirror failure also exists and is harder to spot: `ks-create-rt-2`
+   in the current corpus holds 415 consecutive inbound frames, 414 of
+   them with no outbound counterpart, so part of that session's outgoing traffic was
+   never recorded. Check both directions look balanced before trusting a
+   capture as complete.
 
    If the shim was pasted in **after** the page had already opened the
    device (a page reload was skipped, or the device was already connected

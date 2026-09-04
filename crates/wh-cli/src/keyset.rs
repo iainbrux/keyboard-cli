@@ -312,6 +312,108 @@ pub(crate) fn delete<T: Transport>(
     Ok(plan)
 }
 
+/// Takes named keys out of whatever keyset each is in, returning them to the global value and
+/// leaving every other member of those keysets untouched. The vendor sends the ordinary per-key
+/// template for the removed key alone, ending in one `0xFF = 0` record, and writes nothing for
+/// the members that stay (`docs/keysets.md`). A keyset that loses its last member simply ceases
+/// to exist, so there is no emptying case to handle here.
+pub(crate) fn remove<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    kind: Kind,
+    usages: &[u8],
+    value: Option<Um>,
+    rt: Option<(Um, Um)>,
+) -> Result<keyset::WritePlan> {
+    let m = keyset::read_membership(s, kind)?;
+    let sets = keyset::group(&m);
+    let leaving: Vec<(u16, u8)> = usages
+        .iter()
+        .filter_map(|&u| {
+            sets.iter()
+                .find(|k| k.members.contains(&u))
+                .map(|k| (k.index, u))
+        })
+        .collect();
+    if leaving.is_empty() {
+        bail!(
+            "none of those keys is in an {} keyset; nothing to remove",
+            kind_name(kind)
+        );
+    }
+    // The same two branches `delete` uses, because the vendor sends the same template for a
+    // single-key removal as for a whole-keyset delete. Rt writes touch nibble 1 and the global
+    // sensitivity, and does not own layout 0x04: the AP record it still sends carries the
+    // removed key's own prior reading back unchanged (`ks-remove-one-rt`).
+    let (change, target) = match kind {
+        Kind::Ap => {
+            let v = match value {
+                Some(v) => v,
+                None => global_ap_or_bail(s, &m, "--value")?,
+            };
+            (keyset::Change::ap(v), Target::Ap(v))
+        }
+        Kind::Rt => {
+            let (p, r) = match rt {
+                Some(v) => v,
+                None => global_rt_or_bail(s, &m, "--press and --release")?,
+            };
+            (keyset::Change::rt_off(p, r), Target::Rt(p, r))
+        }
+    };
+    let moving: Vec<u8> = leaving.iter().map(|&(_, u)| u).collect();
+    let free: Vec<u8> = usages
+        .iter()
+        .copied()
+        .filter(|u| !moving.contains(u))
+        .collect();
+    let cleared = keyset::KeysetIndex::clear(kind);
+    let plan = keyset::plan(s, &moving, &change, Some(cleared))?;
+    announce_remove(out, kind, &leaving, &free, target, &plan)?;
+    Ok(plan)
+}
+
+/// Announces a remove's effect on every key that actually left a keyset, and names any selected
+/// key that was already free so that case is never silent: a removal that dropped a free key
+/// wordlessly would leave the operator thinking it moved when it never held anything to leave.
+/// `free` is derived from `usages` rather than `plan.before()`, since `plan` is built only over
+/// the leaving keys and never reads a free one at all.
+fn announce_remove(
+    out: &mut impl Write,
+    kind: Kind,
+    leaving: &[(u16, u8)],
+    free: &[u8],
+    target: Target,
+    plan: &keyset::WritePlan,
+) -> std::io::Result<()> {
+    for &(index, u) in leaving {
+        let prior = plan
+            .before()
+            .iter()
+            .find(|ks| ks.usage == u)
+            .expect("leaving keys were the selection plan was built over");
+        let prior_value = value_display(kind, prior);
+        writeln!(
+            out,
+            "{}: removing {} from keyset {index}, {prior_value} to {}",
+            kind_name(kind),
+            key_label(u),
+            target.display()
+        )?;
+    }
+    if !free.is_empty() {
+        let names: Vec<String> = free.iter().map(|&u| key_label(u)).collect();
+        writeln!(
+            out,
+            "{}: free key(s) {} left alone, already in no {} keyset",
+            kind_name(kind),
+            names.join(","),
+            kind_name(kind)
+        )?;
+    }
+    Ok(())
+}
+
 /// Announces a delete's effect on every member before it writes: what each currently holds and
 /// what it is about to become. Reuses `describe_member`'s vocabulary, the same one `announce_steal`
 /// uses when a create takes a member from another keyset, since a delete is the same kind of loss.
@@ -352,15 +454,16 @@ fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
         .collect()
 }
 
-/// What `wh set ap` should do about membership for `usages`. What is measured, for both `Keep`
-/// sub-cases, is only that a capture wrote no `0xFF` record; which board state produced that
-/// absence (free keys, or a selection that happened to equal one whole keyset) is inferred, not
-/// itself read back (`docs/keysets.md`). No capture shows the vendor splitting a keyset either:
-/// what was observed is its UI copying a mixed selection into a new one.
+/// What `wh set ap` should do about membership for `usages`. What is measured is only that a
+/// capture wrote no `0xFF` record over a value change; that the selection behind it happened to
+/// equal one whole keyset, the one case `Keep` now covers, is inferred, not itself read back
+/// (`docs/keysets.md`). No capture shows the vendor splitting a keyset either: what was observed
+/// is its UI copying a mixed selection into a new one.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ApMembership {
-    /// Leave membership alone: either no selected key is in a keyset, or the selection is
-    /// exactly one keyset's members and it keeps its index.
+    /// Leave membership alone: the selection is exactly one keyset's members, so it keeps its
+    /// index. A selection of free keys does not come here; it allocates, since a key holding a
+    /// value of its own belongs to a keyset.
     Keep,
     /// Move every selected key into a newly allocated keyset, taking these members from these
     /// existing keysets.
@@ -384,9 +487,6 @@ pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembe
     }
     let sets = keyset::group(m);
     let losing = losing_members(&sets, usages);
-    if losing.is_empty() {
-        return Ok(ApMembership::Keep);
-    }
     if losing.len() == 1 {
         let (index, taken) = &losing[0];
         let whole = sets
@@ -861,6 +961,53 @@ mod tests {
                 panic!("a free key riding along with a fully-consumed keyset must still split")
             }
         }
+    }
+
+    /// The ruling: a selection where every key is free must still allocate a keyset, where
+    /// it previously returned `Keep` and wrote no membership at all. Pins the allocated index and
+    /// the empty losing list, not merely that a `Split` came back: a rewrite that allocated the
+    /// wrong index, or invented a losing keyset, would pass a bare variant check.
+    #[test]
+    fn ap_membership_for_creates_a_keyset_when_every_selected_key_is_free() {
+        // w (0x1A) and a (0x04) are both free; the board has no keysets at all.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+
+        let got = ap_membership_for(&m, &[0x1A, 0x04]).unwrap();
+        match got {
+            ApMembership::Split { index, losing } => {
+                assert_eq!(
+                    index.value(),
+                    1,
+                    "first keyset on an empty board: {index:?}"
+                );
+                assert!(losing.is_empty(), "no keyset loses anything: {losing:?}");
+            }
+            ApMembership::Keep => panic!("an all-free selection must now create a keyset"),
+        }
+    }
+
+    /// The mirror case, unchanged by the ruling above: a selection that is exactly one keyset's
+    /// members keeps that keyset's index rather than allocating a new one. Without this, deleting
+    /// the `losing.is_empty()` early return could be over-generalised into deleting the whole
+    /// `Keep` arm, and every value change would churn a fresh keyset index.
+    #[test]
+    fn ap_membership_for_keeps_the_index_when_the_selection_is_exactly_one_keyset() {
+        // w (0x1A) and a (0x04) are keyset 1, and nothing else is selected.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+
+        assert_eq!(
+            ap_membership_for(&m, &[0x1A, 0x04]).unwrap(),
+            ApMembership::Keep,
+            "a selection that is exactly one keyset must keep its index"
+        );
     }
 
     /// `ap_membership_for` must refuse a rapid trigger `Membership`, the same guard every other

@@ -3,7 +3,7 @@
 Generated from all ten capture files of the 2026-08-28 hardware session. Everything here is counted
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
-**Every count here is of that ten-file sample and no other.** The corpus is now 35 files and 5788
+**Every count here is of that ten-file sample and no other.** The corpus is now 36 files and 5860
 frames, and several values were first seen after this session. Where a row and `docs/protocol.md` or
 `docs/keysets.md` disagree, those two are current and this is a record of what the first session
 measured. Any absolute in a row below, "always", "never", "only ever", is a statement about these
@@ -48,21 +48,23 @@ across five complete write sequences.
 ## Layout ids, counted from cmd `0x23` records only
 
 DEFKEY (`0x2b`) uses a different record shape and is excluded; parsing it as layout records produces
-nonsense.
+nonsense. **Record counts exclude padding slots**, the unused 4-byte slots at the end of a frame,
+which carry usage `0` and layout `0`. An earlier version of this table counted them for every layout
+except `0x00`, where including them would have added every padding slot in the session to that row.
 
 | layout | records | Distinct values | Meaning |
 |---|---|---|---|
 | `0x00` | 418 | 74 | **base layer key mapping.** Measured: values are HID usages matching each key |
-| `0x01` | 420 | 69 | **FN layer key mapping.** Measured, see below |
-| `0x04` | 1858 | 7 | actuation point, micrometres. Modelled |
+| `0x01` | 408 | 69 | **FN layer key mapping.** Measured, see below |
+| `0x04` | 1806 | 7 | actuation point, micrometres. Modelled |
 | `0x08` | 2252 | 5 | mode. Modelled |
-| `0x14` | 1858 | 3 | RT press, micrometres. Modelled |
-| `0x15` | 1858 | 4 | RT release, micrometres. Modelled |
-| `0x16` | 1858 | 1 | `0` in every one of these frames. Later sessions read and write `100`, see `docs/keysets.md` |
-| `0x17` | 1858 | 1 | Same as `0x16`, and always written with it |
-| `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | rapid trigger keyset membership, an index and not a boolean: only `0` and `1` in this ten-capture session, reaching `2` only in the wider 27-capture corpus, see `docs/keysets.md`, untouched by edits within a set |
-| `0xff` | 420 | 3 | read 210 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 27-capture corpus |
+| `0x14` | 1806 | 3 | RT press, micrometres. Modelled |
+| `0x15` | 1806 | 4 | RT release, micrometres. Modelled |
+| `0x16` | 1806 | 1 | `0` in every one of these frames. Later sessions read and write `100`, see `docs/keysets.md` |
+| `0x17` | 1806 | 1 | Same as `0x16`, and always written with it |
+| `0x19` | 680 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
+| `0xfe` | 412 | 2 | rapid trigger keyset membership, an index and not a boolean: only `0` and `1` in this ten-capture session, reaching `2` only in the wider 36-capture corpus, see `docs/keysets.md`, untouched by edits within a set |
+| `0xff` | 408 | 3 | read 204 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 36-capture corpus |
 
 The counts above are what these ten captured scenarios happened to exercise, not the fields'
 possible ranges: layout `0x04` (actuation point) only ever took `0, 300, 850, 1200, 1700, 2000,

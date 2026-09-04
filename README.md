@@ -103,6 +103,7 @@ wh keyset create ap --keys u,i,o,p --value 1.5
 wh keyset create rt --keys j,k,l --press 0.3 --release 0.5
 wh keyset set ap 3 --value 1.2
 wh keyset delete ap 3
+wh keyset remove ap --keys w
 ```
 
 `wh keyset list` with no kind lists both `ap` and `rt`; naming one lists that kind. Each keyset is
@@ -111,31 +112,42 @@ shown with its index, value, and member keys: one shared value when the members 
 (`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt` does not write `0xFE`; running it on part of
 an rt keyset's members can leave that keyset's members holding different values, which
 `wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
-keyset's value in place. `create`, `delete`, `wh set ap` below, and `wh restore` (for keys whose
-snapshot recorded it, see below) each write keyset membership. `create` and `delete` both take
-`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value,
-and passing it is required when the keys outside every keyset disagree, or when none are left
-outside one.
+keyset's value in place. `create`, `delete`, `remove`, `wh set ap` below, and `wh restore` (for keys
+whose snapshot recorded it, see below) each write keyset membership. `create`, `delete`, and
+`remove` all take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's
+current global value, and passing it is required when the keys outside every keyset disagree, or
+when none are left outside one.
+
+**`wh keyset remove` takes named keys out of their keyset without deleting the rest of it.** It
+returns each named key to the board's global value (for `ap`, the actuation point; for `rt`, both
+sensitivities, with rapid trigger turned off, `--press`/`--release` refused for `ap` the same way
+they are on `create`/`set`/`delete`), and leaves every other member of that keyset exactly where it
+was: `wh keyset remove ap --keys w`, with `w` one of three members of a keyset, moves only `w` and
+leaves the other two in place. A named key that is already outside every keyset is left alone and
+named on its own line, since it has nothing to leave. Removing a keyset's last member is the same
+write as any other; there is no separate case for a keyset that ends up empty (`docs/keysets.md`).
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
 --keys u,i,o,p --value 1.5` sets all four to 1.50mm.
 
-**`wh set ap` over a selection that is not exactly one existing keyset's members, and not entirely
-free keys, moves the whole selection into one new keyset, and says so.** Three shapes: a selection
-that is part of a keyset moves the selected members into a new index, leaving the rest of that
-keyset in place (`wh set ap --keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a`
-and `d`, moves `w` and `s` into a new index and leaves `a` and `d` in the original one). A
-selection that is a whole keyset plus a free key moves the keyset and the free key together into a
-new index. A selection spanning two existing keysets moves the selected members from each into one
-new index, leaving each keyset's unselected members in place.
+**`wh set ap` over a selection that is not exactly one existing keyset's members moves the whole
+selection into one new keyset, and says so.** Four shapes: a selection that is part of a keyset
+moves the selected members into a new index, leaving the rest of that keyset in place (`wh set ap
+--keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a` and `d`, moves `w` and `s`
+into a new index and leaves `a` and `d` in the original one). A selection that is a whole keyset
+plus a free key moves the keyset and the free key together into a new index. A selection spanning
+two existing keysets moves the selected members from each into one new index, leaving each
+keyset's unselected members in place. And a selection where every key is free also allocates a new
+keyset for them: giving a free key its own value is what puts it in one.
 
 A newly allocated index is one more than the current maximum live index, or `1` if none exists.
 Selecting the whole board with `--keys all` follows the same rule as any other selection: it
-leaves every keyset's membership as it is if every key is already free, or if one keyset already
-holds every key on the board (the value written still changes on both); on any other board it
-creates one new keyset holding every key, and every keyset that existed before ends with no
-members. See `docs/keysets.md`, "an operator observation", for what evidence supports each shape.
+leaves every keyset's membership as it is only when one keyset already holds every key on the
+board (the value written still changes); on any board where that is not so, including a board
+where every key is already free, it creates one new keyset holding every key, and every keyset
+that existed before ends with no members. See `docs/keysets.md`, "Changing a value over a selection
+that is not exactly one keyset", for what evidence supports each shape.
 
 Manage stored groups:
 
@@ -182,8 +194,8 @@ wh selftest
 
 ## A safety note before you write anything
 
-`wh set`, `wh keyset create|set|delete`, `wh restore`, and `wh selftest` write to the physical
-keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete` accept `--dry-run`
+`wh set`, `wh keyset create|set|delete|remove`, `wh restore`, and `wh selftest` write to the physical
+keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete|remove` accept `--dry-run`
 (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports a real run would
 send, and sends nothing. Use it to check a command before it touches hardware, especially the first
 time you type a new key selector. `wh restore` and `wh selftest` have no `--dry-run`; `wh restore`
@@ -191,7 +203,7 @@ takes its own auto-backup before writing (see below), and `wh selftest` only eve
 to the value it already read.
 
 Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
-`keyset list|create|set|delete`, `profile`) names which transport it opened, on stderr, one line,
+`keyset list|create|set|delete|remove`, `profile`) names which transport it opened, on stderr, one line,
 before doing anything else: `transport: hardware (real keyboard)` or `transport: replay (<path>)`.
 Check that line before trusting that a run did what you expected, especially when driving `wh` from
 a script or another tool where the rest of the output might scroll past. `wh keys list` and
@@ -276,8 +288,9 @@ cached to go stale.
 
 Two things look like exceptions and are not:
 
-- `set rt`, `set ap`, and `keyset create`/`set`/`delete` each read a key's current settings, then
-  write back a change built from that read (the last three through the same `keyset::plan`).
+- `set rt`, `set ap`, and `keyset create`/`set`/`delete`/`remove` each read a key's current
+  settings, then write back a change built from that read (the last four through the same
+  `keyset::plan`).
   `selftest` does the same at the board level, not a key's: it reads the global travel and dead
   zones and writes back the identical values, a no-op write that proves the path rather than
   changing anything. Between a read and its write, the board could in principle be changed by hand
@@ -292,6 +305,33 @@ Two things look like exceptions and are not:
 Every result below was measured on **profile 2**. Per-key state is per profile, measured in
 `layout-16-by-profile`: the two profiles were carrying different actuation points, different
 sensitivities and different keysets on the same day. Nothing here has been checked on profile 1.
+
+- **`wh set ap` on a free key allocates a keyset.** `H` sat at the global 2.00mm in no keyset;
+  `wh set ap --keys h --set 1.5` created keyset 10 over it alone and read back `h: ap 1.50mm
+  keyset 10`, leaving the four existing keysets untouched. Index 10 is max plus one over the live
+  `{2,7,8,9}`, allocation measured on hardware rather than from frames.
+
+- **`wh keyset remove ap` returns a key to the global and collapses an emptied keyset.**
+  `wh keyset remove ap --keys h --value 2.0` read back `h: ap 2.00mm keyset none` and keyset 10
+  ceased to exist, since `H` was its only member. The other four keysets were untouched.
+
+- **`wh` refuses to guess an ambiguous global.** The first attempt at that removal, with no
+  `--value`, was declined: "the keys outside every keyset disagree on the global actuation point
+  (57 key(s) at 2.00mm, 1 key(s) at 1.10mm)". The board really was in that state, and `wh` named
+  both values rather than taking the majority.
+
+- **`wh set ap` on a rapid trigger keyset member leaves rapid trigger alone and adds actuation
+  point membership.** `M` was in rt keyset 1 at 0.30/0.40mm. `wh set ap --keys m --set 1.3` sent
+  MODE `0x0030`, the key's own touch nibble 3 resent unchanged, with press and release echoed at
+  300 and 400. Afterwards `M` held **both** memberships at once, ap keyset 10 and rt keyset 1,
+  which is the dual membership the corpus measures, now created by `wh`.
+
+- **`wh keyset remove rt` turns rapid trigger off and preserves the key's own actuation point.**
+  This is the fact most easily destroyed by a wrong implementation, so it was set up to be visible:
+  `M` held 1.30mm against a global of 2.00mm. The write sent MODE `0x0010`, press and release back
+  to the global 100, `0xFE = 0`, **AP `0x0514` (1300) rewritten unchanged, and no `0xFF` record at
+  all**. Readback: `m: rt off press 0.10mm release 0.10mm keyset none` and `m: ap 1.30mm keyset 10`.
+  Rapid trigger keyset 1 ceased to exist, `M` having been its last member.
 
 - **`wh keyset create`, `set`, `delete`, and `wh set ap`'s split all work against the keyboard.**
   Each verified its own readback and took an auto-backup first. `create` over three free keys
@@ -333,10 +373,6 @@ sensitivities and different keysets on the same day. Nothing here has been check
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- `wh set ap` over keys that are **all outside a keyset** leaves them rendering grey, and that is
-  now understood rather than outstanding: greying tracks membership, so writing values without
-  membership cannot change it. Whether `wh` should create a keyset there, as the configurator's own
-  interface always does, is a decision rather than a check: `docs/tasks.md` 2.20.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
   packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's

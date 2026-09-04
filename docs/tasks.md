@@ -4,7 +4,7 @@ Live checklist for `wh`. Items are struck through and ticked as they complete. A
 keyboard physically present is marked **[hardware]**.
 
 Evidence for every protocol claim below is in `docs/protocol.md`, `docs/protocol-inventory.md` and
-`docs/keysets.md`, measured from 5344 frames of real device traffic across 31 capture files.
+`docs/keysets.md`, measured from 5860 frames of real device traffic across 36 capture files.
 
 ## Phase 1
 
@@ -42,8 +42,9 @@ rather than as settings it recognises.
   gap closed everywhere else a mode value's rapid trigger state gets named, including `wh-cli`'s
   `keyset.rs` `mode_fault`, `raw_mode_rt_on`'s eventual successor once `wh set ap` moved onto
   `keyset::plan`.
-- [x] ~~**2.4 Write keyset membership.**~~ `docs/keysets.md` specified it completely from fifteen
-  capture scenarios: one write template shared by every operation, values always before membership,
+- [x] ~~**2.4 Write keyset membership.**~~ `docs/keysets.md` specified it completely from the
+  fifteen capture scenarios available at the time: one write template shared by every operation,
+  values before membership (three exceptions measured later),
   membership one record per frame and always last, non-owned layouts rewritten at each key's current
   value, the whole template written only when an owned value differs, max-plus-one allocation from
   live membership with no gap reuse, and a new keyset taking the global value rather than its
@@ -83,14 +84,14 @@ rather than as settings it recognises.
   Still not exercised: a restore over a board left half-written by a genuine failure. See
   `README.md`.
 
-- [ ] **2.20 `wh set ap` on free keys must create a keyset.** Ruled by the operator on 2026-09-04,
+- [x] ~~**2.20 `wh set ap` on free keys must create a keyset.**~~ Ruled by the operator on 2026-09-04,
   after the greying result settled that the configurator distinguishes a recognised setting from a
   loose override on keyset membership (`0xFF`) alone, not on the MODE nibble and not on the value.
 
   The rule the operator stated: a key sits outside a keyset exactly when it holds the board's base
   value, and any other value means it belongs to one. Grey means "follows the base"; highlighted
   means "has its own value". So `wh set ap --keys h --set 1.5` on a free key must allocate a keyset
-  and put `h` in it, where today it writes the value and no membership.
+  and put `h` in it, where it previously wrote the value and no membership.
 
   This is a ruling about what `wh` should do, not a measured firmware invariant, and the difference
   matters because the board does not enforce it. `docs/keysets.md` records keyset 4 holding `2.00mm`
@@ -108,21 +109,29 @@ rather than as settings it recognises.
   vendor demonstrably does it, but "so our writes stop rendering greyed" was the wrong reason and is
   now measured false.
 
-- [ ] **2.21 `wh keyset remove` to take individual keys out of a keyset. Depends on 2.20.** Ruled
-  with 2.20: because setting a value never removes a key from its keyset, membership needs its own
-  command. `wh keyset delete <kind> <index>` already deletes a whole keyset and returns every member
-  to the base value; what is missing is `wh keyset remove <kind> --keys j`, which clears `0xFF` (or
-  `0xFE`) for the named keys only, writes them back to the base value, and leaves the rest of the
-  keyset alone.
+  Shipped: an all-free selection now allocates a keyset, and a selection that is exactly one
+  keyset's members still keeps its index.
 
-  Both open questions were measured on 2026-09-04 and the answers make this straightforward. The
+- [x] ~~**2.21 `wh keyset remove` to take individual keys out of a keyset. Depends on 2.20.**~~
+  Ruled with 2.20: because setting a value never removes a key from its keyset, membership needs its
+  own command. `wh keyset delete <kind> <index>` already deletes a whole keyset and returns every
+  member to the base value; what was missing was `wh keyset remove <kind> --keys j`, which clears
+  `0xFF` (or `0xFE`) for the named keys only, writes them back to the base value, and leaves the rest
+  of the keyset alone.
+
+  Both open questions were measured on 2026-09-04 and the answers made this straightforward. The
   vendor sends the ordinary five-step template for the removed key alone, ending in one `0xFF = 0`
   record, and writes nothing at all for the members that stay (`ks-remove-one-key`). The MODE record
   stays at touch nibble `1`, so the removed key must not be dropped to nibble `0`. Removing the last
   member is the same five frames with no teardown of any kind (`ks-remove-to-empty`), confirmed
   afterwards by `wh keyset list ap` reading `0xFF` live with the keyset gone, so there is no
-  empty-keyset case to handle. Build it as `keyset::plan` with the base value and a membership clear.
+  empty-keyset case to handle. Built as `keyset::plan` with the base value and a membership clear.
   See `docs/keysets.md`.
+
+  Shipped: both kinds. The rapid trigger side was unmeasured when this task was first written; it is
+  now measured in `ks-remove-one-rt`, and confirms the removed key's own MODE goes to touch nibble
+  `1` (rapid trigger off, not nibble `2` following the global) and that its actuation point is
+  preserved rather than reset to the base, since a rapid trigger removal never touches `0x04`.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
@@ -237,7 +246,7 @@ rather than as settings it recognises.
 
   - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
     any other non-owned layout, matching what each capture that reads them reads: `0` in all 38
-    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 412 from the
+    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 414 from the
     profile 2 ones. `keyset::plan` never writes them, and its stated reason, that a constant would be
     an invented value, turns out to be right for a reason it did not know. Of the 34 captures before
     `layout-16-by-profile`, 25 both read and write them, four read without writing, four do neither,
@@ -317,11 +326,12 @@ rather than as settings it recognises.
   members before anything is written, a backup is taken first, and the review drove the full
   `wh restore --last` round trip and confirmed membership and every value returned exactly.
 
-- [x] ~~**2.19 Pin the two-keyset merge in `wh set ap`.**~~ `ap_membership_for` returns `Keep` in two
-  cases: no selected key is in a keyset, and exactly one keyset loses members with the selection
-  being exactly that keyset. Everything else produces one new keyset containing the whole selection.
-  So a selection spanning two keysets merges them, and where a keyset is wholly consumed its index
-  ceases to exist; a keyset only partly selected survives with its remaining members.
+- [x] ~~**2.19 Pin the two-keyset merge in `wh set ap`.**~~ At the time, `ap_membership_for` returned
+  `Keep` in two cases: no selected key was in a keyset, and exactly one keyset lost members with the
+  selection being exactly that keyset. Everything else produced one new keyset containing the whole
+  selection. So a selection spanning two keysets merges them, and where a keyset is wholly consumed
+  its index ceases to exist; a keyset only partly selected survives with its remaining members. (The
+  first case was closed by 2.20 above: an all-free selection now allocates too.)
 
   It wanted a test rather than a comment because the wrong implementations are plausible and all
   passed the suite that existed at the time. Closed by
@@ -399,12 +409,12 @@ rather than as settings it recognises.
 
 ### Protocol gaps
 
-- [ ] **Command `0x18`.** Suspected RGB or LED control, 8 frames. `0x2c` was resolved on
-  2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
+- [ ] **Command `0x18`.** Suspected RGB or LED control, 10 request and reply pairs across five
+  files. `0x2c` was resolved on 2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
 - [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
   by anything in Phase 1.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
-  observed non-zero across 1858 records. That held for Phase 1 only: they read `100` on every key of
+  observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every key of
   profile 1 from 2026-08-29 onward, and `0` on every key of profile 2, measured directly in
   `layout-16-by-profile`. They are not the global rapid trigger sensitivity, measured 2026-08-29:
   they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.

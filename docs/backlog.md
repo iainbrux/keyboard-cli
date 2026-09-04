@@ -294,10 +294,11 @@ So the configurator distinguishes on layout `0xFF` alone. The board accepting a 
 reporting it back is measured from frames; the rendering is an operator observation of the
 interface, and is what it is: two screenshots taken minutes apart with one variable changed.
 
-**A consequence worth carrying.** `wh set ap` over keys that are all free writes values and no
-membership, which is measured vendor behaviour for that shape, so those keys stay grey. In the
-configurator a per-key actuation point cannot be set without creating a keyset. That divergence was
-invisible until greying was understood and is recorded in `docs/tasks.md`.
+**A consequence that was carried, then closed.** `wh set ap` used to write values and no membership
+over keys that are all free, so those keys stayed grey while, in the configurator, a per-key
+actuation point cannot be set without creating a keyset. That divergence was invisible until
+greying was understood; once it was, the operator ruled that `wh set ap` should match the
+configurator and always enrol a key it gives its own value to, and `wh` now does.
 
 ### Listing backups, and what `--last` should mean
 
@@ -408,8 +409,9 @@ These are known unknowns from the hardware session, listed so nobody re-derives 
 
 ### Unidentified commands
 
-- `0x18`, now 8 frames. Suspected RGB or LED control. See the LED item above. A fresh sample was
-  captured on 2026-08-29 in `captures/custom-value-nudge-after-restore.jsonl`.
+- `0x18`, now 10 request and reply pairs across five files. Suspected RGB or LED control. See the
+  LED item above. A fresh sample was captured on 2026-08-29 in
+  `captures/custom-value-nudge-after-restore.jsonl`.
 - ~~`0x2C`~~ **Identified 2026-08-29: SOCD.** Query is `[rw, key, 0xFF]`, reply is
   `[status, keyA, keyB, 0, keyB, keyA]`, the pair given both ways round. Measured `w` with `s` and
   `a` with `d`, and the ADVANCED tab carries a SOCD control holding exactly those pairs. The name is
@@ -440,16 +442,17 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   `initial-load` by reading each key's `0x00` against its `0x01`: esc maps to grave, and 1 through 0
   map to F1 through F10, holding across 69 distinct values in two independent series. That is
   exactly how the board behaves under FN.
-- `0x16` and `0x17`, 1858 records each in this ten-capture session, zero in every one of them.
+- `0x16` and `0x17`, 1806 records each in this ten-capture session, zero in every one of them.
   Overturned since: both read and are written `100` throughout the keyset sitting, 580 write records
   across fourteen files. What moved them is unmeasured. See `docs/keysets.md`. Purpose unknown.
-- `0x19`, 700 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
+- `0x19`, 680 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
   Purpose unknown.
 - `0xFE` is the **rapid trigger keyset membership**, measured from write evidence in this very
-  session: 424 records in total, of which the write evidence is two request and reply pairs, `1` on
-  a keyset create and `0` on a delete. `0xFF` is the **actuation point keyset index**, read `210` times and written
-  `0` in this ten-capture session; host-written and measured directly only in the wider 27-capture
-  corpus. Both are indices, not booleans. See the keyset entry above and `docs/keysets.md`.
+  session: 412 records in total, of which the write evidence is two request and reply pairs, `1` on
+  a keyset create and `0` on a delete. `0xFF` is the **actuation point keyset index**, read `204`
+  times and written `0` in this ten-capture session; host-written and measured directly only in
+  the wider 36-capture corpus. Both are indices, not booleans. See the keyset entry above and
+  `docs/keysets.md`.
 
 ### One key identity still inferred
 
