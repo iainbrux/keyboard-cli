@@ -57,6 +57,12 @@ cargo build -p wh-cli --release --target x86_64-pc-windows-gnu   # the real bina
 
 All three gate commands must pass before any commit.
 
+`scripts/check-doc-repeats.py $(git ls-files '*.md' ':!research/*')` flags a phrase repeated back to
+back in prose, which is what an edit appending text that was already there looks like. It found one
+real defect that survived five rounds of review and has no false positives on the current tree. It
+is deliberately narrow: line-length and short-line checks were measured here and produced 103 false
+positives with no true ones.
+
 Running one test, or one suite:
 
 ```bash
