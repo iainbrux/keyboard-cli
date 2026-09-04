@@ -375,8 +375,8 @@ and independent measurement; nothing in this capture reads membership to confirm
 `wh set ap --base <mm>` implements this: `keyset::plan(s, free_keys, &Change::ap(v), None)`, with
 membership held at `None` so no `0xFF` record is ever written. It carries the same two deliberate
 divergences from the template above that every other `plan`-built write already carries: it never
-writes `0x16`/`0x17`, since neither has ever been read and a constant would be an invented value,
-and it sends MODE once rather than the vendor's twice.
+writes `0x16`/`0x17`, on the grounds that it never reads them and a constant would be an invented
+value, and it sends MODE once rather than the vendor's twice.
 
 ## Touch nibble 2 is global rapid trigger
 

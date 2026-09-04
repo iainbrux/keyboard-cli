@@ -82,6 +82,18 @@ pub(crate) fn key_label(usage: u8) -> String {
         .unwrap_or_else(|| format!("0x{usage:02X}"))
 }
 
+/// "key" for 1, "keys" for anything else, so a count-carrying sentence never reads "1 keys".
+/// Shared rather than three separate inline copies (`report_verification`, `restore`'s summary
+/// line, and `wh set ap --base`'s own announcement), the same reason `ap_mode_clause` was
+/// extracted in `keyset.rs`.
+pub(crate) fn key_or_keys(n: usize) -> &'static str {
+    if n == 1 {
+        "key"
+    } else {
+        "keys"
+    }
+}
+
 /// Renders a raw keyset value for display: `0`, the value read outside any keyset, as `-`,
 /// anything else as its decimal index verbatim, since whether the wire value is a boolean or an
 /// index is unmeasured.
@@ -582,8 +594,7 @@ pub(crate) fn report_verification(
 ) -> Result<()> {
     if bad.is_empty() {
         let n = usages.len();
-        let key_or_keys = if n == 1 { "key" } else { "keys" };
-        writeln!(out, "{what}: {n} {key_or_keys} verified")?;
+        writeln!(out, "{what}: {n} {} verified", key_or_keys(n))?;
         return Ok(());
     }
     for line in bad {
@@ -780,33 +791,47 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             &wh_device::keyset::Change::ap(depth),
                             None,
                         )?;
-                        // Both counts read off `plan` itself, never off `free`: `free` is the
-                        // selection, not what actually changed, and `plan` echoes a key's own
-                        // value back unchanged in the same bundle as an unrelated change (most
-                        // often the mode promotion below), so reporting `free.len()` keys moving
-                        // unconditionally claimed a write that a board already at the base never
-                        // sent. `confirm_whole_board_ap_set` and `confirm_whole_board_remove`
-                        // follow the same plan-derived rule for their own whole-board prompts.
+                        // "Nothing moves" is a claim about the whole write, not about one
+                        // layout, so it is decided from whether `plan` sends anything at all
+                        // (`plan.is_empty()`), never from `ap_value_moved_count` alone: a key can
+                        // get a full record bundle, MODE included, while its own AP value stays
+                        // exactly where it was, whenever `Change::ap`'s promotion moves it off
+                        // touch nibble 0. That case is a real write, not a no-op, and must not
+                        // read as one. Both counts still read off `plan` itself, never off
+                        // `free`: `free` is the selection, not what actually changed.
+                        // `confirm_whole_board_ap_set` and `confirm_whole_board_remove` follow
+                        // the same plan-derived rule for their own whole-board prompts.
                         let moved_values = crate::keyset::ap_value_moved_count(&plan);
                         let total = free.len();
-                        let move_clause = if moved_values == total {
+                        let mode_clause = crate::keyset::ap_mode_clause(&plan);
+                        let move_clause = if plan.is_empty() {
+                            // No key gets any record at all: every free key already sits at the
+                            // target and none of them was on touch nibble 0 to promote, so
+                            // `mode_clause` is always empty here too.
                             format!(
-                                "{total} keys outside every keyset move to {:.2}mm",
+                                "{total} {} outside every keyset already at {:.2}mm, nothing to write",
+                                key_or_keys(total),
+                                depth.to_mm()
+                            )
+                        } else if moved_values == total {
+                            format!(
+                                "{total} {} outside every keyset move to {:.2}mm",
+                                key_or_keys(total),
                                 depth.to_mm()
                             )
                         } else if moved_values == 0 {
-                            format!(
-                                "{total} keys outside every keyset already at {:.2}mm, nothing moves",
-                                depth.to_mm()
-                            )
+                            // `plan` is not empty (checked above), so every key that got a
+                            // record here got one because its touch mode moved, not its AP:
+                            // `mode_clause` below is guaranteed non-empty in this branch.
+                            "no key outside a keyset changes its actuation point".to_string()
                         } else {
                             format!(
-                                "{moved_values} of {total} keys outside every keyset move to \
+                                "{moved_values} of {total} {} outside every keyset move to \
                                  {:.2}mm, the rest already there",
+                                key_or_keys(total),
                                 depth.to_mm()
                             )
                         };
-                        let mode_clause = crate::keyset::ap_mode_clause(&plan);
                         writeln!(
                             out,
                             "ap base: {move_clause}, keysets untouched{mode_clause}"
@@ -1429,10 +1454,10 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // where stderr reports a mismatch.
         verify_restore(&mut out, s, &keys)?;
         let n = snap.keys.len();
-        let key_or_keys = if n == 1 { "key" } else { "keys" };
         writeln!(
             out,
-            "restored {n} {key_or_keys} from snapshot ({})",
+            "restored {n} {} from snapshot ({})",
+            key_or_keys(n),
             snap.taken_at
         )?;
         Ok(())

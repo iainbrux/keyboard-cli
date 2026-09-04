@@ -2917,12 +2917,155 @@ fn set_ap_base_does_not_claim_movement_when_every_free_key_already_holds_the_bas
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("4 keys outside every keyset already at 1.95mm, nothing moves"),
+        stdout.contains("4 keys outside every keyset already at 1.95mm, nothing to write"),
         "got: {stdout}"
     );
     assert!(
         !stdout.contains("move to 1.95mm"),
         "must not claim movement that did not happen: {stdout}"
+    );
+    assert!(stdout.contains("4 keys verified"), "got: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Round 3's Finding 1: "nothing moves" is a claim about the whole write, not about `0x04`
+/// alone, and it is false here. All four free keys start on touch nibble 0 ("follow global
+/// travel") already holding the target value, so `ap_value_moved_count` is 0, but `Change::ap`'s
+/// promotion still sends a full record bundle for every one of them, MODE included: two write
+/// frames and sixteen records reach the board, permanently pinning every free key off global
+/// travel. This fixture is also what Finding 2 needed and did not have: a key that gets an AP
+/// record (echoed, unchanged) while its AP value does not move, the only shape that can tell
+/// `ap_value_moved_count` apart from a naive count of keys `plan` sent an AP record for.
+#[test]
+fn set_ap_base_reports_the_mode_promotion_as_a_real_write_when_no_value_moves() {
+    let specs = [
+        (0x16u8, 2000u16, 0x00u16),
+        (0x07, 2000, 0x00),
+        (0x08, 2000, 0x00),
+        (0x05, 2000, 0x00),
+    ];
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_custom(&specs));
+    lines.extend(auto_backup_lines_base_board_custom(&specs));
+
+    // Each of the four: MODE 0x10 (Global promoted to Single, advanced 0), AP echoed 2000
+    // (unchanged, already the target), RT press/release echoed 100/150.
+    let value_records = [
+        KeyRecord {
+            key: 0x16,
+            layout: layout::MODE,
+            value: 0x10,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x16,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x07,
+            layout: layout::MODE,
+            value: 0x10,
+        },
+        KeyRecord {
+            key: 0x07,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x07,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x07,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::MODE,
+            value: 0x10,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::MODE,
+            value: 0x10,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::AP,
+            value: 2000,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    for batch in [&value_records[0..12], &value_records[12..16]] {
+        for f in &cmds::write_key_records(batch) {
+            lines.push(out_line(f));
+            lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+        }
+    }
+    // verify_write_as's readback of the four free keys: MODE now 0x10, AP unchanged at 2000.
+    for &usage in &[0x16u8, 0x07, 0x08, 0x05] {
+        lines.extend(key_settings_lines(usage, 2000, 0x10, 100, 150, 0, 0));
+    }
+
+    let path = write_script("set-ap-base-mode-only-real-write", &lines);
+    let config_home = scratch_config_dir("set-ap-base-mode-only-real-write");
+    let out = run_wh(&["set", "ap", "--base", "2.00"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("no key outside a keyset changes its actuation point"),
+        "got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("nothing"),
+        "a real write went out (two frames, sixteen records); must not claim nothing did: {stdout}"
+    );
+    assert!(
+        stdout.contains("4 key(s) move off global travel onto their own actuation point"),
+        "got: {stdout}"
     );
     assert!(stdout.contains("4 keys verified"), "got: {stdout}");
 
