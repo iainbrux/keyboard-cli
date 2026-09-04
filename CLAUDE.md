@@ -151,8 +151,10 @@ different substring of the same line.
 The frames can be right while the operator is told something false, and that defect survives review
 because everything looks green. A `wh keyset remove` reported "nothing to do" while sending a frame
 that turned rapid trigger off; the wire was correct and the sentence was not. It took three fix
-rounds to kill, because each round addressed a narrower case than the one before: first the wording,
-then the mode-only case, then the far commoner case where the value moves too.
+rounds to kill, and the reason is worth knowing: each round's brief scoped a narrower case than the
+defect covered. The first replaced the predicate, the second added the case where only the mode
+moves, and the third finally reached the ordinary case where the value moves as well. The defect was
+never reintroduced; it was three times under-scoped.
 
 So when a write's announcement is built from anything other than the plan it is announcing, treat
 that as a defect. `plan.value_records()` is the predicate for "did anything actually change for this
