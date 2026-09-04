@@ -764,29 +764,25 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 let kind = change.kind();
                 let m = wh_device::keyset::read_membership(s, kind)?;
                 let membership = crate::keyset::ap_membership_for(&m, &usages)?;
-                // Trigger on the resolved selection covering the board's matrix, read off `m`
-                // itself, never on the literal `--keys all` spelling or a fresh matrix read: a
-                // selection spelling out every usage by hand must reach this guard too. Nothing
-                // this warning names, the new index, the keysets losing members, the target
-                // depth, depends on `plan`, so this runs before `plan` sends a single frame, and
-                // `!dry_run` keeps a preview from ever prompting, since it writes nothing to
-                // confirm.
-                if !dry_run && usages.len() == m.entries().len() {
-                    if let crate::keyset::ApMembership::Split { index, losing } = &membership {
-                        crate::keyset::confirm_whole_board_ap_set(
-                            &mut prompt_out,
-                            *index,
-                            losing,
-                            depth,
-                            &mut input,
-                        )?;
-                    }
-                }
                 let index = match &membership {
                     crate::keyset::ApMembership::Keep => None,
                     crate::keyset::ApMembership::Split { index, .. } => Some(*index),
                 };
                 let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
+                // Built after `plan`, matching `remove`: only `plan` knows how many keys the
+                // promotion off touch nibble 0 actually moves. Decides its own whole-board and
+                // `Keep` triggers from `m`/`usages` rather than trusting this arm's own
+                // `membership`, and no-ops for anything but a whole-board `Split`.
+                if !dry_run {
+                    crate::keyset::confirm_whole_board_ap_set(
+                        &mut prompt_out,
+                        &m,
+                        &usages,
+                        &plan,
+                        depth,
+                        &mut input,
+                    )?;
+                }
                 let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());

@@ -789,29 +789,58 @@ pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembe
 /// through `confirm_whole_board_remove`, reached by a different route, so this reuses
 /// `crate::confirm::confirm` rather than a second acceptance check.
 ///
-/// Unlike `confirm_whole_board_remove`, built straight from `ApMembership::Split`'s own fields
-/// rather than from a `WritePlan`: nothing this prompt names, the new index, the keysets losing
-/// members, the target depth, depends on a per-key read, so the caller can ask before `plan`
-/// sends a single frame.
+/// Computes its own trigger from `m` and `usages`, the membership read and selection `run.rs`
+/// already has, rather than trusting a caller's own pre-computed membership: a caller passing a
+/// partial selection, or one where the whole board is already exactly one keyset
+/// (`ApMembership::Keep`, nothing to lose and no new keyset to name), must never reach this
+/// wording just because it forgot to check first. Returns without prompting in both cases.
+///
+/// Takes `plan`, built after it by the caller, matching `confirm_whole_board_remove`: the
+/// keyset clause can read as a no-op (no ap keysets exist yet) on a board where `Change::ap`'s
+/// own promotion still moves every free key off touch nibble 0 ("follow global travel") onto
+/// its own pinned actuation point, and only `plan` knows how many.
 pub(crate) fn confirm_whole_board_ap_set(
     out: &mut impl Write,
-    index: keyset::KeysetIndex,
-    losing: &[(u16, Vec<u8>)],
+    m: &Membership,
+    usages: &[u8],
+    plan: &keyset::WritePlan,
     depth: Um,
     input: &mut impl BufRead,
 ) -> Result<()> {
+    if usages.len() != m.entries().len() {
+        return Ok(());
+    }
+    let (index, losing) = match ap_membership_for(m, usages)? {
+        ApMembership::Keep => return Ok(()),
+        ApMembership::Split { index, losing } => (index, losing),
+    };
     let keysets = if losing.is_empty() {
         "no ap keysets exist to lose".to_string()
     } else {
         let indices: Vec<String> = losing.iter().map(|(i, _)| i.to_string()).collect();
         format!(
-            "keysets {} will cease to exist, their members absorbed",
+            "ap keyset(s) {} will cease to exist, their members absorbed",
             indices.join(", ")
         )
     };
+    // A count, not a per-key list, the same reason `confirm_whole_board_remove` reads one off
+    // `plan` rather than off `losing` or `depth`: a board with no losing keysets can still move
+    // every free key permanently off touch nibble 0, and that is the one thing the keyset clause
+    // above cannot say by itself.
+    let moved_modes = plan
+        .before()
+        .iter()
+        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
+        .count();
+    let mode_clause = if moved_modes == 0 {
+        String::new()
+    } else {
+        format!(", {moved_modes} key(s) move off global travel onto their own actuation point")
+    };
     let prompt = format!(
-        "ap: --keys all moves every key into one new keyset, keyset {}\n    {keysets}\n    to \
-         change the board's base instead, leaving keysets alone: wh set ap --base {:.2}",
+        "ap: this selection moves every key into one new keyset, keyset {}\n    {keysets}\
+         {mode_clause}\n    to change the board's base instead, leaving keysets alone: wh set \
+         ap --base {:.2}",
         index.value(),
         depth.to_mm()
     );
@@ -1413,28 +1442,49 @@ mod tests {
     // -- confirm_whole_board_ap_set: guards `wh set ap --keys all` --
 
     /// Pins the exact wording the operator ruled on: the new index, every losing keyset in
-    /// ascending order, and the `--base` alternative. Built straight from `ApMembership::Split`'s
-    /// own fields, so this needs no device script at all.
+    /// ascending order, the mode count `plan` alone knows (`w` starts at touch nibble 0, "follow
+    /// global travel", and `Change::ap` promotes it), and the `--base` alternative. Does not say
+    /// `--keys all`: the selection here is the raw usages, not that spelling, and the wording
+    /// must not claim it was.
     #[test]
-    fn confirm_whole_board_ap_set_names_the_new_index_the_losing_keysets_and_the_base_alternative()
-    {
-        let index = keyset::KeysetIndex::restoring(Kind::Ap, 11);
-        let losing = vec![
-            (2u16, vec![0x1Au8]),
-            (7, vec![0x04]),
-            (8, vec![0x16]),
-            (9, vec![0x07]),
-        ];
+    fn confirm_whole_board_ap_set_names_the_new_index_the_losing_keysets_the_mode_count_and_the_base_alternative(
+    ) {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 2));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 7));
+        lines.extend(settings_script(0x1A, 1200, 0x00, 100, 150, 2, 0)); // w: Global, promotes
+        lines.extend(settings_script(0x04, 1300, 0x18, 100, 150, 7, 0)); // a: already pinned
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let index = match ap_membership_for(&m, &usages).unwrap() {
+            ApMembership::Split { index, .. } => index,
+            ApMembership::Keep => panic!("two distinct keysets must split"),
+        };
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1500)), Some(index)).unwrap();
+
         let mut out = Vec::new();
-        confirm_whole_board_ap_set(&mut out, index, &losing, Um(1500), &mut "yes\n".as_bytes())
-            .unwrap();
+        confirm_whole_board_ap_set(
+            &mut out,
+            &m,
+            &usages,
+            &plan,
+            Um(1500),
+            &mut "yes\n".as_bytes(),
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(
-            text.contains("ap: --keys all moves every key into one new keyset, keyset 11"),
+            text.contains("ap: this selection moves every key into one new keyset, keyset 8"),
             "got: {text}"
         );
         assert!(
-            text.contains("keysets 2, 7, 8, 9 will cease to exist, their members absorbed"),
+            text.contains("ap keyset(s) 2, 7 will cease to exist, their members absorbed"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("1 key(s) move off global travel onto their own actuation point"),
             "got: {text}"
         );
         assert!(text.contains("wh set ap --base 1.50"), "got: {text}");
@@ -1445,10 +1495,34 @@ mod tests {
     /// not read as though nothing is about to happen.
     #[test]
     fn confirm_whole_board_ap_set_names_no_keysets_when_none_exist() {
-        let index = keyset::KeysetIndex::restoring(Kind::Ap, 1);
+        let mut lines = matrix_lines(&[0x1A]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8];
+        let index = match ap_membership_for(&m, &usages).unwrap() {
+            ApMembership::Split { index, losing } => {
+                assert!(
+                    losing.is_empty(),
+                    "a free-only board loses nothing: {losing:?}"
+                );
+                index
+            }
+            ApMembership::Keep => panic!("a free key must allocate, not keep"),
+        };
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1800)), Some(index)).unwrap();
         let mut out = Vec::new();
-        confirm_whole_board_ap_set(&mut out, index, &[], Um(2000), &mut "yes\n".as_bytes())
-            .unwrap();
+        confirm_whole_board_ap_set(
+            &mut out,
+            &m,
+            &usages,
+            &plan,
+            Um(1800),
+            &mut "yes\n".as_bytes(),
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("no ap keysets exist to lose"), "got: {text}");
     }
@@ -1457,13 +1531,82 @@ mod tests {
     /// uses, not a second copy of it.
     #[test]
     fn confirm_whole_board_ap_set_refuses_on_no() {
-        let index = keyset::KeysetIndex::restoring(Kind::Ap, 3);
-        let losing = vec![(1u16, vec![0x1Au8])];
+        // Two distinct keysets, so `ap_membership_for` must `Split`, not `Keep`: a single key
+        // that is already the whole of its own keyset would keep its index instead, and this
+        // test needs a real hazard to decline.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 2));
+        lines.extend(settings_script(0x1A, 1200, 0x18, 100, 150, 1, 0));
+        lines.extend(settings_script(0x04, 1300, 0x18, 100, 150, 2, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let index = match ap_membership_for(&m, &usages).unwrap() {
+            ApMembership::Split { index, .. } => index,
+            ApMembership::Keep => panic!("two distinct keysets must split"),
+        };
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1500)), Some(index)).unwrap();
         let mut out = Vec::new();
-        let err =
-            confirm_whole_board_ap_set(&mut out, index, &losing, Um(1500), &mut "no\n".as_bytes())
-                .unwrap_err();
+        let err = confirm_whole_board_ap_set(
+            &mut out,
+            &m,
+            &usages,
+            &plan,
+            Um(1500),
+            &mut "no\n".as_bytes(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("was not confirmed"), "got: {err}");
+    }
+
+    /// A selection short of the whole matrix must never reach the prompt: the function decides
+    /// its own trigger from `m`/`usages` now, rather than trusting a caller's own pre-computed
+    /// check, so this pins that decision directly rather than only through `run.rs`'s own
+    /// end-to-end test. Empty input: a prompt here would read it and hang or refuse; printing
+    /// and returning `Ok(())` unread is the whole point.
+    #[test]
+    fn confirm_whole_board_ap_set_does_not_prompt_over_a_partial_selection() {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 0));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8]; // only one of the board's two keys
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1200)), None).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(&mut out, &m, &usages, &plan, Um(1200), &mut "".as_bytes())
+            .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing for a partial selection: {out:?}"
+        );
+    }
+
+    /// The `Keep` mirror of the test above: the whole board is already exactly one keyset, so
+    /// nothing ceases to exist and no new keyset is named, and the prompt must stay silent.
+    #[test]
+    fn confirm_whole_board_ap_set_does_not_prompt_when_the_whole_board_already_keeps_its_index() {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(settings_script(0x1A, 1200, 0x18, 100, 150, 1, 0));
+        lines.extend(settings_script(0x04, 1200, 0x18, 100, 150, 1, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1500)), None).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(&mut out, &m, &usages, &plan, Um(1500), &mut "".as_bytes())
+            .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing when Keep applies: {out:?}"
+        );
     }
 
     // -- mode_fault: the rt-state annotation --

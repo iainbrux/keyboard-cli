@@ -184,6 +184,21 @@ where every key is already free, it creates one new keyset holding every key, an
 that existed before ends with no members. See `docs/keysets.md`, "Changing a value over a selection
 that is not exactly one keyset", for what evidence supports each shape.
 
+**Selecting the whole board now asks for a typed `yes` first**, the one case above that is not the
+"leaves membership as it is" one: every existing `ap` keyset loses all its members, so every one of
+them ceases to exist. The same guard as `wh keyset remove`'s own whole-board prompt, built after
+computing what the write actually contains, so it names the new keyset's index, every keyset that
+will cease to exist, and, if any key's touch mode is about to move too (a key coming off "follow
+global travel"), a count of how many: otherwise a board with no `ap` keysets at all reads as though
+nothing is about to happen right up until the write that pins every key's actuation point. It fires
+on the resolved selection covering the board's matrix, however it is spelled, not on the literal
+word `all`, and not when the whole board already is exactly one keyset, since nothing would be lost
+in that case. `--dry-run` never prompts, since it writes nothing, and there is no bypass flag. A
+script that used to run `wh set ap --keys all --set <mm>` unattended now needs a `yes` on its stdin,
+the same way a script driving `wh keyset remove ap --keys all` already does. The prompt itself goes
+to stderr, not stdout, so redirecting the command's output still shows it on screen and still reads
+the typed answer from stdin.
+
 Manage stored groups:
 
 ```

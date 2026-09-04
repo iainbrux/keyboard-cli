@@ -1983,6 +1983,12 @@ fn set_ap_over_the_whole_board_requires_a_typed_yes() {
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
         decline_lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
     }
+    // The confirmation is built after `plan`, matching `remove`, so its reads precede the
+    // prompt even on the declined half: only the write that follows a `yes` is what the decline
+    // never reaches.
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        decline_lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, ks, 0));
+    }
     let decline_script = write_script("set-ap-whole-board-no", &decline_lines);
     let decline_config_home = scratch_config_dir("set-ap-whole-board-no");
     let decline_out = run_wh_stdin(
@@ -1995,12 +2001,13 @@ fn set_ap_over_the_whole_board_requires_a_typed_yes() {
     // The prompt itself is a diagnostic, on stderr, not stdout; the refusal that follows it once
     // the reader answers `no` is also on stderr.
     let decline_err = String::from_utf8_lossy(&decline_out.stderr);
+    let decline_stdout = String::from_utf8_lossy(&decline_out.stdout);
     assert!(
-        decline_err.contains("ap: --keys all moves every key into one new keyset, keyset 3"),
+        decline_err.contains("ap: this selection moves every key into one new keyset, keyset 3"),
         "got: {decline_err}"
     );
     assert!(
-        decline_err.contains("keysets 1, 2 will cease to exist, their members absorbed"),
+        decline_err.contains("ap keyset(s) 1, 2 will cease to exist, their members absorbed"),
         "got: {decline_err}"
     );
     assert!(
@@ -2010,6 +2017,16 @@ fn set_ap_over_the_whole_board_requires_a_typed_yes() {
     assert!(
         decline_err.contains("was not confirmed"),
         "got: {decline_err}"
+    );
+    // The negative half is what actually guards the split: asserting the prompt is present on
+    // stderr does not stop a future change sending it to both streams, only this does. Checks
+    // both the "type yes" line `confirm` itself prints and the warning text above it, since a
+    // stray print of just the warning (not the "type yes" line) would slip past a check for
+    // only one of the two.
+    assert!(
+        !decline_stdout.contains("type yes to continue")
+            && !decline_stdout.contains("this selection moves every key into one new keyset"),
+        "the prompt must not also reach stdout: got stdout: {decline_stdout}"
     );
 
     std::fs::remove_file(decline_script).unwrap();
@@ -2125,6 +2142,9 @@ fn set_ap_over_the_whole_board_names_every_keyset_that_will_cease_to_exist() {
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 2), (0x16, 3), (0x07, 0)] {
         lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
     }
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 2), (0x16, 3), (0x07, 0)] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, ks, 0));
+    }
     let script = write_script("set-ap-whole-board-three-keysets", &lines);
     let config_home = scratch_config_dir("set-ap-whole-board-three-keysets");
     let out = run_wh_stdin(
@@ -2136,15 +2156,55 @@ fn set_ap_over_the_whole_board_names_every_keyset_that_will_cease_to_exist() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("ap: --keys all moves every key into one new keyset, keyset 4"),
+        stderr.contains("ap: this selection moves every key into one new keyset, keyset 4"),
         "got: {stderr}"
     );
     assert!(
-        stderr.contains("keysets 1, 2, 3 will cease to exist, their members absorbed"),
+        stderr.contains("ap keyset(s) 1, 2, 3 will cease to exist, their members absorbed"),
         "got: {stderr}"
     );
 
     std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Finding: the value clause and the keyset clause ("no ap keysets exist to lose") can both read
+/// as a no-op on a board with no ap keysets at all, while `Change::ap`'s own promotion still
+/// takes every free key off touch nibble 0 ("follow global travel") permanently. `plan` is the
+/// only thing that knows how many; this pins the mode count actually reaching the operator, not
+/// only that a prompt fires.
+#[test]
+fn set_ap_over_the_whole_board_names_the_mode_count_when_promoting_off_global_travel() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        // Touch nibble 0 (Global): `Change::ap` promotes every one of these to Single.
+        lines.extend(key_settings_lines(usage, 2000, 0x00, 100, 150, 0, 0));
+    }
+    let path = write_script("set-ap-whole-board-mode-count", &lines);
+    let config_home = scratch_config_dir("set-ap-whole-board-mode-count");
+    let out = run_wh_stdin(
+        &["set", "ap", "--keys", "all", "--set", "2.00"],
+        &path,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no ap keysets exist to lose"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("4 key(s) move off global travel onto their own actuation point"),
+        "got: {stderr}"
+    );
+    assert!(stderr.contains("wh set ap --base 2.00"), "got: {stderr}");
+
+    std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
@@ -2292,6 +2352,142 @@ fn set_ap_over_a_partial_selection_does_not_prompt() {
     assert!(
         stdout.contains("ap keyset 1 at 1.20mm: 2 keys verified"),
         "got: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The negative half is what actually guards the split: asserting the prompt is present on
+/// stderr does not stop a future change sending it to both streams, only
+/// `!stdout.contains(..)` does. `wh keyset remove`'s own sibling test
+/// (`keyset_remove_prompt_goes_to_stderr_not_stdout`) exists for exactly this reason; this pins
+/// the same fact for `wh set ap`.
+#[test]
+fn set_ap_over_the_whole_board_prompt_goes_to_stderr_not_stdout() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, ks, 0));
+    }
+    let path = write_script("set-ap-whole-board-prompt-stream", &lines);
+    let config_home = scratch_config_dir("set-ap-whole-board-prompt-stream");
+    let out = run_wh_stdin(
+        &["set", "ap", "--keys", "all", "--set", "1.50"],
+        &path,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stderr.contains("type yes to continue"),
+        "the prompt must reach stderr: got stderr: {stderr}"
+    );
+    // Checks both the "type yes" line and the warning text above it: a stray print of just the
+    // warning would slip past a check for only one of the two.
+    assert!(
+        !stdout.contains("type yes to continue")
+            && !stdout.contains("this selection moves every key into one new keyset"),
+        "the prompt must not also reach stdout: got stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Finding: `ApMembership::Keep` is real behaviour with a real hazard shape (a whole-board
+/// selection that is already exactly one keyset), and nothing pinned it. Measured: every key in
+/// keyset 1, `--keys all --set 1.50`, `Stdio::null()` stdin, must still exit 0 and rewrite every
+/// key's actuation point with no prompt on either stream, since nothing ceases to exist and no
+/// new keyset is created. `ap_membership_for`'s `whole && taken.len() == usages.len()` is what
+/// decides this, in a different module from the guard; this end-to-end test is what would notice
+/// if a rewrite there, or in `confirm_whole_board_ap_set`'s own `Keep` check, started prompting
+/// (or hanging) here instead.
+#[test]
+fn set_ap_over_the_whole_board_keep_does_not_prompt() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 1));
+    }
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, 1, 0)); // plan's reads
+    }
+    lines.extend(auto_backup_lines_wasd(
+        0,
+        (1200, 0x18, 100, 150, 1, 0),
+        (1200, 0x18, 100, 150, 1, 0),
+        (1200, 0x18, 100, 150, 1, 0),
+        (1200, 0x18, 100, 150, 1, 0),
+    ));
+    // `Keep` writes membership to no key at all (`index` is `None`), only the value records
+    // every key's actuation point moving.
+    let value_records: Vec<KeyRecord> = [0x1Au8, 0x04, 0x16, 0x07]
+        .iter()
+        .flat_map(|&usage| {
+            [
+                KeyRecord {
+                    key: usage,
+                    layout: layout::MODE,
+                    value: 0x18,
+                },
+                KeyRecord {
+                    key: usage,
+                    layout: layout::AP,
+                    value: 1500,
+                },
+                KeyRecord {
+                    key: usage,
+                    layout: layout::RT_PRESS,
+                    value: 100,
+                },
+                KeyRecord {
+                    key: usage,
+                    layout: layout::RT_RELEASE,
+                    value: 150,
+                },
+            ]
+        })
+        .collect();
+    for f in cmds::write_key_records(&value_records[..12]) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    for f in cmds::write_key_records(&value_records[12..]) {
+        lines.push(out_line(&f));
+        lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
+    }
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 1500, 0x18, 100, 150, 1, 0));
+    }
+
+    let path = write_script("set-ap-whole-board-keep", &lines);
+    let config_home = scratch_config_dir("set-ap-whole-board-keep");
+    let out = run_wh(
+        &["set", "ap", "--keys", "all", "--set", "1.50"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("ap 1.50mm: 4 keys verified"),
+        "got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("type yes to continue") && !stderr.contains("type yes to continue"),
+        "Keep must never prompt: stdout {stdout}\nstderr {stderr}"
     );
 
     std::fs::remove_file(path).unwrap();
