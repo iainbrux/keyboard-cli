@@ -133,6 +133,122 @@ rather than as settings it recognises.
   `1` (rapid trigger off, not nibble `2` following the global) and that its actuation point is
   preserved rather than reset to the base, since a rapid trigger removal never touches `0x04`.
 
+- [ ] **2.22 `wh keyset remove` resets a key to the board's base, and loses its value flags.**
+  Ruled by the operator on 2026-09-04, after clearing a stray key needed two commands: `wh set ap`
+  put it in a keyset purely so `wh keyset remove` could take it back out.
+
+  The command's job is a destination, not a transition: make these keys follow the board's base and
+  belong to no keyset. So it stops refusing when a named key is already outside every keyset, and it
+  loses `--value`, `--press` and `--release` entirely. A key already at the base with no membership
+  gets nothing written, since the skip rule already suppresses a write where no owned value differs.
+
+  **Where the base comes from, in order.** Read it from the keys outside every keyset that are *not*
+  in the selection. That is what makes the motivating case work with no flag: 57 free keys agreed on
+  `2000` and only the key being reset disagreed. This is what the vendor does, measured in
+  `ks-reset-keysets`: it wrote `0x04 = 2000` while 64 other free keys held `2000`, and `0x14`/`0x15
+  = 200` while 68 keys held `200`. It read no stored base, because there is none.
+
+  If those remaining free keys disagree, refuse and name them, saying to include them in the
+  selection so they are reset too. Do not fall back to the constant there: a contradictory signal
+  from the board is not the same as no signal, and overriding it would invent a value.
+
+  If there are no free keys outside the selection at all, which is `--keys all` and the only case
+  with no signal, use **`2000` (2.00mm)**. Operator's ruling. It is also the measured dominant
+  value: across every layout `0x04` read in the corpus it accounts for 3453 of them, against
+  sixteen other distinct values and no reading of `2500` ever.
+
+  This is a **chosen default for one unanswerable case**, not a measurement of the board's factory
+  setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
+  read of either would replace this constant with a measured number.
+
+  **Announcement needs three cases**, since "free key(s) d left alone, already in no ap keyset"
+  becomes false: removed from keyset N with its old and new value; returned to the base from a stray
+  value while already outside every keyset; and already at the base, nothing done.
+
+  **One existing test inverts.** `keyset_remove_ignores_a_free_key_selected_alongside_a_member`
+  asserts free keys are dropped from the plan. They are now included, so it becomes a test that they
+  are written. Rewrite it rather than deleting it: it is the only test covering that path.
+
+  **`--keys all` becomes a full board reset**, every key to the base and every keyset destroyed,
+  which is `RESET KEYSETS` in the configurator. It half-does this today for keyset members, so this
+  widens an existing hazard rather than creating one.
+
+  **It carries the same confirmation as `wh set ap --keys all`.** Ruled by the operator on
+  2026-09-04: the two commands reach the same destruction by different routes, so guarding one and
+  not the other would be arbitrary. Print the warning naming every keyset that will cease to exist,
+  read one line from stdin, trim and lowercase it, and proceed only if it equals `yes`. EOF is a
+  rejection. `--dry-run` does not prompt. There is no bypass flag, so tests pipe `yes` on stdin.
+  The trigger is the resolved selection covering the whole matrix, not the literal `--keys all`.
+
+  Share one implementation with 2.23 rather than writing it twice.
+
+- [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
+  There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
+  setting: it is what every key outside a keyset holds in layout `0x04`, which is also why 2.10
+  exists. So setting it means writing the value to every free key and touching no membership.
+
+  `--base` takes no `--keys` and refuses alongside `--set`: it names the board, not a selection.
+  The flag is `--base` and not `--mm` by the operator's ruling, since `--mm` is reserved for 2.10's
+  `"MM" CUSTOM VALUE`, which is a different setting the docs already record as easy to confuse with
+  this one.
+
+  **`wh set ap --keys all --set X` stays, and is not the same thing.** Since 2.20 it enrols all 68
+  keys into one new keyset, which is measured vendor behaviour (`ks-value-over-all` writes
+  `0xFF = 3` to all 68) and the configurator supports it, so `wh` should not diverge by removing it.
+  But it is rarely what someone means, and it is destructive in a way that is not obvious: every key
+  moves into the new index, so **every existing keyset loses all its members and ceases to exist**.
+
+  So it must say so before it writes, naming what is lost, in the style `announce_steal` already
+  uses. Something of this shape:
+
+  ```
+  ap: --keys all moves every key into one new keyset, keyset 11
+      keysets 2, 7, 8, 9 will cease to exist, their members absorbed
+      to change the board's base instead, leaving keysets alone: wh set ap --base 1.50
+  ```
+
+  **Prompt, and accept only the exact word.** Ruled by the operator on 2026-09-04, overriding an
+  earlier recommendation in this entry to announce and proceed. After printing the warning, read one
+  line from stdin and act only if it is exactly `yes`. `y`, `ye`, `yess` and everything else are
+  rejected and nothing is written. EOF counts as a rejection, so a closed or empty stdin is safe.
+
+  The objection that `wh` cannot prompt was wrong and is recorded here so it is not raised again:
+  `bin/wh` ends in `exec`, so `wh.exe` inherits stdin straight from the WSL shell and a prompt
+  reaches the operator normally.
+
+  Two consequences to build for. `--dry-run` must **not** prompt, since it writes nothing. And there
+  is deliberately no `--yes` flag: a bypass would defeat the ruling, so the tests cover the confirmed
+  path by piping `yes` on stdin rather than by skipping the prompt.
+
+  **The match is case-insensitive.** Trim the line, lowercase it, and require it to equal `yes`.
+  So `YES`, `Yes` and `yEs` all pass, while `y`, `ye` and `yess` still do not. Operator's ruling.
+
+  **Trigger on the resolved selection, not on the literal flag.** The prompt fires when the
+  selection covers every key in the board's matrix, however it was written, so spelling out all 68
+  usages reaches it too. `--keys all` is the usual spelling, not the condition.
+
+  **The same prompt guards `wh keyset remove --keys all`, see 2.22.** Build it once and share it;
+  two copies will drift, and this is the one piece of code whose whole job is to be hard to get
+  past by accident.
+
+  Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
+  ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
+  `0x04` to every non-member key is the only way to set it; what is not known is whether the vendor
+  sends anything else alongside, a MODE record for instance. `begin("ks-set-global-ap")`, change the
+  field, copy.
+
+- [ ] **2.24 Extract the shared kind branch from `keyset::delete` and `keyset::remove`.** The two
+  hold a verbatim-identical sixteen-line block: `Kind::Ap` to `Change::ap`, `Kind::Rt` to
+  `Change::rt_off`, with the same two fallbacks. Deferred during 2.21 because extracting it would
+  have refactored `delete`, which is shipped and hardware-verified, inside a task that did not ask
+  for it.
+
+  The reason to do it is the reason it was safe to copy: the two must stay byte-identical because
+  the vendor sends the same template for a single-key removal as for a whole-keyset delete
+  (`ks-delete-rt` and `ks-remove-one-rt`). A future correction to that template will otherwise be
+  applied to one branch and not the other, and nothing would catch it. Note that 2.22 changes
+  `remove`'s branch, so do this after it, not before.
+
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
@@ -358,6 +474,12 @@ rather than as settings it recognises.
 - [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
   VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
   point is not in that record; it is what every key in no keyset holds in layout `0x04`.
+
+  **`--mm` is reserved for this, and must not be spent elsewhere.** Ruled by the operator on
+  2026-09-04 while naming 2.23's flag. `"MM" CUSTOM VALUE` is the one term the configurator uses for
+  this setting, and it is the exact term this task exists to stop being confused with the actuation
+  point. Any flag `wh` grows for it should be `--mm`; 2.23 uses `--base` for the actuation point so
+  the two cannot collide.
 - [ ] **2.11 Stop writing zero dead zones on restore.** The vendor's `cmd 0x29` write always carries
   `press_dead=200` and `release_dead=200`, constants in its own SDK template. The board reports both
   as `0` on read, so `wh restore` writes `0, 0` where the vendor has only ever written `200, 200`.
