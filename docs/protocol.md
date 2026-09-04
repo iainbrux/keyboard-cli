@@ -154,7 +154,7 @@ parsing them as layout records produces nonsense).
 | `0x08` | 2252 | 5 | Mode (touch mode nibble plus advanced-key nibble). Modelled and used by `wh` |
 | `0x14` | 1858 | 3 | RT press depth, micrometres. Modelled and used by `wh` |
 | `0x15` | 1858 | 4 | RT release depth, micrometres. Modelled and used by `wh` |
-| `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Reads `100` on every key touched since, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
+| `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Read `100` throughout the 2026-08-29 sittings, including through two global sensitivity changes, so it is not the global sensitivity; read `0` again on every key in every 2026-09-04 keyset capture. Purpose unknown, and what moves it is unknown |
 | `0x17` | 1858 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
 | `0x19` | 700 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 27-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
@@ -345,11 +345,13 @@ Honestly, what this corpus does not resolve:
   `release_dead=200` (`docs/keysets.md`). The measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a
   `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
   may be something else entirely.
-- Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. Every
-  value seen for them in a Phase 1 capture is `0` and every value seen in a keyset-sitting capture
-  is `100`, including through two global sensitivity changes. What moved them is not measured: the
-  only `0` to `100` transition in the corpus is a bare write in a file containing no read frames at
-  all, so tying it to a keyset existing rather than to the sitting or the firmware is an inference.
+- Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. They
+  read `0` in every Phase 1 capture, `100` in every 2026-08-29 capture including through two global
+  sensitivity changes, and `0` again in every 2026-09-04 keyset capture. What moves them is not
+  measured in either direction. `wh` never writes them, so neither transition is ours; RESET KEYSETS
+  and a profile change from 1 to 2 both fall inside the window for the second one, and the captures
+  do not separate them. Tying either transition to a keyset existing rather than to the sitting, the
+  profile or the firmware remains an inference.
   `0x19` is still only ever `0x0000` or `0x3e2c`. `0xff` and `0xfe` are no longer open: both are
   host-written keyset indices, allocated max plus one, measured in `docs/keysets.md`.
 - Commands `0x18` and `0x2c`: unidentified at the command level, discussed above.
