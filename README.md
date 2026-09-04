@@ -310,17 +310,22 @@ Two things look like exceptions and are not:
 - **The vendor cannot tell `wh`'s keysets from its own.** Operator observation of the interface, not
   a frame measurement: with two keysets made by the vendor and two produced by `wh`, the
   configurator's actuation point tab listed all four in its own pane, in ascending index order, with
-  their values rendered normally. Every key `wh` had written showed its value undimmed, which is
-  evidence against the greying hypothesis in `docs/backlog.md` without settling its cause.
+  their values rendered normally. Every key `wh` had written showed its value undimmed.
+- **The configurator greys on keyset membership, and on nothing else.** Settled by two controlled
+  experiments, each changing one variable (`docs/backlog.md`). A key moved to MODE touch nibble 0,
+  the only one on the board holding it, rendered identically to its nibble-1 neighbours outside any
+  keyset at the same value, so the nibble is irrelevant. A keyset then created at exactly the global
+  value rendered highlighted while a non-member holding that same value stayed grey, so the value is
+  irrelevant. Layout `0xFF` is the whole of it.
 
 ### Still outstanding
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- `wh set ap` on an **untouched** key, one that has never left touch nibble 0, should no longer
-  render greyed. The keys checked above were all already at nibble 1, so they do not test it. That
-  the MODE touch nibble is what causes the greying remains a hypothesis, not an established cause:
-  see `docs/backlog.md`.
+- `wh set ap` over keys that are **all outside a keyset** leaves them rendering grey, and that is
+  now understood rather than outstanding: greying tracks membership, so writing values without
+  membership cannot change it. Whether `wh` should create a keyset there, as the configurator's own
+  interface always does, is a decision rather than a check: `docs/tasks.md` 2.20.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
   packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's
