@@ -133,6 +133,71 @@ rather than as settings it recognises.
   `1` (rapid trigger off, not nibble `2` following the global) and that its actuation point is
   preserved rather than reset to the base, since a rapid trigger removal never touches `0x04`.
 
+- [ ] **2.22 `wh keyset remove` resets a key to the board's base, and loses its value flags.**
+  Ruled by the operator on 2026-09-04, after clearing a stray key needed two commands: `wh set ap`
+  put it in a keyset purely so `wh keyset remove` could take it back out.
+
+  The command's job is a destination, not a transition: make these keys follow the board's base and
+  belong to no keyset. So it stops refusing when a named key is already outside every keyset, and it
+  loses `--value`, `--press` and `--release` entirely. A key already at the base with no membership
+  gets nothing written, since the skip rule already suppresses a write where no owned value differs.
+
+  **Where the base comes from, in order.** Read it from the keys outside every keyset that are *not*
+  in the selection. That is what makes the motivating case work with no flag: 57 free keys agreed on
+  `2000` and only the key being reset disagreed. This is what the vendor does, measured in
+  `ks-reset-keysets`: it wrote `0x04 = 2000` while 64 other free keys held `2000`, and `0x14`/`0x15
+  = 200` while 68 keys held `200`. It read no stored base, because there is none.
+
+  If those remaining free keys disagree, refuse and name them, saying to include them in the
+  selection so they are reset too. Do not fall back to the constant there: a contradictory signal
+  from the board is not the same as no signal, and overriding it would invent a value.
+
+  If there are no free keys outside the selection at all, which is `--keys all` and the only case
+  with no signal, use **`2000` (2.00mm)**. Operator's ruling. It is also the measured dominant
+  value: across every layout `0x04` read in the corpus it accounts for 3453 of them, against
+  sixteen other distinct values and no reading of `2500` ever.
+
+  This is a **chosen default for one unanswerable case**, not a measurement of the board's factory
+  setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
+  read of either would replace this constant with a measured number.
+
+  **Announcement needs three cases**, since "free key(s) d left alone, already in no ap keyset"
+  becomes false: removed from keyset N with its old and new value; returned to the base from a stray
+  value while already outside every keyset; and already at the base, nothing done.
+
+  **One existing test inverts.** `keyset_remove_ignores_a_free_key_selected_alongside_a_member`
+  asserts free keys are dropped from the plan. They are now included, so it becomes a test that they
+  are written. Rewrite it rather than deleting it: it is the only test covering that path.
+
+  **`--keys all` becomes a full board reset**, every key to the base and every keyset destroyed,
+  which is `RESET KEYSETS` in the configurator. It half-does this today for keyset members, so this
+  widens an existing hazard rather than creating one. Decide whether it needs a confirmation.
+
+- [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
+  There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
+  setting: it is what every key outside a keyset holds in layout `0x04`, which is also why 2.10
+  exists. So setting it means writing the value to every free key and touching no membership.
+
+  `wh set ap --keys all --set X` does **not** do it. Since 2.20 that enrols all 68 keys into one
+  keyset, which is measured vendor behaviour (`ks-value-over-all` writes `0xFF = 3` to all 68), but
+  it is the opposite of setting a base.
+
+  Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
+  ACTUATION POINT field is changed. If it writes `0x04` to every non-member key with no membership
+  record, this task is that write. `begin("ks-set-global-ap")`, change the field, copy.
+
+- [ ] **2.24 Extract the shared kind branch from `keyset::delete` and `keyset::remove`.** The two
+  hold a verbatim-identical sixteen-line block: `Kind::Ap` to `Change::ap`, `Kind::Rt` to
+  `Change::rt_off`, with the same two fallbacks. Deferred during 2.21 because extracting it would
+  have refactored `delete`, which is shipped and hardware-verified, inside a task that did not ask
+  for it.
+
+  The reason to do it is the reason it was safe to copy: the two must stay byte-identical because
+  the vendor sends the same template for a single-key removal as for a whole-keyset delete
+  (`ks-delete-rt` and `ks-remove-one-rt`). A future correction to that template will otherwise be
+  applied to one branch and not the other, and nothing would catch it. Note that 2.22 changes
+  `remove`'s branch, so do this after it, not before.
+
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
