@@ -352,11 +352,18 @@ above, the same deliberate divergence `plan` documents for every keyset operatio
 ### Setting the base actuation point
 
 Measured 2026-09-04 in `captures/ks-set-global-ap.jsonl`. Changing the configurator's GLOBAL
-ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys, every key outside a
-keyset on a 68-key board holding 9 members. Per key: `0x08 = 16` twice (its template puts MODE in
-steps 1 and 3), `0x04 = 1950` the new base, `0x14 = 100` and `0x15 = 100` echoed unchanged, `0x16 =
-0` and `0x17 = 0` echoed unchanged. No `0xFF` record anywhere, and not one of the nine keyset
-members was written.
+ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys. Per key: `0x08 = 16`
+twice (its template puts MODE in steps 1 and 3), `0x04 = 1950` the new base, `0x14 = 100` and
+`0x15 = 100` echoed unchanged, `0x16 = 0` and `0x17 = 0` echoed unchanged. No `0xFF` record
+anywhere.
+
+**Measured separately: nine of the 68 keys were read and never written**, usages `0x04`, `0x07`,
+`0x0a`, `0x0c`, `0x12`, `0x13`, `0x16`, `0x18`, `0x1a`. That those nine are keyset members, and
+that the board therefore holds 9 members against 59 free keys, is an inference from board state,
+not itself measured here: the capture contains no `0xFF` request anywhere and no DEFKEY matrix
+read, so nothing in it can establish membership directly. The capture also logs no profile: its
+three `cmd 0x00` frames are all `22 ff ff`, with no `70`, so nothing in this section can be
+attributed to a profile either.
 
 This is the same free-key template every other operation in this document already measures, just
 sent over the whole free-key set rather than a stolen or newly created keyset's members. It settles

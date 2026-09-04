@@ -532,11 +532,7 @@ fn confirm_whole_board_remove(
     // to lose) while every key's touch mode still moves. Read from `plan` itself, built just
     // above, not inferred from `target` or `sets`: the mode transition is a property of what the
     // plan actually sends, the same reason `announce_remove` reads it from `plan` per key.
-    let moved_modes = plan
-        .before()
-        .iter()
-        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
-        .count();
+    let moved_modes = moved_mode_count(plan);
     let mode_clause = if moved_modes == 0 {
         String::new()
     } else {
@@ -827,11 +823,7 @@ pub(crate) fn confirm_whole_board_ap_set(
     // `plan` rather than off `losing` or `depth`: a board with no losing keysets can still move
     // every free key permanently off touch nibble 0, and that is the one thing the keyset clause
     // above cannot say by itself.
-    let moved_modes = plan
-        .before()
-        .iter()
-        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
-        .count();
+    let moved_modes = moved_mode_count(plan);
     let mode_clause = if moved_modes == 0 {
         String::new()
     } else {
@@ -971,6 +963,17 @@ fn mode_change(plan: &keyset::WritePlan, prior: &ops::KeySettings, u: u8) -> Opt
     let new_touch = wh_proto::cmds::Mode::from_value(sent_mode).touch;
     let prior_touch = prior.mode.touch;
     (new_touch != prior_touch).then(|| format!("mode {prior_touch:?} to {new_touch:?}"))
+}
+
+/// How many keys in `plan` had their touch mode actually move, per `mode_change`. Shared by every
+/// whole-board confirmation prompt and by `wh set ap --base`'s own announcement, so the count is
+/// always read off the plan being announced or confirmed, never inferred separately from a guess
+/// at how many keys sit at touch nibble 0.
+pub(crate) fn moved_mode_count(plan: &keyset::WritePlan) -> usize {
+    plan.before()
+        .iter()
+        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
+        .count()
 }
 
 /// Whether the value `kind` reports (AP for `Kind::Ap`, press/release for `Kind::Rt`) actually

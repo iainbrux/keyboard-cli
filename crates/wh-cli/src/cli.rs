@@ -124,7 +124,7 @@ pub enum SetWhat {
         #[arg(long, conflicts_with = "base")]
         pick: bool,
         /// Depth in mm
-        #[arg(long, conflicts_with = "base")]
+        #[arg(long, required_unless_present = "base", conflicts_with = "base")]
         set: Option<f64>,
         /// Set the board's base actuation point: every key outside every keyset moves to this
         /// depth, and every keyset is left untouched. Takes no --keys, since it names the board

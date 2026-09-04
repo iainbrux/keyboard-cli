@@ -780,10 +780,23 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             &wh_device::keyset::Change::ap(depth),
                             None,
                         )?;
+                        // Read off `plan` itself, never inferred from `free` or `depth`: the mode
+                        // transition is a property of what the plan actually sends, the same rule
+                        // `confirm_whole_board_ap_set` and `confirm_whole_board_remove` both
+                        // follow for their own whole-board prompts.
+                        let moved_modes = crate::keyset::moved_mode_count(&plan);
+                        let mode_clause = if moved_modes == 0 {
+                            String::new()
+                        } else {
+                            format!(
+                                ", {moved_modes} key(s) move off global travel onto their own \
+                                 actuation point"
+                            )
+                        };
                         writeln!(
                             out,
                             "ap base: {} keys outside every keyset move to {:.2}mm, keysets \
-                             untouched",
+                             untouched{mode_clause}",
                             free.len(),
                             depth.to_mm()
                         )?;
@@ -801,9 +814,9 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     })
                 }
                 None => {
-                    let depth = mm(set.ok_or_else(|| {
-                        anyhow::anyhow!("--set is required unless --base is given")
-                    })?)?;
+                    // clap enforces `required_unless_present = "base"` on `set`, so reaching
+                    // this branch (`base` absent) guarantees `set` is `Some`.
+                    let depth = mm(set.expect("clap requires --set whenever --base is absent"))?;
                     let keys = crate::cli::KeysArg { keys, pick };
                     // A separate locked stderr for the whole-board confirmation, matching
                     // `KeysetWhat::Remove`'s own split: the per-key announcement below stays on

@@ -2698,6 +2698,34 @@ fn set_ap_dry_run_rejects_a_key_absent_from_the_board() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// A bare `wh set ap`, with neither `--keys`/`--pick` nor `--set`/`--base`, is refused by clap
+/// itself before any session opens, naming both missing arguments in one error rather than
+/// making the operator retry twice. `set` moved from a bare `f64` (clap-required, unconditionally)
+/// to `Option<f64>` with `required_unless_present = "base"` so `--base` could make it optional;
+/// this pins that the ordinary case (no `--base` at all) still gets clap's own required-argument
+/// error, exit status 2, not a hand-rolled one from inside `run.rs`.
+#[test]
+fn set_ap_bare_invocation_names_both_missing_arguments() {
+    let path = write_script("set-ap-bare", &[]);
+    let config_home = scratch_config_dir("set-ap-bare");
+
+    let out = run_wh(&["set", "ap"], &path, &config_home);
+    assert!(!out.status.success());
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected clap's own exit status"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--keys") && stderr.contains("--set"),
+        "expected both missing arguments named, got: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 // -- set ap --base: sets the board's base actuation point, keysets untouched --
 
 /// The three DEFKEY roundtrips for a six-key board: 'w' (0x1A) and 'a' (0x04) in the first row
@@ -2732,31 +2760,19 @@ fn base_board_membership_lines() -> Vec<String> {
 }
 
 /// `plan`'s own six-layout read of the four free keys, in matrix order: each at 2.00mm, MODE
-/// 0x18 (Single, advanced 8), rt press/release 100/150, no keyset membership of either kind.
-fn base_board_free_key_reads() -> Vec<String> {
+/// `mode`, rt press/release 100/150, no keyset membership of either kind.
+fn base_board_free_key_reads_at_mode(mode: u16) -> Vec<String> {
     let mut lines = Vec::new();
     for &usage in &[0x16u8, 0x07, 0x08, 0x05] {
-        lines.extend(key_settings_lines(usage, 2000, 0x18, 100, 150, 0, 0));
+        lines.extend(key_settings_lines(usage, 2000, mode, 100, 150, 0, 0));
     }
     lines
 }
 
-/// The full auto-backup snapshot read over the six-key base board: sync, profile, global travel,
-/// matrix, then six-layout reads for all six keys in matrix order ('w' and 'a' still holding
-/// keyset 1, the four free keys unchanged from `base_board_free_key_reads`).
-fn auto_backup_lines_base_board() -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.extend(sync_lines("SNBASETEST0000001", "V1.0.0.001"));
-    lines.extend(profile_lines(0));
-    lines.extend(global_travel_lines(500, 200, 200));
-    lines.extend(matrix_lines_base_board());
-    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0)); // w, keyset member
-    lines.extend(key_settings_lines(0x04, 1200, 0x18, 100, 150, 1, 0)); // a, keyset member
-    lines.extend(key_settings_lines(0x16, 2000, 0x18, 100, 150, 0, 0)); // s, free
-    lines.extend(key_settings_lines(0x07, 2000, 0x18, 100, 150, 0, 0)); // d, free
-    lines.extend(key_settings_lines(0x08, 2000, 0x18, 100, 150, 0, 0)); // e, free
-    lines.extend(key_settings_lines(0x05, 2000, 0x18, 100, 150, 0, 0)); // b, free
-    lines
+/// `base_board_free_key_reads_at_mode` at MODE 0x18 (Single, advanced 8), the shape most tests
+/// below need: touch already off nibble 0, so `--base`'s promotion has nothing to move.
+fn base_board_free_key_reads() -> Vec<String> {
+    base_board_free_key_reads_at_mode(0x18)
 }
 
 /// The 16 value records `plan` writes for the four free keys moving to 1.95mm (1950um): each
@@ -2791,9 +2807,11 @@ fn base_board_value_records(ap_um: u16) -> Vec<KeyRecord> {
 
 /// `wh set ap --base 1.95 --dry-run` writes `0x04 = 1950` to the four free keys and no `0xFF`
 /// record at all. Asserted by exact full-sequence frame equality: a selection that wrongly
-/// included the two-key keyset would add its records to the sequence, and a selection that
-/// wrongly wrote membership would append a trailing `0xFF` frame, either of which fails this
-/// exact comparison, not just a "contains" check.
+/// wrote membership would append a trailing `0xFF` frame, which fails this exact comparison,
+/// not just a "contains" check. A selection that wrongly included the two-key keyset fails this
+/// test too, but earlier and elsewhere: measured, it fails at `ReplayTransport`'s own send
+/// mismatch, reading a key's settings the script never scripted, before any frame is ever
+/// printed for the comparison below to see.
 #[test]
 fn set_ap_base_writes_every_free_key_and_no_membership() {
     let mut lines = base_board_membership_lines();
@@ -2831,6 +2849,70 @@ fn set_ap_base_writes_every_free_key_and_no_membership() {
         frame_lines(&stdout),
         expected,
         "must write only the four free keys' AP, no membership record: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Every free key starts on touch nibble 0 ("follow global travel"), so `--base`'s promotion
+/// moves all four of them onto their own pinned actuation point, exactly `Change::ap` already
+/// does for every other actuation point write. The announcement must say so, the same defect
+/// this project has killed three times over on the sibling `--keys` path: a silent mode change
+/// with the operator told only that a depth moved.
+#[test]
+fn set_ap_base_names_the_mode_count_when_promoting_off_global_travel() {
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_at_mode(0x00));
+
+    let path = write_script("set-ap-base-nibble0", &lines);
+    let config_home = scratch_config_dir("set-ap-base-nibble0");
+    let out = run_wh(
+        &["set", "ap", "--base", "1.95", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(", 4 key(s) move off global travel onto their own actuation point"),
+        "expected the announcement to name the mode count, got: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The mirror of the test above: every free key already sits off touch nibble 0 (MODE 0x18,
+/// `Single`), so `--base`'s promotion has nothing to move and the announcement must not claim it
+/// did.
+#[test]
+fn set_ap_base_omits_the_mode_clause_when_no_free_key_is_at_global_travel() {
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_at_mode(0x18));
+
+    let path = write_script("set-ap-base-no-nibble0", &lines);
+    let config_home = scratch_config_dir("set-ap-base-no-nibble0");
+    let out = run_wh(
+        &["set", "ap", "--base", "1.95", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("global travel"),
+        "did not expect a mode clause, got: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
@@ -2910,26 +2992,96 @@ fn set_ap_base_refuses_when_every_key_is_in_a_keyset() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `--base` never reaches Task 2's whole-board confirmation, even on a real write that touches
-/// four of the board's six keys: it writes no membership at all, so `ap_membership_for` is not
-/// even in its path. Run with a null stdin (`run_wh`, not `run_wh_stdin`): if this wrongly
-/// prompted, EOF would read as a rejection and the run would fail, so success here is itself the
-/// proof, not just an absence of the prompt's wording on stderr.
+/// `keyset::read_membership`'s own matrix read plus its per-key `0xFF` sweep over a six-key
+/// board with **no keyset at all**: every key holds membership `0`, so `--base`'s free set is
+/// the whole matrix. Used only by the whole-board confirmation test below, where the free set
+/// covering the whole matrix is the entire point: `confirm_whole_board_ap_set` only decides
+/// whether to prompt after checking `usages.len() == m.entries().len()`, so a fixture with any
+/// free key excluded (the two-key-keyset board above) would let a wrongly-wired call return
+/// early on that check alone, without ever proving the call itself is absent.
+fn no_keysets_board_membership_lines() -> Vec<String> {
+    let mut lines = matrix_lines_base_board();
+    for &usage in &[0x1Au8, 0x04, 0x16, 0x07, 0x08, 0x05] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    lines
+}
+
+/// `plan`'s own six-layout read of all six keys on the no-keysets board, matrix order: each at
+/// 2.00mm, MODE 0x18 (Single, already off touch nibble 0), rt press/release 100/150, no keyset
+/// membership of either kind.
+fn no_keysets_board_key_reads() -> Vec<String> {
+    let mut lines = Vec::new();
+    for &usage in &[0x1Au8, 0x04, 0x16, 0x07, 0x08, 0x05] {
+        lines.extend(key_settings_lines(usage, 2000, 0x18, 100, 150, 0, 0));
+    }
+    lines
+}
+
+/// The full auto-backup snapshot read over the no-keysets six-key board: sync, profile, global
+/// travel, matrix, then the same six-layout reads as `no_keysets_board_key_reads`.
+fn auto_backup_lines_no_keysets_board() -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNBASENOKS0000001", "V1.0.0.001"));
+    lines.extend(profile_lines(0));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines_base_board());
+    lines.extend(no_keysets_board_key_reads());
+    lines
+}
+
+/// The 24 value records `plan` writes for all six keys on the no-keysets board moving to
+/// `ap_um`: each key's MODE echoed back unchanged (0x18), AP at the new base, both rt
+/// sensitivities echoed back unchanged.
+fn no_keysets_board_value_records(ap_um: u16) -> Vec<KeyRecord> {
+    let mut records = Vec::new();
+    for &usage in &[0x1Au8, 0x04, 0x16, 0x07, 0x08, 0x05] {
+        records.push(KeyRecord {
+            key: usage,
+            layout: layout::MODE,
+            value: 0x18,
+        });
+        records.push(KeyRecord {
+            key: usage,
+            layout: layout::AP,
+            value: ap_um,
+        });
+        records.push(KeyRecord {
+            key: usage,
+            layout: layout::RT_PRESS,
+            value: 100,
+        });
+        records.push(KeyRecord {
+            key: usage,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        });
+    }
+    records
+}
+
+/// `--base` never reaches Task 2's whole-board confirmation, even when its own free set covers
+/// the entire matrix, the exact condition `confirm_whole_board_ap_set` checks for before it
+/// decides whether to prompt at all: it writes no membership at all, so `ap_membership_for` is
+/// not even in its path. Run with a null stdin (`run_wh`, not `run_wh_stdin`): if `--base`
+/// wrongly called the guard here, EOF would read as a rejection and the run would fail, so
+/// success is itself the proof, on a board built so the guard's own short-circuit could not
+/// hide a wrongly-wired call.
 #[test]
 fn set_ap_base_does_not_prompt() {
-    let mut lines = base_board_membership_lines();
-    lines.extend(base_board_free_key_reads());
-    lines.extend(auto_backup_lines_base_board());
+    let mut lines = no_keysets_board_membership_lines();
+    lines.extend(no_keysets_board_key_reads());
+    lines.extend(auto_backup_lines_no_keysets_board());
 
-    let value_records = base_board_value_records(1950);
-    for batch in [&value_records[0..12], &value_records[12..16]] {
+    let value_records = no_keysets_board_value_records(1950);
+    for batch in [&value_records[0..12], &value_records[12..24]] {
         for f in &cmds::write_key_records(batch) {
             lines.push(out_line(f));
             lines.push(in_line(&reply(cmds::cmd::KEY, &[0x01])));
         }
     }
-    // verify_write_as's readback of the four free keys, now at the new base.
-    for &usage in &[0x16u8, 0x07, 0x08, 0x05] {
+    // verify_write_as's readback of all six keys, now at the new base.
+    for &usage in &[0x1Au8, 0x04, 0x16, 0x07, 0x08, 0x05] {
         lines.extend(key_settings_lines(usage, 1950, 0x18, 100, 150, 0, 0));
     }
 

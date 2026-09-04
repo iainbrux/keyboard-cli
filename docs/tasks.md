@@ -280,10 +280,12 @@ rather than as settings it recognises.
   drift, and this is the one piece of code whose whole job is to be hard to get past by accident.
 
   Measured 2026-09-04 in `captures/ks-set-global-ap.jsonl`: changing the configurator's GLOBAL
-  ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys, every key outside a
-  keyset on a 68-key board holding 9 members, `0x04` the new base and `0x14`/`0x15`/`0x16`/`0x17`
-  echoed unchanged, no `0xFF` record anywhere. See `docs/keysets.md`, "Setting the base actuation
-  point", for the full breakdown and `wh`'s own two documented divergences from that template.
+  ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys, `0x04` the new base
+  and `0x14`/`0x15`/`0x16`/`0x17` echoed unchanged, no `0xFF` record anywhere. Separately measured:
+  nine of the 68 keys were read and never written; that those nine are keyset members is an
+  inference, not itself measured, since the capture has no `0xFF` request and no matrix read. See
+  `docs/keysets.md`, "Setting the base actuation point", for the full breakdown, the nine usages,
+  and `wh`'s own two documented divergences from that template.
 
 - [ ] **2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
   before the part that is not.** Deferred during 2.21 because extracting it would have refactored
