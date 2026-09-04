@@ -56,7 +56,7 @@ last outbound frame and stops, so it contains no profile 2 read. That the two pr
 different values **on 2026-09-04** is therefore measured on one side and corroborated on the other
 by the operator's note, not measured on both. Do not flatten that to "measured". For 2026-08-28 both
 sides are established from frames: `initial-load` reads index `0` and `profile-switch` selects index
-`1`, and both are pure reads with no writes at all.
+`1`, and neither contains a key-record write, so the values each reads are the board's own.
 
 `profile-switch` is the trap: it selects index `1` as its first frame, so despite sitting among the
 2026-08-28 captures every read in it is profile 2. Seven of the ten Phase 1 files record no profile
@@ -173,9 +173,9 @@ write `0x18` 104 times against `0x10` once in `tests/keyset.rs`, and 38 against 
 profile 2 on 2026-09-04 read `0x10` on all 68 keys, and `layout-16-by-profile` read it on 64 of 68
 on profile 1 the same day. So a change touching MODE should add a case at `0x10`.
 
-The fixtures are not fabricated, and an earlier draft of this paragraph said they were. Every `0x18`
-fixture sits on `w`, `a`, `s` or `d`, and those four keys really did hold `0x18` on profile 1 on
-2026-09-04. They are a real board shape, just not the common one.
+The fixtures are not fabricated, and an earlier draft of this paragraph said they were. In those two
+files every `0x18` fixture sits on `w`, `a`, `s` or `d`, and those four keys really did hold `0x18`
+on profile 1 on 2026-09-04. (`wh-device`'s own tests are not so confined.) They are a real board shape, just not the common one.
 
 ## What the code does and what it says are separate claims
 

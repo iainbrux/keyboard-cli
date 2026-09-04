@@ -639,7 +639,9 @@ layout neither `wh` nor the configurator reads would not show up here.
 - **What `0x16` and `0x17` are for**, and what moved them from `0` to `100` on profile 1 between
   2026-08-28 and 2026-08-29. They have never been observed non-zero on profile 2. `wh` never writes
   them, so the transition is not ours. There is no second transition to explain: the `100` to `0`
-  difference is the profile, measured in `layout-16-by-profile`.
+  difference is the profile. `layout-16-by-profile` measures the `100` side, on profile 1; the `0`
+  side comes from the 2026-09-04 keyset captures and the operator's note, not from that capture,
+  which contains no profile 2 read at all.
 - **`cmd 0x00` sub-order `0x22`**, read three times at the head of every global rapid trigger
   capture. Not the switch's state: it replies `0` with the switch off (`ks-global-rt-on`) and `0`
   with it on (both sensitivity captures).

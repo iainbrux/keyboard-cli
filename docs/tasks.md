@@ -647,8 +647,9 @@ rather than as settings it recognises.
   by anything in Phase 1.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
   observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every key of
-  profile 1 from 2026-08-29 onward, and `0` on every key of profile 2, measured directly in
-  `layout-16-by-profile`. They are not the global rapid trigger sensitivity, measured 2026-08-29:
+  profile 1 from 2026-08-29 onward, measured in `layout-16-by-profile`, and `0` on every key of
+  profile 2, measured in `profile-switch`, which establishes its own profile from its frames. An
+  earlier revision cited `layout-16-by-profile` for both halves; it contains no profile 2 read. They are not the global rapid trigger sensitivity, measured 2026-08-29:
   they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.
   What moved them on profile 1 is unmeasured, and `wh` never writes them so it is not ours. `0x19`
   is still only ever `0x0000` or `0x3e2c`.
