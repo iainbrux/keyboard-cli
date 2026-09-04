@@ -64,8 +64,17 @@ rather than as settings it recognises.
   vendor-made keysets and two made by `wh` live at once, the configurator listed all four in its own
   pane with values rendered normally. It does not distinguish our writes from its own.
 
-  Still not exercised on hardware: `wh restore`, `wh set ap --keys all` at scale, `wh profile`, a
-  timed `wh dump`, and `wh set ap` on a key still at touch nibble 0. See `README.md`.
+  Also confirmed in the same session: `wh set ap --keys all` collapsed four keysets into one across
+  all 68 keys and `wh restore --last` put all four back **with their original indices, 2, 7, 8 and
+  9, gaps included**, which allocation could never reproduce and which is the only reason
+  `KeysetIndex::restoring` exists. `wh profile` round trips. Timings retire a concern rather than
+  raising one: whole-board set 0.85s, restore 0.70s, full dump 0.47s, so roughly 1300 HID
+  roundtrips complete inside a second.
+
+  Still not exercised on hardware: `wh set ap` on a key still at touch nibble 0, which needs a
+  profile-1 backup and so a decision about writing to that profile; `wh set ap` on a member of a
+  rapid trigger keyset, since the board carried none; and a restore over a board left half-written
+  by a genuine failure. See `README.md`.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes

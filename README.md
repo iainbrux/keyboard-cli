@@ -295,6 +295,18 @@ Two things look like exceptions and are not:
   membership; `delete` returned its members to the global and cleared membership last, one record
   per frame; and `wh set ap` over two of a four-member keyset moved exactly those two into a fresh
   index and left the other two where they were.
+- **`wh set ap --keys all` and `wh restore` both work, and together they are a full round trip.**
+  The whole-board set collapsed four keysets into one index over all 68 keys, 91 frames of which 68
+  were membership, one record per key. `wh restore --last` then put all four back **including their
+  indices, 2, 7, 8 and 9, gaps and all**. Allocation is max plus one, so no `create` could reproduce
+  that set; restoring a snapshot's indices verbatim is what `KeysetIndex::restoring` exists for and
+  this is its first confirmation on hardware.
+- **Timings, measured, and they retire a concern rather than confirming one.** Whole-board
+  `wh set ap`: 0.85 s, against 0.52 s for its dry run. `wh restore`: 0.70 s. Full `wh dump`: 0.47 s,
+  despite now issuing six reads per key rather than four. Roughly 1300 HID roundtrips complete
+  inside a second; there is no performance problem to design around.
+- **`wh profile` round trips.** Read `2`, switch to `1`, read `1`, switch back to `2`, read `2`,
+  with the per-profile snapshot warning printed on each switch.
 - **The vendor cannot tell `wh`'s keysets from its own.** Operator observation of the interface, not
   a frame measurement: with two keysets made by the vendor and two produced by `wh`, the
   configurator's actuation point tab listed all four in its own pane, in ascending index order, with
@@ -309,10 +321,6 @@ These are built and tested against replay scripts, not yet confirmed on the real
   render greyed. The keys checked above were all already at nibble 1, so they do not test it. That
   the MODE touch nibble is what causes the greying remains a hypothesis, not an established cause:
   see `docs/backlog.md`.
-- `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `keyset::plan` resends
-  the key's own touch nibble unchanged, since it only ever promotes nibble 0 (`Global`), and `wh`
-  checks the readback against what it actually sent, failing the run and naming the key and both
-  values (with rapid trigger state on each) if the board reports something else.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
   packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's
@@ -324,12 +332,12 @@ These are built and tested against replay scripts, not yet confirmed on the real
   record per key per layout, last: the vendor's own per-operation shape, measured
   (`docs/keysets.md`). Applying that shape to a whole-board restore, including writing every key's
   actuation point membership before any key's rapid trigger membership, is not itself measured; no
-  capture contains a `wh restore` at all.
-- `wh profile 2` then `wh profile` should confirm the switch landed.
-- A full `wh dump` should be timed: it now issues six reads per key rather than four.
-- The whole `wh keyset create|set|delete` tree, and the split/merge behaviour of `wh set ap`
-  described above, are exactly as replay-only as the rest of this list, and exposed to the same
-  partial-write failure the `wh set ap` bullet earlier in this list describes.
+  capture contains a `wh restore` at all. The restore path itself now works on hardware, see above;
+  what is untested is a restore run against a board left half-written by a failure.
+- `wh set ap` on a key that is in a **rapid trigger** keyset, to confirm rapid trigger survives.
+  `keyset::plan` resends the key's own touch nibble unchanged, since it only ever promotes nibble 0,
+  and `wh` fails the run naming the key and both values if the board reports something else. The
+  board carried no rapid trigger keyset during the 2026-09-04 session, so this is untested.
 
 ## Protocol
 
