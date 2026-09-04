@@ -329,9 +329,9 @@ rather than as settings it recognises.
   literal `all`, no prompt on `--dry-run`, no bypass flag, and a test asserting the prompt does NOT
   reach stdout, which is the half that has twice been the one missing.
 
-  `crates/wh-cli/src/confirm.rs`'s module doc says the two commands "reach the same destruction by
-  different routes". Once this lands it is three, and the doc should say so rather than implying the
-  list was complete.
+  `crates/wh-cli/src/confirm.rs`'s module doc has already been narrowed to say the routes it lists
+  are "only the ones guarded so far", so it no longer implies the list is complete. This task need
+  only add the third route to it.
 
 - [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
   Found by a cold reviewer that built its own replay generator and drove the binary, after the
