@@ -294,10 +294,11 @@ So the configurator distinguishes on layout `0xFF` alone. The board accepting a 
 reporting it back is measured from frames; the rendering is an operator observation of the
 interface, and is what it is: two screenshots taken minutes apart with one variable changed.
 
-**A consequence worth carrying.** `wh set ap` over keys that are all free writes values and no
-membership, which is measured vendor behaviour for that shape, so those keys stay grey. In the
-configurator a per-key actuation point cannot be set without creating a keyset. That divergence was
-invisible until greying was understood and is recorded in `docs/tasks.md`.
+**A consequence that was carried, then closed.** `wh set ap` used to write values and no membership
+over keys that are all free, so those keys stayed grey while, in the configurator, a per-key
+actuation point cannot be set without creating a keyset. That divergence was invisible until
+greying was understood; once it was, the operator ruled that `wh set ap` should match the
+configurator and always enrol a key it gives its own value to, and `wh` now does.
 
 ### Listing backups, and what `--last` should mean
 

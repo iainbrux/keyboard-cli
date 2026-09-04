@@ -320,11 +320,12 @@ rather than as settings it recognises.
   members before anything is written, a backup is taken first, and the review drove the full
   `wh restore --last` round trip and confirmed membership and every value returned exactly.
 
-- [x] ~~**2.19 Pin the two-keyset merge in `wh set ap`.**~~ `ap_membership_for` returns `Keep` in two
-  cases: no selected key is in a keyset, and exactly one keyset loses members with the selection
-  being exactly that keyset. Everything else produces one new keyset containing the whole selection.
-  So a selection spanning two keysets merges them, and where a keyset is wholly consumed its index
-  ceases to exist; a keyset only partly selected survives with its remaining members.
+- [x] ~~**2.19 Pin the two-keyset merge in `wh set ap`.**~~ At the time, `ap_membership_for` returned
+  `Keep` in two cases: no selected key was in a keyset, and exactly one keyset lost members with the
+  selection being exactly that keyset. Everything else produced one new keyset containing the whole
+  selection. So a selection spanning two keysets merges them, and where a keyset is wholly consumed
+  its index ceases to exist; a keyset only partly selected survives with its remaining members. (The
+  first case was closed by 2.20 above: an all-free selection now allocates too.)
 
   It wanted a test rather than a comment because the wrong implementations are plausible and all
   passed the suite that existed at the time. Closed by

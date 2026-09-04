@@ -352,11 +352,11 @@ fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
         .collect()
 }
 
-/// What `wh set ap` should do about membership for `usages`. What is measured, for both `Keep`
-/// sub-cases, is only that a capture wrote no `0xFF` record; which board state produced that
-/// absence (free keys, or a selection that happened to equal one whole keyset) is inferred, not
-/// itself read back (`docs/keysets.md`). No capture shows the vendor splitting a keyset either:
-/// what was observed is its UI copying a mixed selection into a new one.
+/// What `wh set ap` should do about membership for `usages`. What is measured is only that a
+/// capture wrote no `0xFF` record over a value change; that the selection behind it happened to
+/// equal one whole keyset, the one case `Keep` now covers, is inferred, not itself read back
+/// (`docs/keysets.md`). No capture shows the vendor splitting a keyset either: what was observed
+/// is its UI copying a mixed selection into a new one.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ApMembership {
     /// Leave membership alone: the selection is exactly one keyset's members, so it keeps its
@@ -861,7 +861,7 @@ mod tests {
         }
     }
 
-    /// The 2.20 ruling: a selection where every key is free must still allocate a keyset, where
+    /// The ruling: a selection where every key is free must still allocate a keyset, where
     /// it previously returned `Keep` and wrote no membership at all. Pins the allocated index and
     /// the empty losing list, not merely that a `Split` came back: a rewrite that allocated the
     /// wrong index, or invented a losing keyset, would pass a bare variant check.
@@ -888,7 +888,7 @@ mod tests {
         }
     }
 
-    /// The mirror case, unchanged by the 2.20 ruling: a selection that is exactly one keyset's
+    /// The mirror case, unchanged by the ruling above: a selection that is exactly one keyset's
     /// members keeps that keyset's index rather than allocating a new one. Without this, deleting
     /// the `losing.is_empty()` early return could be over-generalised into deleting the whole
     /// `Keep` arm, and every value change would churn a fresh keyset index.

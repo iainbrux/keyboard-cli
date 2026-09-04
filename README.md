@@ -121,21 +121,23 @@ outside one.
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
 --keys u,i,o,p --value 1.5` sets all four to 1.50mm.
 
-**`wh set ap` over a selection that is not exactly one existing keyset's members, and not entirely
-free keys, moves the whole selection into one new keyset, and says so.** Three shapes: a selection
-that is part of a keyset moves the selected members into a new index, leaving the rest of that
-keyset in place (`wh set ap --keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a`
-and `d`, moves `w` and `s` into a new index and leaves `a` and `d` in the original one). A
-selection that is a whole keyset plus a free key moves the keyset and the free key together into a
-new index. A selection spanning two existing keysets moves the selected members from each into one
-new index, leaving each keyset's unselected members in place.
+**`wh set ap` over a selection that is not exactly one existing keyset's members moves the whole
+selection into one new keyset, and says so.** Four shapes: a selection that is part of a keyset
+moves the selected members into a new index, leaving the rest of that keyset in place (`wh set ap
+--keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a` and `d`, moves `w` and `s`
+into a new index and leaves `a` and `d` in the original one). A selection that is a whole keyset
+plus a free key moves the keyset and the free key together into a new index. A selection spanning
+two existing keysets moves the selected members from each into one new index, leaving each
+keyset's unselected members in place. And a selection where every key is free also allocates a new
+keyset for them: giving a free key its own value is what puts it in one.
 
 A newly allocated index is one more than the current maximum live index, or `1` if none exists.
 Selecting the whole board with `--keys all` follows the same rule as any other selection: it
-leaves every keyset's membership as it is if every key is already free, or if one keyset already
-holds every key on the board (the value written still changes on both); on any other board it
-creates one new keyset holding every key, and every keyset that existed before ends with no
-members. See `docs/keysets.md`, "an operator observation", for what evidence supports each shape.
+leaves every keyset's membership as it is only when one keyset already holds every key on the
+board (the value written still changes); on any board where that is not so, including a board
+where every key is already free, it creates one new keyset holding every key, and every keyset
+that existed before ends with no members. See `docs/keysets.md`, "an operator observation", for
+what evidence supports each shape.
 
 Manage stored groups:
 
@@ -333,10 +335,6 @@ sensitivities and different keysets on the same day. Nothing here has been check
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- `wh set ap` over keys that are **all outside a keyset** leaves them rendering grey, and that is
-  now understood rather than outstanding: greying tracks membership, so writing values without
-  membership cannot change it. Whether `wh` should create a keyset there, as the configurator's own
-  interface always does, is a decision rather than a check: `docs/tasks.md` 2.20.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
   packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's
