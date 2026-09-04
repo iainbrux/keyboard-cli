@@ -124,15 +124,22 @@ or not they were in one: it takes no value flags, since its job is a destination
 The base comes from the free keys the selection leaves behind, the same keys the removed ones would
 otherwise agree with. If those remaining free keys disagree on it, `remove` refuses and names each
 value and how many keys hold it, saying to include them in the selection so they are reset too,
-rather than inventing a winner. If none are left outside the selection at all, it falls back to
-`2.00mm`, a chosen default for that one unanswerable case, not a measured factory setting.
+rather than inventing a winner. If none are left outside the selection at all, `ap` falls back to
+`2.00mm`, a chosen default for that one unanswerable case (the measured dominant `0x04` reading, not
+a measured factory setting); `rt` has no equivalent default and refuses instead, since no capture
+has ever shown a rapid trigger sensitivity reset to a fixed constant rather than to whatever the
+global held at the time.
 `wh keyset remove ap --keys w`, with `w` one of three members of a keyset, moves only `w` and leaves
 the other two in place. Where two commands used to be needed to clear a stray key (`wh set ap` to
 put it in a keyset, then `wh keyset remove` to take it back out), one now does it directly: `wh
 keyset remove ap --keys w` works whether `w` is in a keyset or already free. Selecting every key in
-the board's matrix (however it is spelled) destroys every keyset of that kind, the same thing
-`RESET KEYSETS` does in the configurator, and asks for a typed `yes` first, naming every keyset that
-will cease to exist; `--dry-run` never prompts, since it writes nothing.
+the board's matrix (however it is spelled) destroys every keyset of that kind and moves every key to
+the base in one write. The outcome matches `RESET KEYSETS` in the configurator; the traffic does
+not, since `RESET KEYSETS` is measured writing over each keyset's existing members only, with no
+`0xFF`/`0xFE` record for a key that was already free, while `wh` writes every selected key's
+membership unconditionally, free ones included, matching `plan`'s existing rule for `create` and
+`delete`. `remove` asks for a typed `yes` first, naming the value every key is about to move to and
+every keyset that will cease to exist; `--dry-run` never prompts, since it writes nothing.
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
@@ -321,13 +328,18 @@ sensitivities and different keysets on the same day. Nothing here has been check
 - **`wh keyset remove ap` returns a key to the global and collapses an emptied keyset.**
   `wh keyset remove ap --keys h --value 2.0` read back `h: ap 2.00mm keyset none` and keyset 10
   ceased to exist, since `H` was its only member. The other four keysets were untouched. `--value`
-  no longer exists on `remove` since 2.22; the command shown is what actually ran that day, not
-  today's syntax for the same result (`wh keyset remove ap --keys h`, no flag needed).
+  no longer exists on `remove`; the command shown is what actually ran that day, not today's syntax
+  for the same result (`wh keyset remove ap --keys h`, no flag needed).
 
-- **`wh` refuses to guess an ambiguous global.** The first attempt at that removal, with no
-  `--value`, was declined: "the keys outside every keyset disagree on the global actuation point
-  (57 key(s) at 2.00mm, 1 key(s) at 1.10mm)". The board really was in that state, and `wh` named
-  both values rather than taking the majority.
+- **`wh` refuses to guess an ambiguous global, but excluding the key being reset from that reading
+  removes the motivating case for it.** The first attempt at that removal, with no `--value`, was
+  declined: "the keys outside every keyset disagree on the global actuation point (57 key(s) at
+  2.00mm, 1 key(s) at 1.10mm)", `H` itself being the one key at 1.10mm, still outside a keyset and
+  therefore counted in its own reading. Today `remove` excludes every key it is about to reset from
+  that reading, so this exact scenario would succeed with no flag at all: the remaining 57 keys
+  agree at 2.00mm, and `H`'s own stray 1.10mm is no longer in the count to disagree with them. The
+  refusal itself is still real, on any board where the keys left *outside* the selection disagree
+  with each other.
 
 - **`wh set ap` on a rapid trigger keyset member leaves rapid trigger alone and adds actuation
   point membership.** `M` was in rt keyset 1 at 0.30/0.40mm. `wh set ap --keys m --set 1.3` sent

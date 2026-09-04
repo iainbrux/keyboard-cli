@@ -980,7 +980,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::remove(&mut out, s, kind, &usages, dry_run, &mut input)?;
+                let plan = crate::keyset::remove(&mut out, s, kind, &usages, !dry_run, &mut input)?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }

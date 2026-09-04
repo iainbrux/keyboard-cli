@@ -169,8 +169,9 @@ rather than as settings it recognises.
   value while already outside every keyset; and already at the base, nothing done.
 
   **One existing test inverts.** `keyset_remove_ignores_a_free_key_selected_alongside_a_member`
-  asserts free keys are dropped from the plan. They are now included, so it becomes a test that they
-  are written. Rewrite it rather than deleting it: it is the only test covering that path.
+  asserted free keys are dropped from the plan. They are now included, so it became a test that they
+  are written, rewritten and renamed to `keyset_remove_writes_a_free_key_selected_alongside_a_member`
+  rather than deleted: it is the only test covering that path.
 
   **`--keys all` becomes a full board reset**, every key to the base and every keyset destroyed,
   which is `RESET KEYSETS` in the configurator. It half-does this today for keyset members, so this
@@ -246,17 +247,30 @@ rather than as settings it recognises.
   sends anything else alongside, a MODE record for instance. `begin("ks-set-global-ap")`, change the
   field, copy.
 
-- [ ] **2.24 Extract the shared kind branch from `keyset::delete` and `keyset::remove`.** The two
-  hold a verbatim-identical sixteen-line block: `Kind::Ap` to `Change::ap`, `Kind::Rt` to
-  `Change::rt_off`, with the same two fallbacks. Deferred during 2.21 because extracting it would
-  have refactored `delete`, which is shipped and hardware-verified, inside a task that did not ask
-  for it.
+- [ ] **2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
+  before the part that is not.** Deferred during 2.21 because extracting it would have refactored
+  `delete`, which is shipped and hardware-verified, inside a task that did not ask for it. 2.22
+  changed the two branches enough that this is no longer the same task it was when first written:
+  read what is actually shared before touching either.
 
-  The reason to do it is the reason it was safe to copy: the two must stay byte-identical because
-  the vendor sends the same template for a single-key removal as for a whole-keyset delete
-  (`ks-delete-rt` and `ks-remove-one-rt`). A future correction to that template will otherwise be
-  applied to one branch and not the other, and nothing would catch it. Note that 2.22 changes
-  `remove`'s branch, so do this after it, not before.
+  What is still shared: the `Kind::Ap` arm builds `Change::ap`, the `Kind::Rt` arm builds
+  `Change::rt_off`, and this shape is the reason to share it at all. The vendor sends the same
+  template for a single-key removal as for a whole-keyset delete (`ks-delete-rt` and
+  `ks-remove-one-rt`), so a future correction to that template must land on both branches at once,
+  and nothing today would catch a fix applied to only one.
+
+  **What is no longer shared, and must not be merged into one function.** `delete` resolves its
+  value through `global_ap_or_bail`/`global_rt_or_bail`, which refuse on both `Split` and
+  `NoneOutsideAKeyset` and take `--value`/`--press`/`--release` as an escape hatch. `remove` has no
+  such flags and resolves through its own `remove_base_ap`/`remove_base_rt`, which refuse on
+  `Split` but diverge on `NoneOutsideAKeyset`: `remove_base_ap` falls back to the `2000` constant
+  (2.22's own ruling, `NO_SIGNAL_BASE`), while `remove_base_rt` refuses, since there is no measured
+  rapid trigger equivalent of that constant. Extracting a single shared "resolve the kind branch"
+  helper would either give `delete` a fallback it never had or take `remove`'s escape hatch away
+  from `remove` where none exists; a future implementer following this task literally, the way an
+  earlier version of it read, would silently give one command the other's `NoneOutsideAKeyset`
+  behaviour. Share only the `Change` construction shape, parameterised over an already-resolved
+  value each caller keeps producing its own way.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes

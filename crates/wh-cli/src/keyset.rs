@@ -315,6 +315,8 @@ pub(crate) fn delete<T: Transport>(
 /// The base actuation point when no free key remains to read one from, once every free key is
 /// excluded from the read because it is itself being reset. A chosen default for that one
 /// unanswerable case, not a measured factory setting: nothing has ever read an untouched profile.
+/// Actuation point only: `2000` is the measured dominant `0x04` reading, and no equivalent exists
+/// for rapid trigger, so `remove_base_rt` refuses in the same case rather than reusing it.
 const NO_SIGNAL_BASE: Um = Um(2000);
 
 /// Resolves `remove`'s target: the base actuation point read from the free keys `usages` leaves
@@ -329,7 +331,11 @@ fn remove_base_ap<T: Transport>(s: &mut Session<T>, m: &Membership, usages: &[u8
     }
 }
 
-/// The rapid trigger mirror of `remove_base_ap`, over the press/release pair.
+/// The rapid trigger mirror of `remove_base_ap`, over the press/release pair, with one deliberate
+/// difference: `NoneOutsideAKeyset` refuses rather than falling back to a constant. The corpus
+/// shows the reset target always tracking the global sensitivity at write time, `100` in
+/// `ks-delete-rt`, `200` in `ks-reset-keysets`, never a fixed number, and no `0x14`/`0x15` reading
+/// has ever been `2000`. Inventing one here is exactly what this project measures against.
 fn remove_base_rt<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
@@ -347,7 +353,10 @@ fn remove_base_rt<T: Transport>(
                 remove_split_message_str("rapid trigger sensitivity", &shown)
             )
         }
-        Global::NoneOutsideAKeyset => Ok((NO_SIGNAL_BASE, NO_SIGNAL_BASE)),
+        Global::NoneOutsideAKeyset => bail!(
+            "no key is outside a rapid trigger keyset, so there is no global sensitivity to reset \
+             these to, and no default is measured for one"
+        ),
     }
 }
 
@@ -373,27 +382,20 @@ fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
     )
 }
 
-/// Whether `prior`'s own value already equals `target`, so `announce_remove` can tell a returning
-/// key from one that was already at the base.
-fn value_at_target(kind: Kind, prior: &ops::KeySettings, target: Target) -> bool {
-    match (kind, target) {
-        (Kind::Ap, Target::Ap(v)) => prior.ap == v,
-        (Kind::Rt, Target::Rt(p, r)) => prior.rt_press == p && prior.rt_release == r,
-        _ => false,
-    }
-}
-
 /// Resets named keys to the board's base value and to no keyset at all: the destination every
 /// selected key reaches, whether it was a keyset member or already free. `usages` goes to `plan`
 /// whole, so a key already at the base with nothing else to change gets no value record, `plan`'s
 /// own skip rule; membership is still written for every selected key, the same unconditional
-/// rewrite `plan` already applies for `create` and `delete`.
+/// rewrite `plan` already applies for `create` and `delete`. `will_write` must agree with whether
+/// the caller goes on to send `plan` to the device: pass `false` only when the caller's own next
+/// step is printing the plan and stopping, never applying it, since the whole-matrix confirmation
+/// below is skipped whenever it is `false`.
 pub(crate) fn remove<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
-    dry_run: bool,
+    will_write: bool,
     input: &mut impl BufRead,
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
@@ -418,8 +420,8 @@ pub(crate) fn remove<T: Transport>(
         }
     };
 
-    if !dry_run && usages.len() == m.entries().len() {
-        confirm_whole_board_remove(out, kind, &sets, input)?;
+    if will_write && usages.len() == m.entries().len() {
+        confirm_whole_board_remove(out, kind, &sets, target, input)?;
     }
 
     let cleared = keyset::KeysetIndex::clear(kind);
@@ -429,23 +431,30 @@ pub(crate) fn remove<T: Transport>(
 }
 
 /// The typed confirmation guarding a remove that covers every key in the board's matrix: every
-/// keyset of this kind ceases to exist once nothing is left to be a member of anything. `--dry-run`
-/// never reaches here, since it writes nothing to confirm.
+/// keyset of this kind ceases to exist once nothing is left to be a member of anything, and every
+/// key moves to `target` regardless of what it held before, including a whole-board selection with
+/// no live keysets at all, where `target` is the only thing about to change and so the only thing
+/// worth naming. `--dry-run` never reaches here, since it writes nothing to confirm.
 fn confirm_whole_board_remove(
     out: &mut impl Write,
     kind: Kind,
     sets: &[Keyset],
+    target: Target,
     input: &mut impl BufRead,
 ) -> Result<()> {
     let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
-    let prompt = format!(
-        "this selects every key on the board: {} keyset(s) {} will cease to exist",
-        kind_name(kind),
-        if indices.is_empty() {
-            "none".to_string()
-        } else {
+    let keysets = if indices.is_empty() {
+        format!("no {} keysets exist to lose", kind_name(kind))
+    } else {
+        format!(
+            "{} keyset(s) {} will cease to exist",
+            kind_name(kind),
             indices.join(", ")
-        }
+        )
+    };
+    let prompt = format!(
+        "this selects every key on the board: every key moves to {}, and {keysets}",
+        target.display()
     );
     if !crate::confirm::confirm(out, &prompt, input)? {
         bail!(
@@ -457,9 +466,13 @@ fn confirm_whole_board_remove(
 }
 
 /// Announces a remove's effect on every selected key, in three cases: a member leaving a keyset,
-/// a free key returning to a base it did not already hold, and a free key already at the base
-/// with nothing to do. Each key's current value comes from `plan.before()`, the same source
-/// `announce_delete` uses.
+/// a free key returning to a base it did not already hold, and a free key `plan` sent no value
+/// record for at all, "nothing to do". The third case is decided from `plan.value_records()`
+/// directly, not from comparing `prior` to `target`: `plan` also writes a value record to turn
+/// rapid trigger off or to promote a touch nibble even when the owned value itself does not move,
+/// and a comparison that only looked at the owned value would call that "nothing to do" too, while
+/// a frame carrying that change was still on the wire. Each key's current value comes from
+/// `plan.before()`, the same source `announce_delete` uses.
 fn announce_remove(
     out: &mut impl Write,
     kind: Kind,
@@ -483,7 +496,7 @@ fn announce_remove(
                 key_label(u),
                 target.display()
             )?;
-        } else if value_at_target(kind, prior, target) {
+        } else if !plan.value_records().iter().any(|r| r.key == u) {
             writeln!(
                 out,
                 "{}: {} already at {} in no {} keyset, nothing to do",
