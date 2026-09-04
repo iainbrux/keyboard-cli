@@ -83,22 +83,43 @@ rather than as settings it recognises.
   Still not exercised: a restore over a board left half-written by a genuine failure. See
   `README.md`.
 
-- [ ] **2.20 Decide whether `wh set ap` on all-free keys should create a keyset.** Opened by the
-  2026-09-04 greying result, which settled that the configurator distinguishes a recognised setting
-  from a loose override on keyset membership alone, not on the MODE nibble and not on the value.
+- [ ] **2.20 `wh set ap` on free keys must create a keyset.** Ruled by the operator on 2026-09-04,
+  after the greying result settled that the configurator distinguishes a recognised setting from a
+  loose override on keyset membership (`0xFF`) alone, not on the MODE nibble and not on the value.
 
-  `wh set ap` over a selection that is entirely free keys writes values and no membership. That is
-  measured vendor behaviour for the frames (`ap-wasd-1.2` writes no `0xFF` record), but in the
-  configurator's own interface a per-key actuation point cannot be set without creating a keyset, so
-  the vendor never reaches that state through its UI. The result is that those keys render grey,
-  which is the exact outcome Phase 2 was opened to avoid.
+  The rule the operator stated: a key sits outside a keyset exactly when it holds the board's base
+  value, and any other value means it belongs to one. Grey means "follows the base"; highlighted
+  means "has its own value". So `wh set ap --keys h --set 1.5` on a free key must allocate a keyset
+  and put `h` in it, where today it writes the value and no membership.
 
-  Three ways out and none is obviously right: leave it, matching the measured frames; create a
-  keyset, matching the interface; or offer a flag. It needs a ruling, not a fix.
+  This is a ruling about what `wh` should do, not a measured firmware invariant, and the difference
+  matters because the board does not enforce it. `docs/keysets.md` records keyset 4 holding `2.00mm`
+  in `ks-steal-equal-value` while the base was also `2.00mm`, and on 2026-09-04 `wh` created keyset
+  10 at `2.00mm` and the configurator listed and highlighted it. Anything implementing this rule has
+  to cope with boards that already sit outside it.
+
+  The mirror case is ruled the other way, deliberately: `wh set ap --keys w --set 2.0` on a keyset
+  member keeps `w` in its keyset even though the value returns to the base, because the operator
+  picked that key and changed its value explicitly. Leaving a keyset is a membership operation and
+  gets its own command, not an inference from the value. `wh keyset delete <kind> <index>` already
+  covers the whole-keyset case; per-key removal is 2.21.
 
   This also retires task 2.2's stated rationale. The nibble 0 to 1 promotion stays, because the
   vendor demonstrably does it, but "so our writes stop rendering greyed" was the wrong reason and is
   now measured false.
+
+- [ ] **2.21 `wh keyset remove` to take individual keys out of a keyset. Depends on 2.20.** Ruled
+  with 2.20: because setting a value never removes a key from its keyset, membership needs its own
+  command. `wh keyset delete <kind> <index>` already deletes a whole keyset and returns every member
+  to the base value; what is missing is `wh keyset remove <kind> --keys j`, which clears `0xFF` (or
+  `0xFE`) for the named keys only, writes them back to the base value, and leaves the rest of the
+  keyset alone.
+
+  Two things are unmeasured and should be settled before or during implementation, not assumed. What
+  the vendor writes when it removes one key from a multi-key keyset is not in the corpus, only
+  whole-keyset deletion is (`ks-delete-ap-1`). And whether the firmware keeps a keyset alive when its
+  last member is removed one key at a time, rather than collapsing it, is unknown; `wh keyset list`
+  reads membership live, so this is one capture away.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
