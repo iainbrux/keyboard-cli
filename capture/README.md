@@ -26,7 +26,8 @@ repository will do that for you.
 Before you start, note which profile is active on the keyboard, somewhere
 outside this repository (your own notes, not a comment in the capture
 file). Nothing in the capture itself records which profile was active, and
-it matters: per-key state is per profile, measured in `layout-16-by-profile`.
+it matters: per-key state is per profile. `layout-16-by-profile` measures the profile 1 side of
+   that; the other side rests on the operator's note.
 Not recording it cost real work. The 2026-08-29 captures are profile 1 and
 the 2026-09-04 keyset captures are profile 2, which was not noticed until a
 difference between them had already been written up as a change over time.

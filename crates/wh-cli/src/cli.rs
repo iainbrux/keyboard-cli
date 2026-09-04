@@ -228,24 +228,14 @@ pub enum KeysetWhat {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Take keys out of their keyset, returning them to the global value: wh keyset remove ap --keys j
+    /// Reset keys to the board's base value and no keyset: wh keyset remove ap --keys j
+    ///
+    /// For ap, this promotes a key still on touch nibble 0 ("follow global travel") to nibble 1,
+    /// a pinned per-key actuation point, the same promotion create/set/delete already apply.
     Remove {
         kind: KeysetKindArg,
         #[command(flatten)]
         keys: KeysArg,
-        /// Value in mm to return the keys to: the actuation point for an ap keyset, or the rapid
-        /// trigger base for an rt keyset. Defaults to the board's global, and is required when
-        /// the keys outside every keyset disagree on it.
-        #[arg(long)]
-        value: Option<f64>,
-        /// Press sensitivity in mm to return the keys to, overriding --value's press half.
-        /// Refused on an ap keyset; pass --value instead.
-        #[arg(long)]
-        press: Option<f64>,
-        /// Release sensitivity in mm to return the keys to, overriding --value's release half.
-        /// Refused on an ap keyset; pass --value instead.
-        #[arg(long)]
-        release: Option<f64>,
         /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,

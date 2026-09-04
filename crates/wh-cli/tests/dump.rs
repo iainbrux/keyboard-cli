@@ -269,6 +269,7 @@ fn run_wh(
         .env("WH_REPLAY", replay)
         .env("XDG_CONFIG_HOME", config_home)
         .args(args)
+        .stdin(std::process::Stdio::null())
         .output()
         .unwrap()
 }

@@ -133,14 +133,17 @@ rather than as settings it recognises.
   `1` (rapid trigger off, not nibble `2` following the global) and that its actuation point is
   preserved rather than reset to the base, since a rapid trigger removal never touches `0x04`.
 
-- [ ] **2.22 `wh keyset remove` resets a key to the board's base, and loses its value flags.**
+- [x] ~~**2.22 `wh keyset remove` resets a key to the board's base, and loses its value flags.**~~
   Ruled by the operator on 2026-09-04, after clearing a stray key needed two commands: `wh set ap`
   put it in a keyset purely so `wh keyset remove` could take it back out.
 
   The command's job is a destination, not a transition: make these keys follow the board's base and
   belong to no keyset. So it stops refusing when a named key is already outside every keyset, and it
   loses `--value`, `--press` and `--release` entirely. A key already at the base with no membership
-  gets nothing written, since the skip rule already suppresses a write where no owned value differs.
+  gets no value record, `plan`'s own skip rule. It still carries the membership-clear record, since
+  `plan` writes that unconditionally for every key it is given, whether or not the value it already
+  holds matches: this predates 2.22 (`create`/`delete` already relied on it) and is not something
+  this task's own skip rule could suppress without a second read of the same key.
 
   **Where the base comes from, in order.** Read it from the keys outside every keyset that are *not*
   in the selection. That is what makes the motivating case work with no flag: 57 free keys agreed on
@@ -152,26 +155,58 @@ rather than as settings it recognises.
   selection so they are reset too. Do not fall back to the constant there: a contradictory signal
   from the board is not the same as no signal, and overriding it would invent a value.
 
-  If there are no free keys outside the selection at all, which is `--keys all` and the only case
-  with no signal, use **`2000` (2.00mm)**. Operator's ruling. It is also the measured dominant
-  value: across every layout `0x04` read in the corpus it accounts for 3453 of them, against
-  sixteen other distinct values and no reading of `2500` ever.
+  If there are no free keys outside the selection at all, **for `ap`** use **`2000` (2.00mm)**.
+  Operator's ruling, reaffirmed on 2026-09-04 after a review argued against it, so the behaviour
+  below is decided rather than merely shipped.
 
-  This is a **chosen default for one unanswerable case**, not a measurement of the board's factory
-  setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
+  **The case is not only `--keys all`, and the operator ruled with that in front of them.** A review
+  measured a four-key board where `s` and `d` sat in a keyset and `w` and `a` were the only free
+  keys, both reading `1500`. Selecting `w,a` excludes both, leaves nothing to read, and writes
+  `2000` over a board whose free keys had stated `1500`. There is no confirmation, since two of four
+  keys is not a whole-board selection. Scaled up, that is sixty keys in keysets and eight free
+  strays normalised to `2000` with no prompt.
+
+  Three alternatives were offered and declined: refusing as `rt` does; reading the selected keys'
+  own agreed value and treating the command as a no-op; and keeping the constant while moving the
+  confirmation trigger from "whole board" to "no signal". The announcement does name the value as a
+  default whenever it is used, measured on hardware, so the operator is told. It is also the measured
+  dominant value: across every layout `0x04` read in the corpus it accounts for 3453 of them,
+  against sixteen other distinct values and no reading of `2500` ever.
+
+  This is a **chosen default**, not a measurement of the board's factory setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
   read of either would replace this constant with a measured number.
 
-  **Announcement needs three cases**, since "free key(s) d left alone, already in no ap keyset"
-  becomes false: removed from keyset N with its old and new value; returned to the base from a stray
-  value while already outside every keyset; and already at the base, nothing done.
+  **`rt` has no such default and refuses in the same case, ruled during review rather than at this
+  entry's first writing.** No `0x14`/`0x15` reading has ever been `2000`, and the corpus shows the
+  reset target tracking the global sensitivity at write time (`100` in `ks-delete-rt`, `200` in
+  `ks-reset-keysets`), never a fixed number, so there is no dominant value the way `2000` is for
+  `ap`. A practical consequence, broader than only the whole-board case: `wh keyset remove rt`
+  refuses whenever every key currently free of an rt keyset is also in the selection, since
+  `global_rt_excluding` then reports `NoneOutsideAKeyset`. A single `--keys w` refuses the same way
+  when `w` is the only free rt key on the board, not only `--keys all`. `wh keyset delete rt
+  <index>`, which still takes `--press`/`--release`, is the route past this refusal.
+
+  **Announcement needs four reachable cases**, not three, since "free key(s) d left alone,
+  already in no ap keyset" becomes false: removed from keyset N with its old and new value;
+  returned to the base from a stray value while already outside every keyset; membership rewritten
+  with the value unchanged, for a free key already at the base (not "nothing to do": `plan` still
+  sends the membership record unconditionally, so calling it nothing at all would be the same false
+  no-op this whole entry exists to reject); and a fourth found only during review, a free key whose
+  owned value already sits at the base but whose touch mode still moves (rapid trigger switching
+  off, or a key promoted off "follow global travel"), which must name the mode transition rather
+  than read as either of the other two. The first two also append the mode transition when it
+  applies alongside them, the same fix.
 
   **One existing test inverts.** `keyset_remove_ignores_a_free_key_selected_alongside_a_member`
-  asserts free keys are dropped from the plan. They are now included, so it becomes a test that they
-  are written. Rewrite it rather than deleting it: it is the only test covering that path.
+  asserted free keys are dropped from the plan. They are now included, so it became a test that they
+  are written, rewritten and renamed to `keyset_remove_writes_a_free_key_selected_alongside_a_member`
+  rather than deleted: it is the only test covering that path.
 
-  **`--keys all` becomes a full board reset**, every key to the base and every keyset destroyed,
-  which is `RESET KEYSETS` in the configurator. It half-does this today for keyset members, so this
-  widens an existing hazard rather than creating one.
+  **`--keys all` becomes a full board reset for `ap`**, every key to `2000` and every ap keyset
+  destroyed, which is `RESET KEYSETS` in the configurator. It half-does this today for keyset
+  members, so this widens an existing hazard rather than creating one. **`rt` cannot do this at
+  all**: the ruling above means a whole-board `rt` selection always hits `NoneOutsideAKeyset` and
+  always refuses, so there is no `--keys all` reset on that side.
 
   **It carries the same confirmation as `wh set ap --keys all`.** Ruled by the operator on
   2026-09-04: the two commands reach the same destruction by different routes, so guarding one and
@@ -181,6 +216,19 @@ rather than as settings it recognises.
   The trigger is the resolved selection covering the whole matrix, not the literal `--keys all`.
 
   Share one implementation with 2.23 rather than writing it twice.
+
+  Shipped: both kinds, the base read excluding the reset selection, and the `Split` refusal. The
+  `NoneOutsideAKeyset` case ships differently per kind and stays that way on purpose: `ap` falls
+  back to `2000`, `rt` refuses whenever every key currently free of an rt keyset is also in the
+  selection, whole-board or not. Also shipped, all found during review rather than in the first
+  draft of this entry: the `ap` fallback names itself as invented in the announcement, rather than
+  rendering indistinguishably from a value read off the board; a partial removal that empties a
+  keyset says so, "keyset N ceases to exist", the same fact the whole-board prompt already names for
+  every keyset at once; that prompt is built after `keyset::plan`, not before, so it can count and
+  name how many keys are about to move off touch nibble 0 rather than answering a question the
+  operator cannot yet see the answer to; and the four-case announcement itself. `--value`, `--press`
+  and `--release` are gone from the clap variant and from the `Kind::Ap` refusal, which had nothing
+  left to refuse and was deleted with them.
 
 - [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
   There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
@@ -227,9 +275,9 @@ rather than as settings it recognises.
   selection covers every key in the board's matrix, however it was written, so spelling out all 68
   usages reaches it too. `--keys all` is the usual spelling, not the condition.
 
-  **The same prompt guards `wh keyset remove --keys all`, see 2.22.** Build it once and share it;
-  two copies will drift, and this is the one piece of code whose whole job is to be hard to get
-  past by accident.
+  **The same prompt guards `wh keyset remove --keys all`, shipped in 2.22 as
+  `crates/wh-cli/src/confirm.rs`.** Reuse it rather than building a second copy; two copies will
+  drift, and this is the one piece of code whose whole job is to be hard to get past by accident.
 
   Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
   ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
@@ -237,17 +285,92 @@ rather than as settings it recognises.
   sends anything else alongside, a MODE record for instance. `begin("ks-set-global-ap")`, change the
   field, copy.
 
-- [ ] **2.24 Extract the shared kind branch from `keyset::delete` and `keyset::remove`.** The two
-  hold a verbatim-identical sixteen-line block: `Kind::Ap` to `Change::ap`, `Kind::Rt` to
-  `Change::rt_off`, with the same two fallbacks. Deferred during 2.21 because extracting it would
-  have refactored `delete`, which is shipped and hardware-verified, inside a task that did not ask
-  for it.
+- [ ] **2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
+  before the part that is not.** Deferred during 2.21 because extracting it would have refactored
+  `delete`, which is shipped and hardware-verified, inside a task that did not ask for it. 2.22
+  changed the two branches enough that this is no longer the same task it was when first written:
+  read what is actually shared before touching either.
 
-  The reason to do it is the reason it was safe to copy: the two must stay byte-identical because
-  the vendor sends the same template for a single-key removal as for a whole-keyset delete
-  (`ks-delete-rt` and `ks-remove-one-rt`). A future correction to that template will otherwise be
-  applied to one branch and not the other, and nothing would catch it. Note that 2.22 changes
-  `remove`'s branch, so do this after it, not before.
+  What is still shared: the `Kind::Ap` arm builds `Change::ap`, the `Kind::Rt` arm builds
+  `Change::rt_off`, and this shape is the reason to share it at all. The vendor sends the same
+  template for a single-key removal as for a whole-keyset delete (`ks-delete-rt` and
+  `ks-remove-one-rt`), so a future correction to that template must land on both branches at once,
+  and nothing today would catch a fix applied to only one.
+
+  **What is no longer shared, and must not be merged into one function.** `delete` resolves its
+  value through `global_ap_or_bail`/`global_rt_or_bail`, which refuse on both `Split` and
+  `NoneOutsideAKeyset` and take `--value`/`--press`/`--release` as an escape hatch. `remove` has no
+  such flags and resolves through its own `remove_base_ap`/`remove_base_rt`, which refuse on
+  `Split` but diverge on `NoneOutsideAKeyset`: `remove_base_ap` falls back to the `2000` constant
+  (2.22's own ruling, `NO_SIGNAL_BASE`), while `remove_base_rt` refuses, since there is no measured
+  rapid trigger equivalent of that constant. Extracting a single shared "resolve the kind branch"
+  helper risks the hazard running either way: `delete` could silently inherit `remove`'s constant
+  fallback, writing a value the operator never passed `--value` for, or `remove` could silently
+  inherit `delete`'s refuse-and-ask-for-a-flag behaviour, which `remove` has no flag to satisfy
+  since `--value`/`--press`/`--release` do not exist there. A future implementer following this
+  task literally, the way an earlier version of it read, would give one command the other's
+  `NoneOutsideAKeyset` behaviour without meaning to, either direction. Share only the `Change`
+  construction shape, parameterised over an already-resolved value each caller keeps producing its
+  own way.
+
+- [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
+  Found by a cold reviewer that built its own replay generator and drove the binary, after the
+  committed behaviour had already been measured correct in both cases. **The shipped code is right;
+  what is missing is a test that would notice if it stopped being.** Each is one fixture.
+
+  **The mode count can be over-claimed on a board the three current fixtures cannot distinguish.**
+  The whole-board prompt counts keys whose touch nibble moves. Two wrong predicates survive the
+  suite green, counting keys with any value record, and counting keys with a MODE record. Both agree
+  with the correct answer on the shipped fixtures (4 of 4, 2 of 4, 0 of 4) and diverge only on a
+  whole board where every key is already at nibble 1 and holds a stray value: every key gets value
+  records, no nibble moves, and the mutant prints "4 key(s) move off global travel" when none do.
+  Missing fixture: that board, asserting the clause is absent.
+
+  The under-reporting direction, which is the dangerous one, is already pinned: counting only keys
+  whose owned value also moves, and counting only `Rt` transitions while missing the nibble-0
+  promotion, are each killed by two tests. The prompt cannot silently omit a mode change.
+
+  **`keyset_disappears` can be under-claimed.** Rewriting it as `leaving.len() == ks.members.len()`
+  survives the suite green. Measured on two keysets, 1 holding `w,a` and 2 holding `s,d`, removing
+  `w,a,s`: keyset 1 is emptied and the mutant omits "keyset 1 ceases to exist". Consequence is mild,
+  since the operator still sees a `removing` line for every member, so the destruction stays
+  inferable. Missing fixture: two keysets, remove all of one plus part of the other.
+
+  Deliberately not fixed in the branch that found them. Seven fix rounds ran there and three of the
+  last four introduced a defect of the class they were fixing, so an eighth round carried more risk
+  than two unguarded predicates whose behaviour is measured correct.
+
+- [ ] **2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
+  should land before or with 2.23.** Measured: `wh keyset remove ap --keys all > log.txt` puts both
+  prompt lines (the warning and "type yes to continue: ") in the redirected file and then blocks on
+  stdin with nothing at all on the operator's screen, since `confirm` writes to whatever `Write` its
+  caller hands it, and `keyset::remove`'s caller in `run.rs` hands it real stdout.
+
+  Writing to stderr instead closes this for every redirection combination (`> log.txt`,
+  `2>&1 > log.txt`, either stream piped alone), needs no `is_terminal()` check and so no
+  platform-dependent behaviour on the Windows target, matches what this binary already does with
+  its own `transport: replay|hardware` line, and leaves the piped-stdin confirmation mechanism
+  (2.22's own "no bypass flag, so tests pipe `yes` on stdin") completely untouched: stdin is not
+  stdout, so nothing about how the prompt is answered changes.
+
+  **The cost.** One more writer threaded through `keyset::remove` from `run.rs`, alongside the
+  `out` it already takes for the announcement, since the prompt and the announcement are meant for
+  different streams now. Every end-to-end assertion that currently checks this prompt's text on
+  stdout moves to the equivalent check on stderr instead: the two in
+  `keyset_remove_over_the_whole_board_requires_a_typed_yes`, and each one in the mode-transition
+  and invented-base tests added alongside this entry
+  (`keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide` and its two
+  siblings covering the mixed and all-nibble-1 boards) that checks the prompt rather than the
+  per-key announcement that follows it; count them again at the time this lands rather than
+  trusting a number written here, since the count has already grown twice since this entry was
+  first drafted. No other behaviour changes: the per-key announcement itself
+  (`removing`/`returning`/ "membership rewritten, value unchanged") still goes to stdout, since
+  that is what `--dry-run` prints and what `wh keyset remove ap --keys all > log.txt` is presumably
+  being redirected to capture in the first place.
+
+  **Land this before or with 2.23**, so `wh set ap --keys all`'s own confirmation, whenever it is
+  built, calls the corrected version from the start rather than repeating the stdout choice and
+  needing this fix a second time.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
@@ -537,8 +660,9 @@ rather than as settings it recognises.
   by anything in Phase 1.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
   observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every key of
-  profile 1 from 2026-08-29 onward, and `0` on every key of profile 2, measured directly in
-  `layout-16-by-profile`. They are not the global rapid trigger sensitivity, measured 2026-08-29:
+  profile 1 from 2026-08-29 onward, measured in `layout-16-by-profile`, and `0` on every key of
+  profile 2, measured in `profile-switch`, which establishes its own profile from its frames. An
+  earlier revision cited `layout-16-by-profile` for both halves; it contains no profile 2 read. They are not the global rapid trigger sensitivity, measured 2026-08-29:
   they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.
   What moved them on profile 1 is unmeasured, and `wh` never writes them so it is not ours. `0x19`
   is still only ever `0x0000` or `0x3e2c`.
