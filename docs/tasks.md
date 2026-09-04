@@ -313,6 +313,26 @@ rather than as settings it recognises.
   construction shape, parameterised over an already-resolved value each caller keeps producing its
   own way.
 
+- [ ] **2.27 `wh keyset create --keys all` is a third unguarded route to destroying every keyset.**
+  Found by a reviewer probing the guard added for `wh set ap --keys all`, and measured:
+  `wh keyset create ap --keys all --value 1.50` on a board holding keysets 1 and 2 ran straight
+  through the membership sweep into `plan`'s reads with stdin closed and no prompt on either stream.
+  Every key moves into the new index, so every existing keyset loses all its members and ceases to
+  exist, exactly as with the other two routes.
+
+  Two commands are now guarded and this one is not, which is worse than none being guarded: an
+  operator who has learned that `wh` asks before a whole-board write will not expect the third route
+  to be silent.
+
+  Reuse `crate::confirm::confirm` and the pattern the other two settled on: prompt on stderr with
+  the announcement on stdout, trigger on the resolved selection covering the matrix rather than the
+  literal `all`, no prompt on `--dry-run`, no bypass flag, and a test asserting the prompt does NOT
+  reach stdout, which is the half that has twice been the one missing.
+
+  `crates/wh-cli/src/confirm.rs`'s module doc says the two commands "reach the same destruction by
+  different routes". Once this lands it is three, and the doc should say so rather than implying the
+  list was complete.
+
 - [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
   Found by a cold reviewer that built its own replay generator and drove the binary, after the
   committed behaviour had already been measured correct in both cases. **The shipped code is right;
