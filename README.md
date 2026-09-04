@@ -306,6 +306,33 @@ Every result below was measured on **profile 2**. Per-key state is per profile, 
 `layout-16-by-profile`: the two profiles were carrying different actuation points, different
 sensitivities and different keysets on the same day. Nothing here has been checked on profile 1.
 
+- **`wh set ap` on a free key allocates a keyset.** `H` sat at the global 2.00mm in no keyset;
+  `wh set ap --keys h --set 1.5` created keyset 10 over it alone and read back `h: ap 1.50mm
+  keyset 10`, leaving the four existing keysets untouched. Index 10 is max plus one over the live
+  `{2,7,8,9}`, allocation measured on hardware rather than from frames.
+
+- **`wh keyset remove ap` returns a key to the global and collapses an emptied keyset.**
+  `wh keyset remove ap --keys h --value 2.0` read back `h: ap 2.00mm keyset none` and keyset 10
+  ceased to exist, since `H` was its only member. The other four keysets were untouched.
+
+- **`wh` refuses to guess an ambiguous global.** The first attempt at that removal, with no
+  `--value`, was declined: "the keys outside every keyset disagree on the global actuation point
+  (57 key(s) at 2.00mm, 1 key(s) at 1.10mm)". The board really was in that state, and `wh` named
+  both values rather than taking the majority.
+
+- **`wh set ap` on a rapid trigger keyset member leaves rapid trigger alone and adds actuation
+  point membership.** `M` was in rt keyset 1 at 0.30/0.40mm. `wh set ap --keys m --set 1.3` sent
+  MODE `0x0030`, the key's own touch nibble 3 resent unchanged, with press and release echoed at
+  300 and 400. Afterwards `M` held **both** memberships at once, ap keyset 10 and rt keyset 1,
+  which is the dual membership the corpus measures, now created by `wh`.
+
+- **`wh keyset remove rt` turns rapid trigger off and preserves the key's own actuation point.**
+  This is the fact most easily destroyed by a wrong implementation, so it was set up to be visible:
+  `M` held 1.30mm against a global of 2.00mm. The write sent MODE `0x0010`, press and release back
+  to the global 100, `0xFE = 0`, **AP `0x0514` (1300) rewritten unchanged, and no `0xFF` record at
+  all**. Readback: `m: rt off press 0.10mm release 0.10mm keyset none` and `m: ap 1.30mm keyset 10`.
+  Rapid trigger keyset 1 ceased to exist, `M` having been its last member.
+
 - **`wh keyset create`, `set`, `delete`, and `wh set ap`'s split all work against the keyboard.**
   Each verified its own readback and took an auto-backup first. `create` over three free keys
   already at the global emitted membership records only, the skip rule; `set` emitted values and no
@@ -346,10 +373,6 @@ sensitivities and different keysets on the same day. Nothing here has been check
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- **`wh keyset remove`, both kinds.** A new write path. Its frames match the vendor's own, measured
-  in `ks-remove-one-key` and `ks-remove-one-rt`, but no `wh keyset remove` has been sent to a board.
-- **`wh set ap` allocating a keyset for free keys.** The membership record it now writes on a
-  selection where every key is free has never been sent to a board either.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
   packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's
