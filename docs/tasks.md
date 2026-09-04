@@ -71,10 +71,17 @@ rather than as settings it recognises.
   raising one: whole-board set 0.85s, restore 0.70s, full dump 0.47s, so roughly 1300 HID
   roundtrips complete inside a second.
 
-  Still not exercised on hardware: `wh set ap` on a key still at touch nibble 0, which needs a
-  profile-1 backup and so a decision about writing to that profile; `wh set ap` on a member of a
-  rapid trigger keyset, since the board carried none; and a restore over a board left half-written
-  by a genuine failure. See `README.md`.
+  Also confirmed: `wh keyset create rt` allocated index `1` while the actuation point counter stood
+  at `10`, the separate-counters rule on hardware; and `wh set ap` on a member of that rapid trigger
+  keyset moved the actuation point while leaving rapid trigger, both sensitivities and `0xFE`
+  membership untouched, resending the key's own nibble 3 rather than promoting it.
+
+  The nibble-0 write was exercised too, by a hand-edited snapshot rather than a profile switch: the
+  board accepts touch nibble 0 from `wh restore` and reports it back. What that does to the key's
+  actual behaviour is unmeasured and would need someone to press it.
+
+  Still not exercised: a restore over a board left half-written by a genuine failure. See
+  `README.md`.
 
 - [ ] **2.20 Decide whether `wh set ap` on all-free keys should create a keyset.** Opened by the
   2026-09-04 greying result, which settled that the configurator distinguishes a recognised setting

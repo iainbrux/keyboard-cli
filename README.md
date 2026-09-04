@@ -311,6 +311,13 @@ Two things look like exceptions and are not:
   a frame measurement: with two keysets made by the vendor and two produced by `wh`, the
   configurator's actuation point tab listed all four in its own pane, in ascending index order, with
   their values rendered normally. Every key `wh` had written showed its value undimmed.
+- **`wh set ap` on a rapid trigger keyset member leaves rapid trigger alone.** `N` and `M` were put
+  in rapid trigger keyset 1 at 0.30/0.40mm, then `wh set ap --keys n --set 1.1` moved `N`'s actuation
+  point. Afterwards `N` still read rapid trigger on at 0.30/0.40mm in keyset 1, and `M` was
+  untouched. The MODE record sent was `0x0030`, the key's own nibble 3 resent unchanged, which is
+  `keyset::plan` promoting nibble 0 and nothing else. Creating that keyset also confirmed the
+  **separate counters**: the rapid trigger index allocated as `1` while the actuation point counter
+  stood at `10`.
 - **The configurator greys on keyset membership, and on nothing else.** Settled by two controlled
   experiments, each changing one variable (`docs/backlog.md`). A key moved to MODE touch nibble 0,
   the only one on the board holding it, rendered identically to its nibble-1 neighbours outside any
@@ -339,10 +346,7 @@ These are built and tested against replay scripts, not yet confirmed on the real
   actuation point membership before any key's rapid trigger membership, is not itself measured; no
   capture contains a `wh restore` at all. The restore path itself now works on hardware, see above;
   what is untested is a restore run against a board left half-written by a failure.
-- `wh set ap` on a key that is in a **rapid trigger** keyset, to confirm rapid trigger survives.
-  `keyset::plan` resends the key's own touch nibble unchanged, since it only ever promotes nibble 0,
-  and `wh` fails the run naming the key and both values if the board reports something else. The
-  board carried no rapid trigger keyset during the 2026-09-04 session, so this is untested.
+
 
 ## Protocol
 
