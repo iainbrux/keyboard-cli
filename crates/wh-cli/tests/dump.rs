@@ -2855,6 +2855,211 @@ fn set_ap_base_writes_every_free_key_and_no_membership() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// One free key's `(usage, ap, mode)` for building a mixed-state four-free-key fixture: rt
+/// press/release fixed at 100/150 and no keyset membership of either kind, matching every other
+/// `--base` fixture above. Lets the tests below give each of the four free keys its own starting
+/// value and touch mode, rather than the uniform state `base_board_free_key_reads_at_mode` gives
+/// all four.
+fn base_board_free_key_reads_custom(specs: &[(u8, u16, u16)]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for &(usage, ap, mode) in specs {
+        lines.extend(key_settings_lines(usage, ap, mode, 100, 150, 0, 0));
+    }
+    lines
+}
+
+/// The full auto-backup snapshot read over the six-key base board, with the four free keys at
+/// whatever `(usage, ap, mode)` `specs` gives them: sync, profile, global travel, matrix, then
+/// six-layout reads for all six keys in matrix order ('w' and 'a' still holding keyset 1 at
+/// 1.20mm/`0x18`, unaffected by `--base`).
+fn auto_backup_lines_base_board_custom(specs: &[(u8, u16, u16)]) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNBASETEST0000001", "V1.0.0.001"));
+    lines.extend(profile_lines(0));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines_base_board());
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0)); // w, keyset member
+    lines.extend(key_settings_lines(0x04, 1200, 0x18, 100, 150, 1, 0)); // a, keyset member
+    lines.extend(base_board_free_key_reads_custom(specs));
+    lines
+}
+
+/// Round 2's Finding 1: the primary clause was built from `free.len()`, not from `plan`, so a
+/// board where every free key already holds the target value still reported all four "moving",
+/// while `plan` sent nothing at all (`plan.is_empty()`, so `apply` never calls `roundtrip_many`).
+/// The fixture below has no write frames scripted at all, which is itself part of the proof: a
+/// wrongly-reverted count would still pass this test on wording alone if the code actually did
+/// send a frame the script never scripted, since `ReplayTransport` would refuse it outright.
+#[test]
+fn set_ap_base_does_not_claim_movement_when_every_free_key_already_holds_the_base() {
+    let specs = [
+        (0x16u8, 1950u16, 0x18u16),
+        (0x07, 1950, 0x18),
+        (0x08, 1950, 0x18),
+        (0x05, 1950, 0x18),
+    ];
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_custom(&specs));
+    lines.extend(auto_backup_lines_base_board_custom(&specs));
+    // No write frames at all: every free key already matches the target, so `plan` sends
+    // nothing, and `apply` no-ops on an empty plan rather than calling `roundtrip_many`.
+    // `verify_write_as`'s own readback of the four free keys, unchanged.
+    lines.extend(base_board_free_key_reads_custom(&specs));
+
+    let path = write_script("set-ap-base-nothing-moves", &lines);
+    let config_home = scratch_config_dir("set-ap-base-nothing-moves");
+    let out = run_wh(&["set", "ap", "--base", "1.95"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("4 keys outside every keyset already at 1.95mm, nothing moves"),
+        "got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("move to 1.95mm"),
+        "must not claim movement that did not happen: {stdout}"
+    );
+    assert!(stdout.contains("4 keys verified"), "got: {stdout}");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The mixed case: two free keys already at the target, two not. The count in the headline must
+/// be 2, not 4 (`free.len()`) and not 0, and only the two that actually move get a write.
+#[test]
+fn set_ap_base_names_a_mixed_move_count_when_only_some_free_keys_move() {
+    let specs = [
+        (0x16u8, 1950u16, 0x18u16), // s: already there, no record at all
+        (0x07, 1950, 0x18),         // d: already there, no record at all
+        (0x08, 2000, 0x18),         // e: moves
+        (0x05, 2000, 0x18),         // b: moves
+    ];
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_custom(&specs));
+
+    let path = write_script("set-ap-base-mixed-move", &lines);
+    let config_home = scratch_config_dir("set-ap-base-mixed-move");
+    let out = run_wh(
+        &["set", "ap", "--base", "1.95", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("2 of 4 keys outside every keyset move to 1.95mm, the rest already there"),
+        "got: {stdout}"
+    );
+
+    let value_records = [
+        KeyRecord {
+            key: 0x08,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::AP,
+            value: 1950,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x08,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::MODE,
+            value: 0x18,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::AP,
+            value: 1950,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::RT_PRESS,
+            value: 100,
+        },
+        KeyRecord {
+            key: 0x05,
+            layout: layout::RT_RELEASE,
+            value: 150,
+        },
+    ];
+    let expected: Vec<String> = cmds::write_key_records(&value_records)
+        .iter()
+        .map(|f| hex(f))
+        .collect();
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "only the two keys that actually move get a record: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Finding 5's coverage gap: the mode clause had an all-move and a none-move test but no mixed
+/// one, where the sibling `--keys` path has all three
+/// (`confirm_whole_board_ap_set_names_the_new_index_the_losing_keysets_the_mode_count_and_the_base_alternative`).
+/// Two free keys start at touch nibble 0 and two do not; every key's own value still moves (kept
+/// uniform here so this test is only about the mode count, not `--base`'s own value count above).
+#[test]
+fn set_ap_base_names_a_mixed_mode_count_when_only_some_free_keys_are_at_global_travel() {
+    let specs = [
+        (0x16u8, 2000u16, 0x00u16), // s: Global, promotes
+        (0x07, 2000, 0x00),         // d: Global, promotes
+        (0x08, 2000, 0x18),         // e: already Single
+        (0x05, 2000, 0x18),         // b: already Single
+    ];
+    let mut lines = base_board_membership_lines();
+    lines.extend(base_board_free_key_reads_custom(&specs));
+
+    let path = write_script("set-ap-base-mixed-mode", &lines);
+    let config_home = scratch_config_dir("set-ap-base-mixed-mode");
+    let out = run_wh(
+        &["set", "ap", "--base", "1.95", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "4 keys outside every keyset move to 1.95mm, keysets untouched, \
+             2 key(s) move off global travel onto their own actuation point"
+        ),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// Every free key starts on touch nibble 0 ("follow global travel"), so `--base`'s promotion
 /// moves all four of them onto their own pinned actuation point, exactly `Change::ap` already
 /// does for every other actuation point write. The announcement must say so, the same defect

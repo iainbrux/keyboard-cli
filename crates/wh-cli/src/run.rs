@@ -780,25 +780,36 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             &wh_device::keyset::Change::ap(depth),
                             None,
                         )?;
-                        // Read off `plan` itself, never inferred from `free` or `depth`: the mode
-                        // transition is a property of what the plan actually sends, the same rule
-                        // `confirm_whole_board_ap_set` and `confirm_whole_board_remove` both
-                        // follow for their own whole-board prompts.
-                        let moved_modes = crate::keyset::moved_mode_count(&plan);
-                        let mode_clause = if moved_modes == 0 {
-                            String::new()
+                        // Both counts read off `plan` itself, never off `free`: `free` is the
+                        // selection, not what actually changed, and `plan` echoes a key's own
+                        // value back unchanged in the same bundle as an unrelated change (most
+                        // often the mode promotion below), so reporting `free.len()` keys moving
+                        // unconditionally claimed a write that a board already at the base never
+                        // sent. `confirm_whole_board_ap_set` and `confirm_whole_board_remove`
+                        // follow the same plan-derived rule for their own whole-board prompts.
+                        let moved_values = crate::keyset::ap_value_moved_count(&plan);
+                        let total = free.len();
+                        let move_clause = if moved_values == total {
+                            format!(
+                                "{total} keys outside every keyset move to {:.2}mm",
+                                depth.to_mm()
+                            )
+                        } else if moved_values == 0 {
+                            format!(
+                                "{total} keys outside every keyset already at {:.2}mm, nothing moves",
+                                depth.to_mm()
+                            )
                         } else {
                             format!(
-                                ", {moved_modes} key(s) move off global travel onto their own \
-                                 actuation point"
+                                "{moved_values} of {total} keys outside every keyset move to \
+                                 {:.2}mm, the rest already there",
+                                depth.to_mm()
                             )
                         };
+                        let mode_clause = crate::keyset::ap_mode_clause(&plan);
                         writeln!(
                             out,
-                            "ap base: {} keys outside every keyset move to {:.2}mm, keysets \
-                             untouched{mode_clause}",
-                            free.len(),
-                            depth.to_mm()
+                            "ap base: {move_clause}, keysets untouched{mode_clause}"
                         )?;
                         if dry_run {
                             return print_frames(&mut out, &plan.frames());

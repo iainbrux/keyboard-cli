@@ -362,13 +362,15 @@ anywhere.
 that the board therefore holds 9 members against 59 free keys, is an inference from board state,
 not itself measured here: the capture contains no `0xFF` request anywhere and no DEFKEY matrix
 read, so nothing in it can establish membership directly. The capture also logs no profile: its
-three `cmd 0x00` frames are all `22 ff ff`, with no `70`, so nothing in this section can be
-attributed to a profile either.
+three `cmd 0x00` requests are all `22ffff`, with no `70` anywhere, so nothing in this section can
+be attributed to a profile either.
 
-This is the same free-key template every other operation in this document already measures, just
-sent over the whole free-key set rather than a stolen or newly created keyset's members. It settles
-that the vendor's own idea of "the base" is exactly "layout `0x04` of every key outside a keyset",
-the same thing `wh keyset create`/`delete`/`remove` already read it as.
+The per-key template matches every other free-key write already measured in this document: MODE
+(echoed, sent twice), AP at the new value, and RT press/release/`0x16`/`0x17` all echoed
+unchanged. That much is read directly off the 75 frames. Whether the 59 keys carrying it are
+exactly "every key outside a keyset" is the same inference flagged two paragraphs up, not a second
+and independent measurement; nothing in this capture reads membership to confirm which keys those
+59 actually are.
 
 `wh set ap --base <mm>` implements this: `keyset::plan(s, free_keys, &Change::ap(v), None)`, with
 membership held at `None` so no `0xFF` record is ever written. It carries the same two deliberate

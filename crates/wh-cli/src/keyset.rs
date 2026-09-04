@@ -532,20 +532,21 @@ fn confirm_whole_board_remove(
     // to lose) while every key's touch mode still moves. Read from `plan` itself, built just
     // above, not inferred from `target` or `sets`: the mode transition is a property of what the
     // plan actually sends, the same reason `announce_remove` reads it from `plan` per key.
-    let moved_modes = moved_mode_count(plan);
-    let mode_clause = if moved_modes == 0 {
-        String::new()
-    } else {
-        let what = match kind {
-            Kind::Ap => "move off global travel onto their own actuation point",
-            // Unreachable today: this function only ever runs for a whole-board selection, and a
-            // whole-board `Kind::Rt` selection excludes every free key from `remove_base_rt`'s own
-            // read, which then always hits `NoneOutsideAKeyset` and refuses before `remove` gets
-            // this far. Kept rather than dropped, the same choice `announce_remove`'s own
-            // unreachable branch makes, in case that call pattern ever changes.
-            Kind::Rt => "have rapid trigger switched off",
-        };
-        format!(", {moved_modes} key(s) {what}")
+    let mode_clause = match kind {
+        Kind::Ap => ap_mode_clause(plan),
+        // Unreachable today: this function only ever runs for a whole-board selection, and a
+        // whole-board `Kind::Rt` selection excludes every free key from `remove_base_rt`'s own
+        // read, which then always hits `NoneOutsideAKeyset` and refuses before `remove` gets
+        // this far. Kept rather than dropped, the same choice `announce_remove`'s own
+        // unreachable branch makes, in case that call pattern ever changes.
+        Kind::Rt => {
+            let moved_modes = moved_mode_count(plan);
+            if moved_modes == 0 {
+                String::new()
+            } else {
+                format!(", {moved_modes} key(s) have rapid trigger switched off")
+            }
+        }
     };
     let prompt = format!(
         "this selects every key on the board: every key moves to {}, and {keysets}{mode_clause}",
@@ -823,12 +824,7 @@ pub(crate) fn confirm_whole_board_ap_set(
     // `plan` rather than off `losing` or `depth`: a board with no losing keysets can still move
     // every free key permanently off touch nibble 0, and that is the one thing the keyset clause
     // above cannot say by itself.
-    let moved_modes = moved_mode_count(plan);
-    let mode_clause = if moved_modes == 0 {
-        String::new()
-    } else {
-        format!(", {moved_modes} key(s) move off global travel onto their own actuation point")
-    };
+    let mode_clause = ap_mode_clause(plan);
     let prompt = format!(
         "ap: this selection moves every key into one new keyset, keyset {}\n    {keysets}\
          {mode_clause}\n    to change the board's base instead, leaving keysets alone: wh set \
@@ -976,6 +972,24 @@ pub(crate) fn moved_mode_count(plan: &keyset::WritePlan) -> usize {
         .count()
 }
 
+/// The `Kind::Ap` mode-transition clause every whole-board confirmation and `wh set ap --base`'s
+/// own announcement appends: empty when no key moves off touch nibble 0 ("follow global
+/// travel"), otherwise ", N key(s) move off global travel onto their own actuation point".
+/// Holds `moved_mode_count`, the sentence, and the empty-on-zero rule in one place, since these
+/// three call sites were previously three separate copies of the same wording, only the count
+/// itself shared, free to drift apart one edit at a time with the suite still green: each site
+/// is pinned by its own test with its own literal string, so a wording change at one site alone
+/// passes every gate. `confirm_whole_board_remove`'s `Kind::Rt` branch is not this: it says
+/// something different ("have rapid trigger switched off") and stays inline there.
+pub(crate) fn ap_mode_clause(plan: &keyset::WritePlan) -> String {
+    let moved_modes = moved_mode_count(plan);
+    if moved_modes == 0 {
+        String::new()
+    } else {
+        format!(", {moved_modes} key(s) move off global travel onto their own actuation point")
+    }
+}
+
 /// Whether the value `kind` reports (AP for `Kind::Ap`, press/release for `Kind::Rt`) actually
 /// differs from `prior`, read off the record `plan` sent for it rather than assumed from whether
 /// a record exists at all: `plan` always echoes a key's unchanged value back in the same bundle
@@ -994,6 +1008,20 @@ fn value_moves(kind: Kind, plan: &keyset::WritePlan, prior: &ops::KeySettings, u
                 || sent(layout::RT_RELEASE).is_some_and(|v| v != prior.rt_release.0)
         }
     }
+}
+
+/// How many keys in `plan` actually have a new actuation point value, per `value_moves`, not
+/// merely a count of keys `plan` sent an AP record for: `plan` echoes a key's own value back
+/// unchanged in the same bundle as an unrelated change, most often a touch mode promotion off
+/// nibble 0, so a record existing is not the same claim as the value moving. `wh set ap --base`'s
+/// own announcement uses this so it can never report movement a mixed board did not actually
+/// make: reporting `free.len()` unconditionally was exactly that defect, caught on a board where
+/// every free key already held the target value and the write sent nothing at all.
+pub(crate) fn ap_value_moved_count(plan: &keyset::WritePlan) -> usize {
+    plan.before()
+        .iter()
+        .filter(|prior| value_moves(Kind::Ap, plan, prior, prior.usage))
+        .count()
 }
 
 /// One key's current value, formatted the way `kind` reports it: `Kind::Ap`'s bare millimetres,
