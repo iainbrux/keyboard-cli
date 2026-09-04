@@ -155,13 +155,25 @@ rather than as settings it recognises.
   selection so they are reset too. Do not fall back to the constant there: a contradictory signal
   from the board is not the same as no signal, and overriding it would invent a value.
 
-  If there are no free keys outside the selection at all, which is `--keys all` and the only case
-  with no signal, **for `ap`** use **`2000` (2.00mm)**. Operator's ruling. It is also the measured
+  If there are no free keys outside the selection at all, **for `ap`** use **`2000` (2.00mm)**.
+  Operator's ruling, reaffirmed on 2026-09-04 after a review argued against it, so the behaviour
+  below is decided rather than merely shipped.
+
+  **The case is not only `--keys all`, and the operator ruled with that in front of them.** A review
+  measured a four-key board where `s` and `d` sat in a keyset and `w` and `a` were the only free
+  keys, both reading `1500`. Selecting `w,a` excludes both, leaves nothing to read, and writes
+  `2000` over a board whose free keys had stated `1500`. There is no confirmation, since two of four
+  keys is not a whole-board selection. Scaled up, that is sixty keys in keysets and eight free
+  strays normalised to `2000` with no prompt.
+
+  Three alternatives were offered and declined: refusing as `rt` does; reading the selected keys'
+  own agreed value and treating the command as a no-op; and keeping the constant while moving the
+  confirmation trigger from "whole board" to "no signal". The announcement does name the value as a
+  default whenever it is used, measured on hardware, so the operator is told. It is also the measured
   dominant value: across every layout `0x04` read in the corpus it accounts for 3453 of them,
   against sixteen other distinct values and no reading of `2500` ever.
 
-  This is a **chosen default for one unanswerable case**, not a measurement of the board's factory
-  setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
+  This is a **chosen default**, not a measurement of the board's factory setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
   read of either would replace this constant with a measured number.
 
   **`rt` has no such default and refuses in the same case, ruled during review rather than at this
