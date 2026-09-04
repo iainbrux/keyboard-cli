@@ -113,19 +113,26 @@ shown with its index, value, and member keys: one shared value when the members 
 an rt keyset's members can leave that keyset's members holding different values, which
 `wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
 keyset's value in place. `create`, `delete`, `remove`, `wh set ap` below, and `wh restore` (for keys
-whose snapshot recorded it, see below) each write keyset membership. `create`, `delete`, and
-`remove` all take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's
-current global value, and passing it is required when the keys outside every keyset disagree, or
-when none are left outside one.
+whose snapshot recorded it, see below) each write keyset membership. `create` and `delete` take
+`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value, and
+passing it is required when the keys outside every keyset disagree, or when none are left outside
+one.
 
-**`wh keyset remove` takes named keys out of their keyset without deleting the rest of it.** It
-returns each named key to the board's global value (for `ap`, the actuation point; for `rt`, both
-sensitivities, with rapid trigger turned off, `--press`/`--release` refused for `ap` the same way
-they are on `create`/`set`/`delete`), and leaves every other member of that keyset exactly where it
-was: `wh keyset remove ap --keys w`, with `w` one of three members of a keyset, moves only `w` and
-leaves the other two in place. A named key that is already outside every keyset is left alone and
-named on its own line, since it has nothing to leave. Removing a keyset's last member is the same
-write as any other; there is no separate case for a keyset that ends up empty (`docs/keysets.md`).
+**`wh keyset remove` resets named keys to the board's base value and to no keyset at all**, whether
+or not they were in one: it takes no value flags, since its job is a destination, not a choice. For
+`ap`, that base is the actuation point; for `rt`, both sensitivities, with rapid trigger turned off.
+The base comes from the free keys the selection leaves behind, the same keys the removed ones would
+otherwise agree with. If those remaining free keys disagree on it, `remove` refuses and names each
+value and how many keys hold it, saying to include them in the selection so they are reset too,
+rather than inventing a winner. If none are left outside the selection at all, it falls back to
+`2.00mm`, a chosen default for that one unanswerable case, not a measured factory setting.
+`wh keyset remove ap --keys w`, with `w` one of three members of a keyset, moves only `w` and leaves
+the other two in place. Where two commands used to be needed to clear a stray key (`wh set ap` to
+put it in a keyset, then `wh keyset remove` to take it back out), one now does it directly: `wh
+keyset remove ap --keys w` works whether `w` is in a keyset or already free. Selecting every key in
+the board's matrix (however it is spelled) destroys every keyset of that kind, the same thing
+`RESET KEYSETS` does in the configurator, and asks for a typed `yes` first, naming every keyset that
+will cease to exist; `--dry-run` never prompts, since it writes nothing.
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
@@ -313,7 +320,9 @@ sensitivities and different keysets on the same day. Nothing here has been check
 
 - **`wh keyset remove ap` returns a key to the global and collapses an emptied keyset.**
   `wh keyset remove ap --keys h --value 2.0` read back `h: ap 2.00mm keyset none` and keyset 10
-  ceased to exist, since `H` was its only member. The other four keysets were untouched.
+  ceased to exist, since `H` was its only member. The other four keysets were untouched. `--value`
+  no longer exists on `remove` since 2.22; the command shown is what actually ran that day, not
+  today's syntax for the same result (`wh keyset remove ap --keys h`, no flag needed).
 
 - **`wh` refuses to guess an ambiguous global.** The first attempt at that removal, with no
   `--value`, was declined: "the keys outside every keyset disagree on the global actuation point

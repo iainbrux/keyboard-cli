@@ -133,14 +133,17 @@ rather than as settings it recognises.
   `1` (rapid trigger off, not nibble `2` following the global) and that its actuation point is
   preserved rather than reset to the base, since a rapid trigger removal never touches `0x04`.
 
-- [ ] **2.22 `wh keyset remove` resets a key to the board's base, and loses its value flags.**
+- [x] ~~**2.22 `wh keyset remove` resets a key to the board's base, and loses its value flags.**~~
   Ruled by the operator on 2026-09-04, after clearing a stray key needed two commands: `wh set ap`
   put it in a keyset purely so `wh keyset remove` could take it back out.
 
   The command's job is a destination, not a transition: make these keys follow the board's base and
   belong to no keyset. So it stops refusing when a named key is already outside every keyset, and it
   loses `--value`, `--press` and `--release` entirely. A key already at the base with no membership
-  gets nothing written, since the skip rule already suppresses a write where no owned value differs.
+  gets no value record, `plan`'s own skip rule. It still carries the membership-clear record, since
+  `plan` writes that unconditionally for every key it is given, whether or not the value it already
+  holds matches: this predates 2.22 (`create`/`delete` already relied on it) and is not something
+  this task's own skip rule could suppress without a second read of the same key.
 
   **Where the base comes from, in order.** Read it from the keys outside every keyset that are *not*
   in the selection. That is what makes the motivating case work with no flag: 57 free keys agreed on
@@ -181,6 +184,12 @@ rather than as settings it recognises.
   The trigger is the resolved selection covering the whole matrix, not the literal `--keys all`.
 
   Share one implementation with 2.23 rather than writing it twice.
+
+  Shipped: both kinds, the base read excluding the reset selection, the `Split` refusal, the
+  `NoneOutsideAKeyset` fallback to `2000`, the three-case announcement, and the whole-matrix
+  confirmation reusing `crate::confirm::confirm`. `--value`, `--press` and `--release` are gone from
+  the clap variant and from the `Kind::Ap` refusal, which had nothing left to refuse and was deleted
+  with them.
 
 - [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
   There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored

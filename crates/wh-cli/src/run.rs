@@ -971,32 +971,16 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
         KeysetWhat::Remove {
             kind,
             keys,
-            value,
-            press,
-            release,
             dry_run,
         } => {
             let kind = crate::keyset::kind_of(kind);
-            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
-                bail!(
-                    "--press and --release apply to `wh keyset remove rt`; pass --value for an \
-                     actuation point keyset"
-                );
-            }
-            let value = value.map(mm).transpose()?;
-            let rt = match kind {
-                wh_device::keyset::Kind::Ap => None,
-                wh_device::keyset::Kind::Rt => {
-                    let press = press.map(mm).transpose()?;
-                    let release = release.map(mm).transpose()?;
-                    resolve_rt_override(value, press, release)?
-                }
-            };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::remove(&mut out, s, kind, &usages, value, rt)?;
+                let plan = crate::keyset::remove(&mut out, s, kind, &usages, dry_run, &mut input)?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }

@@ -6,9 +6,6 @@ use std::io::{BufRead, Write};
 
 /// Prints `prompt`, reads one line, and returns true only for the whole word `yes` in any case.
 /// A prefix like `y`, an extension like `yess`, anything else, and EOF are all false.
-///
-/// Not yet wired to a command; allowed dead until the destroy commands call it.
-#[allow(dead_code)]
 pub(crate) fn confirm(
     out: &mut impl Write,
     prompt: &str,

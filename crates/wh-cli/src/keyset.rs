@@ -3,7 +3,7 @@
 //! view could hand out an index a key already holds.
 
 use anyhow::{bail, Result};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use wh_device::keyset::{self, Global, Keyset, Kind, Membership};
 use wh_device::ops;
 use wh_device::session::Session;
@@ -312,18 +312,89 @@ pub(crate) fn delete<T: Transport>(
     Ok(plan)
 }
 
-/// Takes named keys out of whatever keyset each is in, returning them to the global value and
-/// leaving every other member of those keysets untouched. The vendor sends the ordinary per-key
-/// template for the removed key alone, ending in one `0xFF = 0` record, and writes nothing for
-/// the members that stay (`docs/keysets.md`). A keyset that loses its last member simply ceases
-/// to exist, so there is no emptying case to handle here.
+/// The base actuation point when no free key remains to read one from, once every free key is
+/// excluded from the read because it is itself being reset. A chosen default for that one
+/// unanswerable case, not a measured factory setting: nothing has ever read an untouched profile.
+const NO_SIGNAL_BASE: Um = Um(2000);
+
+/// Resolves `remove`'s target: the base actuation point read from the free keys `usages` leaves
+/// behind, or `NO_SIGNAL_BASE` when none are left to read. A disagreement among those remaining
+/// keys refuses rather than picking one, the same rule `global_ap_or_bail` applies, since
+/// overriding it would write a value nobody chose.
+fn remove_base_ap<T: Transport>(s: &mut Session<T>, m: &Membership, usages: &[u8]) -> Result<Um> {
+    match keyset::global_ap_excluding(s, m, usages)? {
+        Global::Agreed(v) => Ok(v),
+        Global::Split(counts) => bail!("{}", remove_split_message("actuation point", &counts)),
+        Global::NoneOutsideAKeyset => Ok(NO_SIGNAL_BASE),
+    }
+}
+
+/// The rapid trigger mirror of `remove_base_ap`, over the press/release pair.
+fn remove_base_rt<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+    usages: &[u8],
+) -> Result<(Um, Um)> {
+    match keyset::global_rt_excluding(s, m, usages)? {
+        Global::Agreed(v) => Ok(v),
+        Global::Split(counts) => {
+            let shown: Vec<(String, usize)> = counts
+                .iter()
+                .map(|((p, r), n)| (format!("{:.2}/{:.2}mm", p.to_mm(), r.to_mm()), *n))
+                .collect();
+            bail!(
+                "{}",
+                remove_split_message_str("rapid trigger sensitivity", &shown)
+            )
+        }
+        Global::NoneOutsideAKeyset => Ok((NO_SIGNAL_BASE, NO_SIGNAL_BASE)),
+    }
+}
+
+fn remove_split_message(what: &str, counts: &[(Um, usize)]) -> String {
+    let shown: Vec<(String, usize)> = counts
+        .iter()
+        .map(|(v, n)| (format!("{:.2}mm", v.to_mm()), *n))
+        .collect();
+    remove_split_message_str(what, &shown)
+}
+
+/// A contradictory reading from the board is not the same as no reading: overriding it would
+/// invent a value nobody chose, so this refuses rather than falling back to `NO_SIGNAL_BASE`.
+fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
+    let parts: Vec<String> = shown
+        .iter()
+        .map(|(v, n)| format!("{n} key(s) at {v}"))
+        .collect();
+    format!(
+        "the keys left outside every keyset disagree on the global {what} ({}); include them \
+         in the selection so they are reset too",
+        parts.join(", ")
+    )
+}
+
+/// Whether `prior`'s own value already equals `target`, so `announce_remove` can tell a returning
+/// key from one that was already at the base.
+fn value_at_target(kind: Kind, prior: &ops::KeySettings, target: Target) -> bool {
+    match (kind, target) {
+        (Kind::Ap, Target::Ap(v)) => prior.ap == v,
+        (Kind::Rt, Target::Rt(p, r)) => prior.rt_press == p && prior.rt_release == r,
+        _ => false,
+    }
+}
+
+/// Resets named keys to the board's base value and to no keyset at all: the destination every
+/// selected key reaches, whether it was a keyset member or already free. `usages` goes to `plan`
+/// whole, so a key already at the base with nothing else to change gets no value record, `plan`'s
+/// own skip rule; membership is still written for every selected key, the same unconditional
+/// rewrite `plan` already applies for `create` and `delete`.
 pub(crate) fn remove<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
-    value: Option<Um>,
-    rt: Option<(Um, Um)>,
+    dry_run: bool,
+    input: &mut impl BufRead,
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let sets = keyset::group(&m);
@@ -335,81 +406,102 @@ pub(crate) fn remove<T: Transport>(
                 .map(|k| (k.index, u))
         })
         .collect();
-    if leaving.is_empty() {
-        bail!(
-            "none of those keys is in an {} keyset; nothing to remove",
-            kind_name(kind)
-        );
-    }
-    // The same two branches `delete` uses, because the vendor sends the same template for a
-    // single-key removal as for a whole-keyset delete. Rt writes touch nibble 1 and the global
-    // sensitivity, and does not own layout 0x04: the AP record it still sends carries the
-    // removed key's own prior reading back unchanged (`ks-remove-one-rt`).
+
     let (change, target) = match kind {
         Kind::Ap => {
-            let v = match value {
-                Some(v) => v,
-                None => global_ap_or_bail(s, &m, "--value")?,
-            };
+            let v = remove_base_ap(s, &m, usages)?;
             (keyset::Change::ap(v), Target::Ap(v))
         }
         Kind::Rt => {
-            let (p, r) = match rt {
-                Some(v) => v,
-                None => global_rt_or_bail(s, &m, "--press and --release")?,
-            };
+            let (p, r) = remove_base_rt(s, &m, usages)?;
             (keyset::Change::rt_off(p, r), Target::Rt(p, r))
         }
     };
-    let moving: Vec<u8> = leaving.iter().map(|&(_, u)| u).collect();
-    let free: Vec<u8> = usages
-        .iter()
-        .copied()
-        .filter(|u| !moving.contains(u))
-        .collect();
+
+    if !dry_run && usages.len() == m.entries().len() {
+        confirm_whole_board_remove(out, kind, &sets, input)?;
+    }
+
     let cleared = keyset::KeysetIndex::clear(kind);
-    let plan = keyset::plan(s, &moving, &change, Some(cleared))?;
-    announce_remove(out, kind, &leaving, &free, target, &plan)?;
+    let plan = keyset::plan(s, usages, &change, Some(cleared))?;
+    announce_remove(out, kind, &leaving, usages, target, &plan)?;
     Ok(plan)
 }
 
-/// Announces a remove's effect on every key that actually left a keyset, and names any selected
-/// key that was already free so that case is never silent: a removal that dropped a free key
-/// wordlessly would leave the operator thinking it moved when it never held anything to leave.
-/// `free` is derived from `usages` rather than `plan.before()`, since `plan` is built only over
-/// the leaving keys and never reads a free one at all.
+/// The typed confirmation guarding a remove that covers every key in the board's matrix: every
+/// keyset of this kind ceases to exist once nothing is left to be a member of anything. `--dry-run`
+/// never reaches here, since it writes nothing to confirm.
+fn confirm_whole_board_remove(
+    out: &mut impl Write,
+    kind: Kind,
+    sets: &[Keyset],
+    input: &mut impl BufRead,
+) -> Result<()> {
+    let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
+    let prompt = format!(
+        "this selects every key on the board: {} keyset(s) {} will cease to exist",
+        kind_name(kind),
+        if indices.is_empty() {
+            "none".to_string()
+        } else {
+            indices.join(", ")
+        }
+    );
+    if !crate::confirm::confirm(out, &prompt, input)? {
+        bail!(
+            "{} keyset removal over the whole board was not confirmed",
+            kind_name(kind)
+        );
+    }
+    Ok(())
+}
+
+/// Announces a remove's effect on every selected key, in three cases: a member leaving a keyset,
+/// a free key returning to a base it did not already hold, and a free key already at the base
+/// with nothing to do. Each key's current value comes from `plan.before()`, the same source
+/// `announce_delete` uses.
 fn announce_remove(
     out: &mut impl Write,
     kind: Kind,
     leaving: &[(u16, u8)],
-    free: &[u8],
+    usages: &[u8],
     target: Target,
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
-    for &(index, u) in leaving {
+    for &u in usages {
         let prior = plan
             .before()
             .iter()
             .find(|ks| ks.usage == u)
-            .expect("leaving keys were the selection plan was built over");
+            .expect("every selected key was read into plan.before()");
         let prior_value = value_display(kind, prior);
-        writeln!(
-            out,
-            "{}: removing {} from keyset {index}, {prior_value} to {}",
-            kind_name(kind),
-            key_label(u),
-            target.display()
-        )?;
-    }
-    if !free.is_empty() {
-        let names: Vec<String> = free.iter().map(|&u| key_label(u)).collect();
-        writeln!(
-            out,
-            "{}: free key(s) {} left alone, already in no {} keyset",
-            kind_name(kind),
-            names.join(","),
-            kind_name(kind)
-        )?;
+        if let Some(&(index, _)) = leaving.iter().find(|&&(_, lu)| lu == u) {
+            writeln!(
+                out,
+                "{}: removing {} from keyset {index}, {prior_value} to {}",
+                kind_name(kind),
+                key_label(u),
+                target.display()
+            )?;
+        } else if value_at_target(kind, prior, target) {
+            writeln!(
+                out,
+                "{}: {} already at {} in no {} keyset, nothing to do",
+                kind_name(kind),
+                key_label(u),
+                target.display(),
+                kind_name(kind)
+            )?;
+        } else {
+            writeln!(
+                out,
+                "{}: returning {} to {}, already in no {} keyset",
+                kind_name(kind),
+                key_label(u),
+                target.display(),
+                kind_name(kind)
+            )?;
+        }
     }
     Ok(())
 }
