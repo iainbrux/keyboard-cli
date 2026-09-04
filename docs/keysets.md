@@ -152,27 +152,22 @@ frames carrying 462 write records in total.
 | Global rapid trigger off | MODE touch nibble to `1` | `0x04`, `0x14`, `0x15` |
 
 **`0x16` and `0x17` are rewritten at the key's current value like any other non-owned layout.** They
-are not a constant, and the corpus now measures the vendor writing two different values into them,
-each matching what the board read back at the time. Grouped by sitting:
+are not a constant, and the corpus measures the vendor writing two different values into them, each
+matching what the board read back at the time. Grouped by capture group:
 
-| Sitting | What they read | What the vendor wrote |
+| Captures | What they read | What the vendor wrote |
 |---|---|---|
 | 2026-08-28, Phase 1 | `0`, 1806 records over 8 files | `0`, 38 records over 5 files |
-| 2026-08-29, the keyset sittings | `100`, 2748 records over 13 files | `100`, 580 records over 14 files |
-| 2026-09-04 | `100` in `custom-value-nudge-after-restore` (136 records), `0` in all seven keyset captures (3132 records) | `0`, 412 records over 7 files |
+| 2026-08-29 and `custom-value-nudge-after-restore`, all profile 1 | `100`, 2884 records over 14 files | `100`, 580 records over 14 files |
+| 2026-09-04 keyset captures, all profile 2 | `0`, 3132 records over 7 files | `0`, 412 records over 7 files |
 
 Where a file both reads and writes them, the written value equals the value it read for that key. Of
-the 34 captures, 25 both read and write them, four read without writing, four do neither, and
-`ks-create-ap-1` writes eight records of `100` while containing no read frames at all. Hard-coding
-either value would write it over the other. An earlier draft said they are written `100` in every
-template, which is false for three of the seven rows above; a later draft said every keyset-era
-write is `100`, which the 2026-09-04 sitting makes false as well.
+the 34 captures that predate `layout-16-by-profile`, 25 both read and write them, four read without
+writing, four do neither, and `ks-create-ap-1` writes eight records of `100` while containing no read
+frames at all. Hard-coding either value would write it over the other. An earlier draft said they are
+written `100` in every template, which is false for three of the seven rows above.
 
-**Something set them back to `0` between 2026-08-29 and the 2026-09-04 keyset captures, and it was
-not `wh`.** `crates/wh-device/src/keyset.rs` records never writing those layouts as a deliberate
-divergence, and no layout constant for them exists in the codebase. Two things happened in that
-window that could account for it, and the captures do not separate them: RESET KEYSETS was pressed,
-and the active profile changed from 1 to 2. See the open items.
+**The `100` to `0` difference is the profile, not time and not a reset.** See below.
 
 ### The MODE promotion, and what is actually measured about it
 
@@ -478,6 +473,33 @@ given both ways round. The frames measure the pairs and the reply shape and noth
 ADVANCED tab carries a SOCD control holding exactly these pairs is an observation of the UI, so the
 name is corroborated by the interface rather than measured from the wire.
 
+## Per-key state is per profile
+
+Measured 2026-09-04 in `layout-16-by-profile`, whose only action was switching the profile from 2 to
+1 and back, with no key touched. The switch is `cmd 0x00` payload `70 <index>`, index `0` for the
+interface's PROFILE 1 and `1` for PROFILE 2.
+
+Profile 1 read back as the 2026-08-29 board, intact: `0x04` of `3000` on `ESC`, `2050` on `S`, `W`
+and `X`, `300` on `D` and `M` and `2000` on the other 62; `0x14`/`0x15` at `200` everywhere, where
+`ks-global-rt-sens-200` left them; `0x16`/`0x17` at `100`; and six actuation point keysets, indices
+2, 4, 5, 6, 7 and 9, with no rapid trigger keysets at all. Profile 2, read the same day, holds
+`0x14`/`0x15` at `100`, `0x16`/`0x17` at `0`, four different actuation point keysets and one rapid
+trigger keyset. **Every per-key layout is therefore per profile**, and the two profiles were carrying
+independent boards.
+
+**This retracts a claim made earlier the same day.** An earlier revision of this document read the
+`100` to `0` difference in `0x16`/`0x17` as something having reset them between the two sittings,
+named RESET KEYSETS and the profile change as candidates, and said "it was not `wh`". Nothing reset
+them. The 2026-08-29 captures are profile 1 and the 2026-09-04 keyset captures are profile 2, and
+each profile has held its own value throughout. The reasoning was sound and the conclusion was
+wrong, which is what happens when a difference between two samples is read as a change over time.
+
+**The standing consequence for this document and any other.** A comparison between the 2026-08-29
+captures and the 2026-09-04 keyset captures is a comparison between two profiles, not between two
+points in time. Nothing may be inferred from such a pair without establishing that both sides are
+the same profile. The same caution applies to `README.md`: every hardware result recorded on
+2026-09-04 was measured on profile 2.
+
 ## The configurator never re-reads membership
 
 Measured across all three 2026-09-04 removal captures. The configurator re-reads six layouts for
@@ -517,11 +539,10 @@ layout neither `wh` nor the configurator reads would not show up here.
 - **Where the global rapid trigger sensitivity is stored.** No global command carries it. It appears
   only in `0x14`/`0x15` of the keys outside any rapid trigger keyset, which would also be how the
   configurator reads it back. Plausible and testable, not measured.
-- **What `0x16` and `0x17` are for**, what moved them from `0` to `100` between 2026-08-28 and
-  2026-08-29, and what moved them back to `0` before the 2026-09-04 keyset captures. `wh` never
-  writes them, so neither transition is ours. RESET KEYSETS and the profile change from 1 to 2 are
-  both candidates for the second one. One capture separates them: read `0x16` on profile 1 and on
-  profile 2 without touching anything else.
+- **What `0x16` and `0x17` are for**, and what moved them from `0` to `100` on profile 1 between
+  2026-08-28 and 2026-08-29. They have never been observed non-zero on profile 2. `wh` never writes
+  them, so the transition is not ours. There is no second transition to explain: the `100` to `0`
+  difference is the profile, measured in `layout-16-by-profile`.
 - **`cmd 0x00` sub-order `0x22`**, read three times at the head of every global rapid trigger
   capture. Not the switch's state: it replies `0` with the switch off (`ks-global-rt-on`) and `0`
   with it on (both sensitivity captures).
@@ -539,9 +560,14 @@ layout neither `wh` nor the configurator reads would not show up here.
 
 ## Corpus
 
-Thirty-four capture files, 5630 frames, all decoding with correct framing and checksums and no hard
+Thirty-five capture files, 5788 frames, all decoding with correct framing and checksums and no hard
 failures. Up from ten files and 1224 frames after Phase 1, twenty-seven after the 2026-08-29
 sittings, and thirty-one after the first 2026-09-04 sitting.
+
+**The corpus spans two profiles.** Phase 1, the 2026-08-29 sittings and
+`custom-value-nudge-after-restore` are profile 1; the 2026-09-04 keyset captures are profile 2;
+`layout-16-by-profile` covers the switch itself. Any statistic aggregated across the whole corpus
+mixes them, which is fine for framing and checksum counts and misleading for values.
 
 Read requests and writes are separable by the `cmd 0x23` payload's lead byte, which matters when a
 write carries a genuinely zero value. Counting **outbound** `cmd 0x23` frames only, since every

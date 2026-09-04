@@ -237,11 +237,11 @@ rather than as settings it recognises.
 
   - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
     any other non-owned layout, matching what each capture that reads them reads: `0` in all 38
-    Phase 1 write records, `100` in all 580 from the 2026-08-29 sittings, and `0` again in all 412
-    from 2026-09-04. `keyset::plan` never writes them, and its stated reason, that a constant would
-    be an invented value, turns out to be right for a reason it did not know, twice over. Of the 34
-    captures, 25 both read and write them, four read without writing, four do neither, and one
-    writes them with no read frames in the file at all.
+    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 412 from the
+    profile 2 ones. `keyset::plan` never writes them, and its stated reason, that a constant would be
+    an invented value, turns out to be right for a reason it did not know. Of the 34 captures before
+    `layout-16-by-profile`, 25 both read and write them, four read without writing, four do neither,
+    and one writes them with no read frames in the file at all.
     If 2.4b ever adds them, read them per key. Hard-coding `100` would write `100` over `0` on a
     board that has never held a keyset.
   - **Template step 1 is a two-record cap, not one frame per distinct value.** Of 162 MODE-only
@@ -404,13 +404,12 @@ rather than as settings it recognises.
 - [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
   by anything in Phase 1.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
-  observed non-zero across 1858 records. That held for Phase 1 only: they read `100` on every key
-  throughout the 2026-08-29 sittings, then `0` again on every key in every 2026-09-04 keyset
-  capture. They are not the global rapid trigger sensitivity, measured 2026-08-29: they stayed at
-  `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`. What moves them
-  is unmeasured in both directions, and `wh` never writes them so neither move is ours. One capture
-  narrows it: read `0x16` on profile 1 and on profile 2, changing nothing else. `0x19` is still only
-  ever `0x0000` or `0x3e2c`.
+  observed non-zero across 1858 records. That held for Phase 1 only: they read `100` on every key of
+  profile 1 from 2026-08-29 onward, and `0` on every key of profile 2, measured directly in
+  `layout-16-by-profile`. They are not the global rapid trigger sensitivity, measured 2026-08-29:
+  they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.
+  What moved them on profile 1 is unmeasured, and `wh` never writes them so it is not ours. `0x19`
+  is still only ever `0x0000` or `0x3e2c`.
 - [ ] **Where the global rapid trigger sensitivity is stored.** No global command carries it. It
   appears only in `0x14`/`0x15` of keys outside a rapid trigger keyset, which would also be how the
   configurator reads it back. Plausible and testable, not measured. Needed to name the reset target

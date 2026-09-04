@@ -289,6 +289,10 @@ Two things look like exceptions and are not:
 
 ### Confirmed on the real board, 2026-09-04
 
+Every result below was measured on **profile 2**. Per-key state is per profile, measured in
+`layout-16-by-profile`: the two profiles were carrying different actuation points, different
+sensitivities and different keysets on the same day. Nothing here has been checked on profile 1.
+
 - **`wh keyset create`, `set`, `delete`, and `wh set ap`'s split all work against the keyboard.**
   Each verified its own readback and took an auto-backup first. `create` over three free keys
   already at the global emitted membership records only, the skip rule; `set` emitted values and no

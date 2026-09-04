@@ -6,7 +6,7 @@ golden` has something real to check the codec against. It has been run five
 times: task 19's hardware session (ten scenarios, 1224 frames), two keyset sittings
 on 2026-08-29, and two sittings on 2026-09-04, one verifying keyset semantics and
 one measuring keyset member removal. The corpus now
-stands at thirty-four files and 5630 frames, with zero framing or checksum
+stands at thirty-five files and 5788 frames, with zero framing or checksum
 failures in any of them. The results are
 recorded in `docs/protocol-inventory.md`, `docs/protocol.md` and
 `docs/keysets.md`. This document describes the procedure so it can be run
@@ -26,7 +26,11 @@ repository will do that for you.
 Before you start, note which profile is active on the keyboard, somewhere
 outside this repository (your own notes, not a comment in the capture
 file). Nothing in the capture itself records which profile was active, and
-it may matter when the captures are read back later.
+it matters: per-key state is per profile, measured in `layout-16-by-profile`.
+Not recording it cost real work. The 2026-08-29 captures are profile 1 and
+the 2026-09-04 keyset captures are profile 2, which was not noticed until a
+difference between them had already been written up as a change over time.
+A capture whose profile is unknown cannot be compared with any other.
 
 1. Close any running `wh` process. Open Chrome on Windows.
 2. Open DevTools (F12) on a blank tab, console tab. Navigate to
