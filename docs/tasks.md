@@ -4,7 +4,7 @@ Live checklist for `wh`. Items are struck through and ticked as they complete. A
 keyboard physically present is marked **[hardware]**.
 
 Evidence for every protocol claim below is in `docs/protocol.md`, `docs/protocol-inventory.md` and
-`docs/keysets.md`, measured from 3696 frames of real device traffic across 27 capture files.
+`docs/keysets.md`, measured from 5344 frames of real device traffic across 31 capture files.
 
 ## Phase 1
 

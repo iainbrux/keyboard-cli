@@ -2,10 +2,11 @@
 
 This is the procedure for recording real HID traffic between the vendor web
 configurator and a Wallhack K-001 keyboard, so `cargo test -p wh-proto --test
-golden` has something real to check the codec against. It has been run three
-times: task 19's hardware session (ten scenarios, 1224 frames), and two keyset
-sittings on 2026-08-29 that took the corpus to twenty-seven files and 3696
-frames, with zero framing or checksum failures in any of them. The results are
+golden` has something real to check the codec against. It has been run four
+times: task 19's hardware session (ten scenarios, 1224 frames), two keyset sittings
+on 2026-08-29, and a keyset verification sitting on 2026-09-04. The corpus now
+stands at thirty-one files and 5344 frames, with zero framing or checksum
+failures in any of them. The results are
 recorded in `docs/protocol-inventory.md`, `docs/protocol.md` and
 `docs/keysets.md`. This document describes the procedure so it can be run
 again, for a firmware update, a second board, or a new scenario, not as a

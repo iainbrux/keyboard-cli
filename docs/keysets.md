@@ -5,7 +5,7 @@ switch does, measured on 2026-08-29 against a real K-001 running firmware `App_V
 Fifteen keyset capture scenarios across two sittings, each changing one thing.
 
 This document is the evidence base for task 2.4. It is reliable about frame shapes and less reliable
-about board state: only four of the 27 captures read layouts `0xFF` or `0xFE` at all, and only one
+about board state: only four of the 31 captures read layouts `0xFF` or `0xFE` at all, and only one
 of those, `custom-value-nudge-after-restore` at 22:25, falls inside the keyset sitting. Almost every
 statement below about which keyset a key was in rests on that single read. Each claim says whether
 it is measured or inferred, and a verification pass on 2026-09-03 rewrote the ones that had it
@@ -17,11 +17,12 @@ Two per-key layouts hold membership, and they are **independent groupings over t
 
 | Layout | Grouping | Values seen |
 |---|---|---|
-| `0xFF` | actuation point keyset | `0, 1, 2, 3, 4, 5, 6, 9` |
+| `0xFF` | actuation point keyset | `0` to `9`, every value in that range |
 | `0xFE` | rapid trigger keyset | `0`, `1`, `2` |
 
-`0` means the key is in no keyset of that kind. `7` and `8` are never written and never read
-anywhere in the corpus; see the allocation section for why that matters.
+`0` means the key is in no keyset of that kind. Measured over the 31 files: written values are
+`0, 3, 5, 6, 7, 8, 9` and read values are `0, 1, 2, 4, 5`. An earlier version of this table said `7`
+and `8` were never written; the 2026-09-04 captures write both.
 
 **A key can sit in one of each at the same time. Inferred, not read.** No capture reads a key with
 both `0xFF != 0` and `0xFE != 0`. What the 22:25 read measures is the two layouts differing over
@@ -67,8 +68,12 @@ ascending index order with deleted indices simply absent.
 | Create on `H`, `J` (stolen) | unobserved | **9** | **unexplained**, see below |
 
 **The `9` row is not evidence for the rule and an earlier draft used it as though it were.** Every
-`0xFF` write in all 27 files is: `u,i,o,p` to `3`, `o,p` to `5`, `u,i,o,p` to `0`, `a,g` to `6`,
-`h,j` to `9`. Indices `7` and `8` are never written and never read. The last captured allocation
+`0xFF` write across the 31 files, by file: `ks-create-ap-1` `u,i,o,p` to `3`; `ks-create-ap-3`
+`o,p` to `5`; `ks-delete-ap-1` `u,i,o,p` to `0`; `ks-steal-ap` `a,g` to `6`; `ks-steal-equal-value`
+`h,j` to `9`; and from 2026-09-04, `ks-value-over-all` the whole board to `3`,
+`ks-value-five-members` `w,a,s,d,g` to `3`, `ks-consume-whole` `w,a,s,d,g` to `7`, `ks-span-two`
+`w,u,i,a` to `8`. An earlier version of this paragraph said `7` and `8` were never written; the
+2026-09-04 captures write both, allocated normally as max plus one. The last captured allocation
 before `h,j` took `9` was `6`, and the three captures in between write no `0xFF` record at all. From
 the frames alone the corpus shows a maximum of `6` followed by an allocation of `9`, which
 contradicts max plus one. The earlier draft rescued it by asserting a pre-state of "up to 8" that no
@@ -157,7 +162,7 @@ they are written `100` in every template, which is false for three of the seven 
 
 ### The MODE promotion, and what is actually measured about it
 
-Searching all 27 files for a MODE record written non-zero over a usage whose most recent read in the
+Searching all 31 files for a MODE record written non-zero over a usage whose most recent read in the
 same file was `0`, there are exactly three:
 
 ```
@@ -185,7 +190,7 @@ capture in the corpus settles it. `ops::ap_records` and `keyset::plan` both prom
 which is the shipped behaviour task 2.2 still lists for hardware verification.
 
 What is measured, and is the strongest statement the corpus supports, is the negative: sweeping all
-27 files for keys given a `0x04` write and checking the MODE each had read, **every key that read
+31 files for keys given a `0x04` write and checking the MODE each had read, **every key that read
 MODE `0x00` and received an actuation point write was written a non-zero MODE.** Three of three
 opportunities, no counterexample. No capture leaves a nibble-`0` key at nibble `0` after an
 actuation point write.
@@ -218,39 +223,36 @@ Measured four ways:
   `,` only a MODE change. Both got the full template. `N` was at rapid trigger with its own settings
   beforehand, so it was probably stolen from another keyset, but which index it held is never read.
 
-### Changing a value over part of a keyset, an operator observation
+### Changing a value over a selection that is not exactly one keyset
 
-**Not measured, and not from any capture.** On 2026-09-03 the operator drove the vendor
-configurator directly and reported, with screenshots, that selecting a set of keys which included
-two existing members of a `W,A,S,D` keyset and giving them a value produced a **new** keyset
-containing the whole selection, leaving the original with its remaining members. The corpus
-contains no frames for this: no capture in the 27 files shows the vendor splitting a keyset.
+**Measured on 2026-09-04, three captures, all three shapes.** This section previously recorded an
+operator observation of the vendor's interface and said in terms that two of the three shapes had
+no support of any kind. They now have frames.
 
-This is recorded here because `wh set ap` implements that behaviour and every other statement about
-it in the repository pointed at this document for its source. It is an observation of the
-configurator's interface, one step weaker than the frame measurements above and two steps weaker
-than a capture. It is the only support for the rule, so if it is wrong the rule is wrong.
+| Capture | Board before | Selection | Result |
+|---|---|---|---|
+| `ks-consume-whole` | keyset 7 `w,a,s,d` at 0.50, `g` free at the global | `w,a,s,d,g` | `0xFF = 8` to all five. Keyset 7 ceased to exist |
+| `ks-span-two` | keyset 7 `w,a,s,d,g` at 0.50, a second keyset `u,i,o,p` at 1.20 | `w,u,i,a` | `0xFF = 8` to those four only. `s,d,g` and `o,p` kept their original indices |
+| `ks-value-over-all` | two keysets live | every key on the board | `0xFF = 3` to all 68 |
 
-**The observation covers one shape only.** It was a selection taking part of a single keyset. It
-says nothing about a selection that consumes a keyset whole, and nothing about a selection spanning
-two keysets, which `wh` merges into one new index. Those are `wh`'s own generalisations.
+So the rule, measured on those three boards: **a selection that is not exactly one keyset's members
+takes a fresh index, and every selected key goes into it.** A keyset entirely inside the selection
+ceases to exist. A keyset only partly selected survives with its remaining members, and gets no
+membership record at all.
 
-An earlier version of this paragraph claimed that the free-key half had measured support, citing
-`ks-steal-ap` and `ks-steal-equal-value`. **That was wrong and is withdrawn.** In both, the free key
-rides along with a key taken from part of a single keyset, which is the shape the operator
-observation already covers and which forces a fresh index on its own, so the free key is a confound
-and explains nothing. The shape that would need those captures to say something, a whole keyset plus
-a free key, is not what either of them contains. One of the two citations was also the `9` row,
-which this document disowns as evidence a few sections above.
+`ks-span-two` is the important one. It is the only capture of two keysets in a single selection, and
+it settles that the vendor merges the **selection** rather than the keysets: exactly four membership
+records were written, and the five keys left behind across the two originals got none.
 
-So: nothing supports a keyset being consumed whole, and nothing supports a selection spanning two
-keysets.
+**What the captures do not cover.** Every selection above was made in the configurator by clicking
+keys, so the vendor allocates a fresh index at the moment of selection; the value change follows.
+The corpus still contains no case of a selection spanning three or more keysets, and none where the
+allocated index was anything other than max plus one.
 
-There is one piece of evidence in the corpus that cuts the other way. The promotion section above
-records that `ks-value-ap` gives two readings, one of which is a mixed selection; the allocation
-section's inventory of every `0xFF` write in all 27 files shows that file writing none. So on that
-reading the vendor wrote no membership record for exactly the case `wh` now splits. The reading is
-not settled either way.
+Two rules from elsewhere in this document turn up again in both `ks-consume-whole` and
+`ks-span-two`, which is worth recording because they were measured on different operations before:
+the new keyset's members are written the **global** value before membership (`0x04 = 2000` in both),
+and a member already holding the global gets no value record at all, which is the skip rule.
 
 ### A new keyset starts at the global value
 
@@ -447,8 +449,9 @@ name is corroborated by the interface rather than measured from the wire.
 
 ## Corpus
 
-Twenty-seven capture files, 3696 frames, all decoding with correct framing and checksums and no
-hard failures. Up from ten files and 1224 frames after Phase 1.
+Thirty-one capture files, 5344 frames, all decoding with correct framing and checksums and no hard
+failures. Up from ten files and 1224 frames after Phase 1, and from twenty-seven after the
+2026-08-29 sittings.
 
 Read requests and writes are separable by the `cmd 0x23` payload's lead byte, which matters when a
 write carries a genuinely zero value. Lead `0x00` occurs 1035 times and is all-zero valued every
