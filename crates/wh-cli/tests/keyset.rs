@@ -3272,6 +3272,15 @@ fn keyset_remove_leaves_the_keyset_alive_when_others_remain() {
         String::from_utf8_lossy(&write_out.stdout),
         String::from_utf8_lossy(&write_out.stderr)
     );
+    // The negative every "ceases to exist" test up to now has been missing: this keyset really
+    // does survive, with `a` and `s` still members, so the announcement must not claim otherwise.
+    // A `keyset_disappears` that always answered `true` would satisfy every other assertion in
+    // this file and only fail here.
+    let write_stdout = String::from_utf8_lossy(&write_out.stdout);
+    assert!(
+        !write_stdout.contains("ceases to exist"),
+        "keyset 3 keeps a and s; it must not be announced as destroyed: {write_stdout}"
+    );
 
     let mut list_lines = matrix_lines();
     for (usage, ks) in [(0x1Au8, 0u16), (0x04, 3), (0x16, 3), (0x07, 0)] {
@@ -4573,6 +4582,81 @@ fn keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The mixed case a single all-moving fixture cannot distinguish from "count everything": two of
+/// the four keys are already on touch nibble 1 (Single), so only `w` and `a` actually move. A
+/// mutant that counted `plan.before().len()` instead of filtering by `mode_change` would pass the
+/// all-four-move test above unchanged and only be caught here, where the count and the selection
+/// size differ.
+#[test]
+fn keyset_remove_whole_board_prompt_counts_only_the_keys_that_actually_move() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    // w and a are still on touch nibble 0 and will promote; s and d are already Single.
+    lines.extend(key_settings_lines(0x1A, 2000, 0x08, 100, 150, 0, 0));
+    lines.extend(key_settings_lines(0x04, 2000, 0x08, 100, 150, 0, 0));
+    lines.extend(key_settings_lines(0x16, 2000, 0x18, 100, 150, 0, 0));
+    lines.extend(key_settings_lines(0x07, 2000, 0x18, 100, 150, 0, 0));
+
+    let script = write_script("keyset-remove-whole-board-mixed-mode", &lines);
+    let config_home = scratch_config_dir("keyset-remove-whole-board-mixed-mode");
+    let out = run_wh_stdin(
+        &["keyset", "remove", "ap", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("2 key(s) move off global travel onto their own actuation point"),
+        "two of four move, not four of four: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The other edge the single all-moving fixture cannot reach: every key already on touch nibble 1,
+/// so nothing moves at all. A mutant counting `plan.before().len()` would print "4 key(s) move off
+/// global travel" over a selection where not one of them does; the clause must be absent entirely.
+#[test]
+fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_nothing_moves() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    // Every key already on touch nibble 1 (Single) and already at the base: nothing moves.
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 2000, 0x18, 100, 150, 0, 0));
+    }
+
+    let script = write_script("keyset-remove-whole-board-no-mode-change", &lines);
+    let config_home = scratch_config_dir("keyset-remove-whole-board-no-mode-change");
+    let out = run_wh_stdin(
+        &["keyset", "remove", "ap", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("this selects every key on the board: every key moves to 2.00mm, and no ap keysets exist to lose"),
+        "the prompt must end there, with no mode clause appended: {stdout}"
+    );
+    assert!(
+        !stdout.contains("move off global travel"),
+        "nothing moves here, the clause must be absent entirely, not \"0 key(s)\": {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The measured case where an invented value renders exactly like a real one: every key on this
 /// board is in ap keyset 1, so no free key exists anywhere, not merely outside this selection.
 /// `wh keyset remove ap --keys w` reaches `NoneOutsideAKeyset` from a single-key selection, no
@@ -4644,6 +4728,43 @@ fn keyset_remove_ap_names_a_keyset_that_ceases_to_exist_from_a_partial_removal()
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("ap: removing w from keyset 1, 1.20mm to 2.00mm, keyset 1 ceases to exist"),
+        "got: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// All three suffixes at once, pinning their order: the base parenthetical must sit right beside
+/// the value it qualifies, not after the mode clause, where it would read as qualifying the mode
+/// transition instead. `w` alone is ap keyset 1 (so removing it empties that keyset), `a`, `s` and
+/// `d` are all in keyset 2 (so no free key exists anywhere and the base is the invented default),
+/// and `w`'s own touch nibble is 0 (so it promotes too).
+#[test]
+fn keyset_remove_ap_orders_the_invented_suffix_beside_the_value_not_the_mode_clause() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 2), (0x16, 2), (0x07, 2)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    // No free-key read at all: every key on the board is in a keyset, none outside any of them.
+    lines.extend(key_settings_lines(0x1A, 300, 0x08, 100, 150, 1, 0)); // plan's read of w
+
+    let script = write_script("keyset-remove-ap-suffix-order", &lines);
+    let config_home = scratch_config_dir("keyset-remove-ap-suffix-order");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap: removing w from keyset 1, 0.30mm to 2.00mm (no key outside a keyset to read a base from, using the default), mode Global to Single, keyset 1 ceases to exist"),
         "got: {stdout}"
     );
 

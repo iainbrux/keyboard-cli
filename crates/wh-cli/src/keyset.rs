@@ -539,6 +539,11 @@ fn confirm_whole_board_remove(
     } else {
         let what = match kind {
             Kind::Ap => "move off global travel onto their own actuation point",
+            // Unreachable today: this function only ever runs for a whole-board selection, and a
+            // whole-board `Kind::Rt` selection excludes every free key from `remove_base_rt`'s own
+            // read, which then always hits `NoneOutsideAKeyset` and refuses before `remove` gets
+            // this far. Kept rather than dropped, the same choice `announce_remove`'s own
+            // unreachable branch makes, in case that call pattern ever changes.
             Kind::Rt => "have rapid trigger switched off",
         };
         format!(", {moved_modes} key(s) {what}")
@@ -558,10 +563,10 @@ fn confirm_whole_board_remove(
 
 /// Announces a remove's effect on every selected key. A member leaving a keyset is always
 /// "removing", regardless of what else moves. A free key with no value record at all, decided from
-/// `plan.value_records()` rather than from comparing `prior` to `target`, is "nothing to do": `plan`
-/// can write a record that touches only MODE, not the owned value, so a comparison against the
-/// owned value alone would call that case "nothing to do" too, while a frame was still on the wire.
-/// A free key whose owned value actually moves is "returning". A free key whose owned value stays
+/// `plan.value_records()` rather than from comparing `prior` to `target`, is "membership rewritten,
+/// value unchanged": `plan` can write a record that touches only MODE, not the owned value, so a
+/// comparison against the owned value alone would miss that a frame was still sent. A free key
+/// whose owned value actually moves is "returning". A free key whose owned value stays
 /// but whose touch mode moves, most often rapid trigger switching off underneath an unchanged
 /// sensitivity, or a key promoted off "follow global travel" at an unchanged actuation point, names
 /// the mode transition instead of describing it as a value move: the same `mode_change` vocabulary
@@ -619,15 +624,16 @@ fn announce_remove(
             };
             writeln!(
                 out,
-                "{}: removing {} from keyset {index}, {prior_value} to {}{mode_suffix}{invented_suffix}{disappear_suffix}",
+                "{}: removing {} from keyset {index}, {prior_value} to {}{invented_suffix}{mode_suffix}{disappear_suffix}",
                 kind_name(kind),
                 key_label(u),
                 target.display()
             )?;
         } else if !plan.value_records().iter().any(|r| r.key == u) {
-            // Not "nothing to do": the membership record still goes out unconditionally (`plan`'s
-            // own rule), even though it is idempotent here and destroys nothing. Naming a real
-            // frame as nothing at all is the exact shape CLAUDE.md now warns against.
+            // The membership record still goes out unconditionally (`plan`'s own rule), even
+            // though it is idempotent here and destroys nothing: naming a real frame as no frame
+            // at all is the exact shape CLAUDE.md now warns against, which is why this says
+            // "membership rewritten, value unchanged" rather than treating the write as a no-op.
             writeln!(
                 out,
                 "{}: {} already at {}{invented_suffix} in no {} keyset, membership rewritten, value unchanged",
@@ -639,7 +645,7 @@ fn announce_remove(
         } else if value_moves(kind, plan, prior, u) {
             writeln!(
                 out,
-                "{}: returning {} to {}{mode_suffix}{invented_suffix}, already in no {} keyset",
+                "{}: returning {} to {}{invented_suffix}{mode_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 target.display(),

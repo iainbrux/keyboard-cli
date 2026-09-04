@@ -176,12 +176,14 @@ rather than as settings it recognises.
 
   **Announcement needs four reachable cases**, not three, since "free key(s) d left alone,
   already in no ap keyset" becomes false: removed from keyset N with its old and new value;
-  returned to the base from a stray value while already outside every keyset; already at the base,
-  nothing done; and a fourth found only during review, a free key whose owned value already sits at
-  the base but whose touch mode still moves (rapid trigger switching off, or a key promoted off
-  "follow global travel"), which must name the mode transition rather than read as either of the
-  other two. The first two also append the mode transition when it applies alongside them, the same
-  fix.
+  returned to the base from a stray value while already outside every keyset; membership rewritten
+  with the value unchanged, for a free key already at the base (not "nothing to do": `plan` still
+  sends the membership record unconditionally, so calling it nothing at all would be the same false
+  no-op this whole entry exists to reject); and a fourth found only during review, a free key whose
+  owned value already sits at the base but whose touch mode still moves (rapid trigger switching
+  off, or a key promoted off "follow global travel"), which must name the mode transition rather
+  than read as either of the other two. The first two also append the mode transition when it
+  applies alongside them, the same fix.
 
   **One existing test inverts.** `keyset_remove_ignores_a_free_key_selected_alongside_a_member`
   asserted free keys are dropped from the plan. They are now included, so it became a test that they
@@ -206,10 +208,15 @@ rather than as settings it recognises.
   Shipped: both kinds, the base read excluding the reset selection, and the `Split` refusal. The
   `NoneOutsideAKeyset` case ships differently per kind and stays that way on purpose: `ap` falls
   back to `2000`, `rt` refuses whenever every key currently free of an rt keyset is also in the
-  selection, whole-board or not. Also shipped: the four-case announcement, and the whole-matrix
-  confirmation reusing `crate::confirm::confirm`. `--value`, `--press` and `--release` are gone
-  from the clap variant and from the `Kind::Ap` refusal, which had nothing left to refuse and was
-  deleted with them.
+  selection, whole-board or not. Also shipped, all found during review rather than in the first
+  draft of this entry: the `ap` fallback names itself as invented in the announcement, rather than
+  rendering indistinguishably from a value read off the board; a partial removal that empties a
+  keyset says so, "keyset N ceases to exist", the same fact the whole-board prompt already names for
+  every keyset at once; that prompt is built after `keyset::plan`, not before, so it can count and
+  name how many keys are about to move off touch nibble 0 rather than answering a question the
+  operator cannot yet see the answer to; and the four-case announcement itself. `--value`, `--press`
+  and `--release` are gone from the clap variant and from the `Kind::Ap` refusal, which had nothing
+  left to refuse and was deleted with them.
 
 - [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
   There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
@@ -307,15 +314,19 @@ rather than as settings it recognises.
   (2.22's own "no bypass flag, so tests pipe `yes` on stdin") completely untouched: stdin is not
   stdout, so nothing about how the prompt is answered changes.
 
-  **The cost, exactly.** One more writer threaded through `keyset::remove` from `run.rs`, alongside
-  the `out` it already takes for the announcement, since the prompt and the announcement are meant
-  for different streams now. Two end-to-end assertions move from checking `decline_stdout` to
-  checking the equivalent on stderr, the keyset line and the value line, both in
-  `keyset_remove_over_the_whole_board_requires_a_typed_yes`, plus the comment explaining which
-  stream carries what. No other behaviour changes: the announcement itself (`removing`/`returning`/
-  `nothing to do`) still goes to stdout, since that is what `--dry-run` prints and what
-  `wh keyset remove ap --keys all > log.txt` is presumably being redirected to capture in the first
-  place.
+  **The cost.** One more writer threaded through `keyset::remove` from `run.rs`, alongside the
+  `out` it already takes for the announcement, since the prompt and the announcement are meant for
+  different streams now. Every end-to-end assertion that currently checks this prompt's text on
+  stdout moves to the equivalent check on stderr instead: the two in
+  `keyset_remove_over_the_whole_board_requires_a_typed_yes`, and each one in the mode-transition and
+  invented-base tests added alongside this entry (`keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide`
+  and its two siblings covering the mixed and all-nibble-1 boards) that checks the prompt rather
+  than the per-key announcement that follows it; count them again at the time this lands rather than
+  trusting a number written here, since the count has already grown twice since this entry was
+  first drafted. No other behaviour changes: the per-key announcement itself (`removing`/`returning`/
+  "membership rewritten, value unchanged") still goes to stdout, since that is what `--dry-run`
+  prints and what `wh keyset remove ap --keys all > log.txt` is presumably being redirected to
+  capture in the first place.
 
   **Land this before or with 2.23**, so `wh set ap --keys all`'s own confirmation, whenever it is
   built, calls the corrected version from the start rather than repeating the stdout choice and
