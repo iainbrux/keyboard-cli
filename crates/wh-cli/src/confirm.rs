@@ -1,5 +1,7 @@
-//! The typed confirmation guarding the two commands that destroy every keyset on the board.
-//! One implementation, shared: two copies would drift, and the laxer one would win by accident.
+//! The typed confirmation guarding a whole-board destructive write. `wh keyset remove` calls this
+//! today, over a selection covering every key. `wh set ap --keys all` is a separate, still open
+//! task and does not call it yet: this module exists to be shared once it does, not to imply that
+//! hazard is already guarded.
 
 use anyhow::Result;
 use std::io::{BufRead, Write};

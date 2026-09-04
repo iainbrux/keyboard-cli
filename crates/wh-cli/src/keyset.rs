@@ -192,9 +192,11 @@ fn agreement_line<V: PartialEq + Copy>(
     Ok(format!("disagree: {}", parts.join(", ")))
 }
 
-/// The value a create or delete resolved to write: `--value`, or `--press`/`--release`, or the
-/// board's global. Carried alongside the plan so `announce_steal` and `announce_delete` can show
-/// what each affected member is about to lose it for.
+/// The value an operation resolved to write, whatever its source: `create`/`delete` from
+/// `--value`/`--press`/`--release` or the board's global, `remove` from the base read excluding
+/// its own selection, or `NO_SIGNAL_BASE` when nothing is left to read. Carried alongside the plan
+/// so `announce_steal`, `announce_delete` and `announce_remove` can show what each affected member
+/// is about to move to or lose it for.
 #[derive(Clone, Copy)]
 pub(crate) enum Target {
     Ap(Um),
@@ -353,10 +355,24 @@ fn remove_base_rt<T: Transport>(
                 remove_split_message_str("rapid trigger sensitivity", &shown)
             )
         }
-        Global::NoneOutsideAKeyset => bail!(
-            "no key is outside a rapid trigger keyset, so there is no global sensitivity to reset \
-             these to, and no default is measured for one"
-        ),
+        Global::NoneOutsideAKeyset => {
+            // Same `Global` variant, two different board states: no key is free at all, or every
+            // free key is also in this selection. `m.entries()` already has what is needed to
+            // tell them apart, no extra read; conflating them sends an operator looking for
+            // keysets that do not exist on a board where they plainly do.
+            if m.entries().iter().any(|&(_, membership)| membership == 0) {
+                bail!(
+                    "every key outside a rapid trigger keyset is also in this selection, so there \
+                     is no global sensitivity left to reset these to, and no default is measured \
+                     for one"
+                )
+            } else {
+                bail!(
+                    "no key is outside a rapid trigger keyset, so there is no global sensitivity \
+                     to reset these to, and no default is measured for one"
+                )
+            }
+        }
     }
 }
 
@@ -437,6 +453,15 @@ pub(crate) fn remove<T: Transport>(
 /// key moves to `target` regardless of what it held before, including a whole-board selection with
 /// no live keysets at all, where `target` is the only thing about to change and so the only thing
 /// worth naming. `--dry-run` never reaches here, since it writes nothing to confirm.
+///
+/// No `picker::refuse_if_not_terminal`-style guard here, deliberately, though a redirected stdout
+/// (`wh keyset remove ap --keys all > log.txt`) does send this prompt into the file and then block
+/// on stdin with nothing on screen. `--pick` refuses a non-terminal stdout because its live TUI
+/// cannot render to one at all; piping to it is not an escape hatch, it is meaningless. This
+/// prompt is one line out and one line in, and `docs/tasks.md` rules that shape as the sanctioned
+/// way to answer it, "no bypass flag, so tests pipe `yes` on stdin", for real scripted use as well
+/// as for tests. Refusing a redirected stdout here would break that sanctioned path, not just
+/// guard against a hang.
 fn confirm_whole_board_remove(
     out: &mut impl Write,
     kind: Kind,
@@ -467,13 +492,16 @@ fn confirm_whole_board_remove(
     Ok(())
 }
 
-/// Announces a remove's effect on every selected key, in three cases: a member leaving a keyset,
-/// a free key returning to a base it did not already hold, and a free key `plan` sent no value
-/// record for at all, "nothing to do". The third case is decided from `plan.value_records()`
-/// directly, not from comparing `prior` to `target`: `plan` also writes a value record to turn
-/// rapid trigger off or to promote a touch nibble even when the owned value itself does not move,
-/// and a comparison that only looked at the owned value would call that "nothing to do" too, while
-/// a frame carrying that change was still on the wire. Each key's current value comes from
+/// Announces a remove's effect on every selected key. A member leaving a keyset is always
+/// "removing", regardless of what else moves. A free key with no value record at all, decided from
+/// `plan.value_records()` rather than from comparing `prior` to `target`, is "nothing to do": `plan`
+/// can write a record that touches only MODE, not the owned value, so a comparison against the
+/// owned value alone would call that case "nothing to do" too, while a frame was still on the wire.
+/// A free key whose owned value actually moves is "returning". A free key whose owned value stays
+/// but whose touch mode moves, most often rapid trigger switching off underneath an unchanged
+/// sensitivity, or a key promoted off "follow global travel" at an unchanged actuation point, names
+/// the mode transition instead of describing it as a value move: the same `mode_change` vocabulary
+/// `describe_member` already renders as "mode Rt to Single". Each key's current value comes from
 /// `plan.before()`, the same source `announce_delete` uses.
 fn announce_remove(
     out: &mut impl Write,
@@ -507,13 +535,29 @@ fn announce_remove(
                 target.display(),
                 kind_name(kind)
             )?;
-        } else {
+        } else if value_moves(kind, plan, prior, u) {
             writeln!(
                 out,
                 "{}: returning {} to {}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
+                kind_name(kind)
+            )?;
+        } else if let Some(change) = mode_change(plan, prior, u) {
+            writeln!(
+                out,
+                "{}: {} keeps {prior_value}, {change}, already in no {} keyset",
+                kind_name(kind),
+                key_label(u),
+                kind_name(kind)
+            )?;
+        } else {
+            writeln!(
+                out,
+                "{}: {} keeps {prior_value}, already in no {} keyset",
+                kind_name(kind),
+                key_label(u),
                 kind_name(kind)
             )?;
         }

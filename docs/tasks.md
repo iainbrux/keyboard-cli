@@ -168,10 +168,11 @@ rather than as settings it recognises.
   entry's first writing.** No `0x14`/`0x15` reading has ever been `2000`, and the corpus shows the
   reset target tracking the global sensitivity at write time (`100` in `ks-delete-rt`, `200` in
   `ks-reset-keysets`), never a fixed number, so there is no dominant value the way `2000` is for
-  `ap`. A practical consequence: `wh keyset remove rt` over a selection covering every key can never
-  succeed on a board where every key already sits in an rt keyset, since `global_rt_excluding`
-  reports `NoneOutsideAKeyset` for that selection every time. `wh keyset delete rt <index>`, which
-  still takes `--press`/`--release`, is the route on that board.
+  `ap`. A practical consequence, broader than only the whole-board case: `wh keyset remove rt`
+  refuses whenever every key currently free of an rt keyset is also in the selection, since
+  `global_rt_excluding` then reports `NoneOutsideAKeyset`. A single `--keys w` refuses the same way
+  when `w` is the only free rt key on the board, not only `--keys all`. `wh keyset delete rt
+  <index>`, which still takes `--press`/`--release`, is the route past this refusal.
 
   **Announcement needs three cases**, since "free key(s) d left alone, already in no ap keyset"
   becomes false: removed from keyset N with its old and new value; returned to the base from a stray
@@ -199,12 +200,11 @@ rather than as settings it recognises.
 
   Shipped: both kinds, the base read excluding the reset selection, and the `Split` refusal. The
   `NoneOutsideAKeyset` case ships differently per kind and stays that way on purpose: `ap` falls
-  back to `2000`, `rt` refuses, so `wh keyset remove rt` has no reachable success on a whole-board
-  selection or on any board where every key is already in an rt keyset. Also shipped: the
-  three-case announcement, and the whole-matrix confirmation reusing `crate::confirm::confirm`.
-  `--value`, `--press` and `--release` are gone from the clap variant and from the `Kind::Ap`
-  refusal, which had nothing left to refuse and was deleted
-  with them.
+  back to `2000`, `rt` refuses whenever every key currently free of an rt keyset is also in the
+  selection, whole-board or not. Also shipped: the three-case announcement, and the whole-matrix
+  confirmation reusing `crate::confirm::confirm`. `--value`, `--press` and `--release` are gone
+  from the clap variant and from the `Kind::Ap` refusal, which had nothing left to refuse and was
+  deleted with them.
 
 - [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
   There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
@@ -251,9 +251,9 @@ rather than as settings it recognises.
   selection covers every key in the board's matrix, however it was written, so spelling out all 68
   usages reaches it too. `--keys all` is the usual spelling, not the condition.
 
-  **The same prompt guards `wh keyset remove --keys all`, see 2.22.** Build it once and share it;
-  two copies will drift, and this is the one piece of code whose whole job is to be hard to get
-  past by accident.
+  **The same prompt guards `wh keyset remove --keys all`, shipped in 2.22 as
+  `crates/wh-cli/src/confirm.rs`.** Reuse it rather than building a second copy; two copies will
+  drift, and this is the one piece of code whose whole job is to be hard to get past by accident.
 
   Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
   ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
@@ -280,11 +280,14 @@ rather than as settings it recognises.
   `Split` but diverge on `NoneOutsideAKeyset`: `remove_base_ap` falls back to the `2000` constant
   (2.22's own ruling, `NO_SIGNAL_BASE`), while `remove_base_rt` refuses, since there is no measured
   rapid trigger equivalent of that constant. Extracting a single shared "resolve the kind branch"
-  helper would either give `delete` a fallback it never had or take `remove`'s escape hatch away
-  from `remove` where none exists; a future implementer following this task literally, the way an
-  earlier version of it read, would silently give one command the other's `NoneOutsideAKeyset`
-  behaviour. Share only the `Change` construction shape, parameterised over an already-resolved
-  value each caller keeps producing its own way.
+  helper risks the hazard running either way: `delete` could silently inherit `remove`'s constant
+  fallback, writing a value the operator never passed `--value` for, or `remove` could silently
+  inherit `delete`'s refuse-and-ask-for-a-flag behaviour, which `remove` has no flag to satisfy
+  since `--value`/`--press`/`--release` do not exist there. A future implementer following this
+  task literally, the way an earlier version of it read, would give one command the other's
+  `NoneOutsideAKeyset` behaviour without meaning to, either direction. Share only the `Change`
+  construction shape, parameterised over an already-resolved value each caller keeps producing its
+  own way.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes

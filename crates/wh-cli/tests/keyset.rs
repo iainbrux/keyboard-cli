@@ -3910,11 +3910,12 @@ fn keyset_remove_writes_only_membership_for_a_key_already_at_the_base() {
 /// already at the base sensitivity (0.10/0.15mm), but its own touch nibble still says `Rt` (its
 /// own settings), not `Single`. `remove`'s `rt_off` change turns that off, which is a real frame
 /// on the wire, MODE `0x0038` to `0x0018`, even though the press/release pair it carries never
-/// moves. The announcement must call this "returning", not "nothing to do": a comparison that only
-/// checked the owned press/release pair against the target would have called it a no-op while
-/// rapid trigger silently switched off underneath it.
+/// moves. The announcement must name the mode transition, not call this "returning" (a value that
+/// never moved is not being "returned" anywhere) and not "nothing to do" (rapid trigger really did
+/// switch off): a comparison that only checked the owned press/release pair against the target
+/// would have missed that entirely, silent in both directions.
 #[test]
-fn keyset_remove_rt_reports_a_mode_only_change_as_returning_not_nothing_to_do() {
+fn keyset_remove_rt_names_a_mode_only_change_as_a_mode_transition() {
     let mut lines = matrix_lines(); // resolve_keys
     lines.extend(matrix_lines()); // read_membership's own matrix read
     for usage in [0x1Au8, 0x04, 0x16, 0x07] {
@@ -3947,7 +3948,11 @@ fn keyset_remove_rt_reports_a_mode_only_change_as_returning_not_nothing_to_do() 
         "a frame turning rapid trigger off must never be reported as a no-op: {stdout}"
     );
     assert!(
-        stdout.contains("rt: returning w to 0.10/0.15mm, already in no rt keyset"),
+        !stdout.contains("returning w"),
+        "the sensitivity never moves, so this is not a value returning anywhere: {stdout}"
+    );
+    assert!(
+        stdout.contains("rt: w keeps 0.10/0.15mm, mode Rt to Single, already in no rt keyset"),
         "got: {stdout}"
     );
 
@@ -3999,9 +4004,11 @@ fn keyset_remove_rt_reports_a_mode_only_change_as_returning_not_nothing_to_do() 
 /// The mirror case on the actuation point side, and the one the operator's own board hit
 /// (`docs/backlog.md`): a free key already at the base value but still on touch nibble 0, "follow
 /// global travel". `remove`'s `Change::ap` promotes that to `Single`, MODE `0x0008` to `0x0018`, a
-/// real frame even though the actuation point itself, already `2.00mm`, never moves.
+/// real frame even though the actuation point itself, already `2.00mm`, never moves. The
+/// announcement must name the mode transition, not the "returning" wording a plain value
+/// comparison would produce.
 #[test]
-fn keyset_remove_ap_reports_a_mode_only_change_as_returning_not_nothing_to_do() {
+fn keyset_remove_ap_names_a_mode_only_change_as_a_mode_transition() {
     let mut lines = matrix_lines(); // resolve_keys
     lines.extend(matrix_lines()); // read_membership's own matrix read
     for usage in [0x1Au8, 0x04, 0x16, 0x07] {
@@ -4033,7 +4040,11 @@ fn keyset_remove_ap_reports_a_mode_only_change_as_returning_not_nothing_to_do() 
         "a frame promoting the key off global travel must never be reported as a no-op: {stdout}"
     );
     assert!(
-        stdout.contains("ap: returning w to 2.00mm, already in no ap keyset"),
+        !stdout.contains("returning w"),
+        "the actuation point never moves, so this is not a value returning anywhere: {stdout}"
+    );
+    assert!(
+        stdout.contains("ap: w keeps 2.00mm, mode Global to Single, already in no ap keyset"),
         "got: {stdout}"
     );
 
@@ -4201,9 +4212,11 @@ fn keyset_remove_uses_the_base_constant_when_no_free_key_is_left() {
 
 /// The rapid trigger mirror of the case above refuses instead of falling back: there is no
 /// measured default sensitivity, unlike the actuation point's `2000`. Every key on this four-key
-/// board is in an rt keyset, so `global_rt_excluding` reports `NoneOutsideAKeyset` for a selection
-/// of just `w`, and `remove_base_rt` must bail rather than inventing `0x14 = 2000, 0x15 = 2000`, a
-/// pair no capture has ever shown written.
+/// board genuinely is in an rt keyset, so `global_rt_excluding` reports `NoneOutsideAKeyset` for a
+/// selection of just `w`, and `remove_base_rt` must bail rather than inventing `0x14 = 2000,
+/// 0x15 = 2000`, a pair no capture has ever shown written. Pins the "no key is outside" wording
+/// specifically, since that is only true of a board shaped exactly like this one: every key really
+/// is in a keyset here, which the mirror test below is not.
 #[test]
 fn keyset_remove_rt_refuses_when_no_free_key_is_left_to_read_a_sensitivity_from() {
     let mut lines = matrix_lines();
@@ -4225,6 +4238,45 @@ fn keyset_remove_rt_refuses_when_no_free_key_is_left_to_read_a_sensitivity_from(
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("no key is outside a rapid trigger keyset"),
+        "got: {err}"
+    );
+    assert!(err.contains("no default is measured"), "got: {err}");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The case the wording above gets wrong: no rt keyset exists on this board at all, every key
+/// genuinely free, but every one of them is also in the selection, so `global_rt_excluding` still
+/// reports `NoneOutsideAKeyset`. "No key is outside a rapid trigger keyset" would be false here,
+/// and would send an operator looking for keysets that plainly do not exist. `m.entries()` already
+/// distinguishes the two causes with no extra device read.
+#[test]
+fn keyset_remove_rt_refuses_when_every_free_key_is_also_selected() {
+    let mut lines = matrix_lines();
+    lines.extend(matrix_lines());
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
+    }
+    // No further reads: every free key is also in the selection, so `global_rt_excluding` finds
+    // nothing left outside it to read, the same `NoneOutsideAKeyset` report as the test above, for
+    // a genuinely different reason.
+
+    let script = write_script("keyset-remove-rt-all-selected", &lines);
+    let config_home = scratch_config_dir("keyset-remove-rt-all-selected");
+    let out = run_wh(
+        &["keyset", "remove", "rt", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("no key is outside a rapid trigger keyset"),
+        "every key here is outside a keyset; the wrong cause must not be named: {err}"
+    );
+    assert!(
+        err.contains("every key outside a rapid trigger keyset is also in this selection"),
         "got: {err}"
     );
     assert!(err.contains("no default is measured"), "got: {err}");
