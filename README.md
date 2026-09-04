@@ -133,13 +133,20 @@ global held at the time.
 the other two in place. Where two commands used to be needed to clear a stray key (`wh set ap` to
 put it in a keyset, then `wh keyset remove` to take it back out), one now does it directly: `wh
 keyset remove ap --keys w` works whether `w` is in a keyset or already free. Selecting every key in
-the board's matrix (however it is spelled) destroys every keyset of that kind and moves every key to
-the base in one write. The outcome matches `RESET KEYSETS` in the configurator; the traffic does
-not, since `RESET KEYSETS` is measured writing over each keyset's existing members only, with no
-`0xFF`/`0xFE` record for a key that was already free, while `wh` writes every selected key's
-membership unconditionally, free ones included, matching `plan`'s existing rule for `create` and
-`delete`. `remove` asks for a typed `yes` first, naming the value every key is about to move to and
-every keyset that will cease to exist; `--dry-run` never prompts, since it writes nothing.
+the board's matrix (however it is spelled) destroys every `ap` keyset and moves every key to the
+base in one write; `rt` cannot do this, since that selection always leaves no free key outside it to
+read a sensitivity from, and `rt` refuses that case rather than inventing one. Neither, for the same
+reason, can `wh keyset remove rt` reach *any* selection on a board where every key already sits in
+an rt keyset; `wh keyset delete rt <index>`, which still takes `--press`/`--release`, is the route
+there. Where an `ap` whole-board removal does go through, its outcome resembles `RESET KEYSETS` in
+the configurator (every keyset destroyed) but is not identical: `RESET KEYSETS` is measured writing
+over each keyset's existing members only, leaving an already-free key at whatever stray value it
+held, while `wh` writes every selected key including free ones, rewriting that stray value to the
+base too. The traffic differs the same way: no `0xFF`/`0xFE` record for a key that was already free
+from `RESET KEYSETS`, an unconditional one from `wh`, matching `plan`'s existing rule for `create`
+and `delete`. `remove` asks for a typed `yes` before a whole-board write, naming the value every key
+is about to move to and every keyset that will cease to exist; `--dry-run` never prompts, since it
+writes nothing.
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap

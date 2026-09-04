@@ -156,13 +156,22 @@ rather than as settings it recognises.
   from the board is not the same as no signal, and overriding it would invent a value.
 
   If there are no free keys outside the selection at all, which is `--keys all` and the only case
-  with no signal, use **`2000` (2.00mm)**. Operator's ruling. It is also the measured dominant
-  value: across every layout `0x04` read in the corpus it accounts for 3453 of them, against
-  sixteen other distinct values and no reading of `2500` ever.
+  with no signal, **for `ap`** use **`2000` (2.00mm)**. Operator's ruling. It is also the measured
+  dominant value: across every layout `0x04` read in the corpus it accounts for 3453 of them,
+  against sixteen other distinct values and no reading of `2500` ever.
 
   This is a **chosen default for one unanswerable case**, not a measurement of the board's factory
   setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
   read of either would replace this constant with a measured number.
+
+  **`rt` has no such default and refuses in the same case, ruled during review rather than at this
+  entry's first writing.** No `0x14`/`0x15` reading has ever been `2000`, and the corpus shows the
+  reset target tracking the global sensitivity at write time (`100` in `ks-delete-rt`, `200` in
+  `ks-reset-keysets`), never a fixed number, so there is no dominant value the way `2000` is for
+  `ap`. A practical consequence: `wh keyset remove rt` over a selection covering every key can never
+  succeed on a board where every key already sits in an rt keyset, since `global_rt_excluding`
+  reports `NoneOutsideAKeyset` for that selection every time. `wh keyset delete rt <index>`, which
+  still takes `--press`/`--release`, is the route on that board.
 
   **Announcement needs three cases**, since "free key(s) d left alone, already in no ap keyset"
   becomes false: removed from keyset N with its old and new value; returned to the base from a stray
@@ -173,9 +182,11 @@ rather than as settings it recognises.
   are written, rewritten and renamed to `keyset_remove_writes_a_free_key_selected_alongside_a_member`
   rather than deleted: it is the only test covering that path.
 
-  **`--keys all` becomes a full board reset**, every key to the base and every keyset destroyed,
-  which is `RESET KEYSETS` in the configurator. It half-does this today for keyset members, so this
-  widens an existing hazard rather than creating one.
+  **`--keys all` becomes a full board reset for `ap`**, every key to `2000` and every ap keyset
+  destroyed, which is `RESET KEYSETS` in the configurator. It half-does this today for keyset
+  members, so this widens an existing hazard rather than creating one. **`rt` cannot do this at
+  all**: the ruling above means a whole-board `rt` selection always hits `NoneOutsideAKeyset` and
+  always refuses, so there is no `--keys all` reset on that side.
 
   **It carries the same confirmation as `wh set ap --keys all`.** Ruled by the operator on
   2026-09-04: the two commands reach the same destruction by different routes, so guarding one and
@@ -186,10 +197,13 @@ rather than as settings it recognises.
 
   Share one implementation with 2.23 rather than writing it twice.
 
-  Shipped: both kinds, the base read excluding the reset selection, the `Split` refusal, the
-  `NoneOutsideAKeyset` fallback to `2000`, the three-case announcement, and the whole-matrix
-  confirmation reusing `crate::confirm::confirm`. `--value`, `--press` and `--release` are gone from
-  the clap variant and from the `Kind::Ap` refusal, which had nothing left to refuse and was deleted
+  Shipped: both kinds, the base read excluding the reset selection, and the `Split` refusal. The
+  `NoneOutsideAKeyset` case ships differently per kind and stays that way on purpose: `ap` falls
+  back to `2000`, `rt` refuses, so `wh keyset remove rt` has no reachable success on a whole-board
+  selection or on any board where every key is already in an rt keyset. Also shipped: the
+  three-case announcement, and the whole-matrix confirmation reusing `crate::confirm::confirm`.
+  `--value`, `--press` and `--release` are gone from the clap variant and from the `Kind::Ap`
+  refusal, which had nothing left to refuse and was deleted
   with them.
 
 - [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**

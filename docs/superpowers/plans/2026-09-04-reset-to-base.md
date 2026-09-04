@@ -282,6 +282,14 @@ git commit -m "[feat] - Add the shared typed confirmation for whole-board writes
 
 ### Task 3: `wh keyset remove` resets to the base
 
+> Execution note, added during review and left here rather than edited into the brief above: this
+> plan is a point-in-time record of what was asked for, not of what shipped. Two things below
+> measured differently: `keyset_remove_writes_nothing_for_a_key_already_at_the_base`, named in Step
+> 1's test 2, does not stay empty, one membership frame is always sent; it was renamed and rewritten
+> to match. `rt`'s `NoneOutsideAKeyset` case does not use the `Um(2000)` fallback this brief
+> describes for both kinds, it refuses instead, since no rapid trigger sensitivity has ever measured
+> `2000`. See `docs/tasks.md` 2.22 for the shipped behaviour and why.
+
 **Files:**
 - Modify: `crates/wh-cli/src/cli.rs`, the `KeysetWhat::Remove` variant
 - Modify: `crates/wh-cli/src/keyset.rs`, `remove` and `announce_remove`

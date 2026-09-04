@@ -369,7 +369,9 @@ fn remove_split_message(what: &str, counts: &[(Um, usize)]) -> String {
 }
 
 /// A contradictory reading from the board is not the same as no reading: overriding it would
-/// invent a value nobody chose, so this refuses rather than falling back to `NO_SIGNAL_BASE`.
+/// invent a value nobody chose. Shared by both kinds: `remove_base_ap` refuses this and falls back
+/// to `NO_SIGNAL_BASE` only in the separate no-signal case; `remove_base_rt` refuses both here and
+/// there, since it has no fallback to reach for.
 fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
     let parts: Vec<String> = shown
         .iter()
@@ -943,6 +945,53 @@ mod tests {
         assert!(msg.contains("2 key(s) at 2.00mm"), "got: {msg}");
         assert!(msg.contains("1 key(s) at 1.00mm"), "got: {msg}");
         assert!(msg.contains("pass --value to say which"), "got: {msg}");
+    }
+
+    // -- confirm_whole_board_remove: the last guard before a whole-board write --
+
+    /// The prompt names the value every key is about to move to, not only which keysets are lost:
+    /// a board with live keysets still needs the value said, since that is what actually moves on
+    /// every key, keyset members or not. Pins both halves so a rewrite that dropped the value
+    /// clause, keeping only the keyset clause, fails here rather than passing every other test.
+    #[test]
+    fn confirm_whole_board_remove_names_the_value_and_the_keysets_lost() {
+        let sets = [ks(1, &[0x1A]), ks(3, &[0x04])];
+        let mut out = Vec::new();
+        confirm_whole_board_remove(
+            &mut out,
+            Kind::Ap,
+            &sets,
+            Target::Ap(Um(2000)),
+            &mut "yes\n".as_bytes(),
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("every key moves to 2.00mm"), "got: {text}");
+        assert!(
+            text.contains("ap keyset(s) 1, 3 will cease to exist"),
+            "got: {text}"
+        );
+    }
+
+    /// The branch finding 5 named directly: a whole-board selection with no live keysets of the
+    /// kind still moves every key to an invented value, `NO_SIGNAL_BASE` on a board of free keys
+    /// that disagree with it, so the value clause is the only warning the operator gets and must
+    /// still fire. Also pins the "no keysets exist to lose" wording, which must not read as though
+    /// nothing is about to happen.
+    #[test]
+    fn confirm_whole_board_remove_names_the_value_when_no_keysets_exist() {
+        let mut out = Vec::new();
+        confirm_whole_board_remove(
+            &mut out,
+            Kind::Ap,
+            &[],
+            Target::Ap(Um(1800)),
+            &mut "yes\n".as_bytes(),
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("every key moves to 1.80mm"), "got: {text}");
+        assert!(text.contains("no ap keysets exist to lose"), "got: {text}");
     }
 
     // -- verify_write: a membership-drift acceptance case --
