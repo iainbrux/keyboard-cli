@@ -147,8 +147,7 @@ leaves every keyset's membership as it is only when one keyset already holds eve
 board (the value written still changes); on any board where that is not so, including a board
 where every key is already free, it creates one new keyset holding every key, and every keyset
 that existed before ends with no members. See `docs/keysets.md`, "Changing a value over a selection
-that is not exactly one keyset", for
-what evidence supports each shape.
+that is not exactly one keyset", for what evidence supports each shape.
 
 Manage stored groups:
 
@@ -347,6 +346,10 @@ sensitivities and different keysets on the same day. Nothing here has been check
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
+- **`wh keyset remove`, both kinds.** A new write path. Its frames match the vendor's own, measured
+  in `ks-remove-one-key` and `ks-remove-one-rt`, but no `wh keyset remove` has been sent to a board.
+- **`wh set ap` allocating a keyset for free keys.** The membership record it now writes on a
+  selection where every key is free has never been sent to a board either.
 - If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
   packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
   failure among them can only land between keys, never inside one key's own group; a split's

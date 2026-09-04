@@ -335,7 +335,7 @@ Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
   `wh-proto`'s own `MAX_WIRE_INDEX = 3` bound and the vendor UI showing four profile slots, not on
   having selected profiles 2 and 3 on the wire and watched them succeed.
 - Select measurably takes roughly 120 times as long as a read (from the selects above, which
-  round-trip in 122 to 141ms against 0.5 to 1.1ms for a read); a caller doing both in sequence
+  round-trip in 122 to 141ms against 0.30 to 1.10ms for a read); a caller doing both in sequence
   should not assume they cost the same.
 
 - **Which profile a capture was taken on is usually not in the capture.** Only five of the 36 files

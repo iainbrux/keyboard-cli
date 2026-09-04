@@ -2,12 +2,16 @@
 
 How the vendor configurator creates, values and deletes a keyset, and what the global rapid trigger
 switch does, measured on 2026-08-29 against a real K-001 running firmware `App_V1.1.046000`.
-Twenty-two keyset capture scenarios across four sittings, each changing one thing.
+Twenty-three keyset capture scenarios across four sittings, each changing one thing.
 
 This document is the evidence base for task 2.4. It is reliable about frame shapes and less reliable
-about board state: only five of the 36 captures read layouts `0xFF` or `0xFE` at all, and only one
-of those, `custom-value-nudge-after-restore` at 22:25, falls inside the keyset sitting. Almost every
-statement below about which keyset a key was in rests on that single read. Each claim says whether
+about board state: only six of the 36 captures carry a read of layouts `0xFF` or `0xFE` at all, and
+only two of those fall inside the keyset sitting. Five carry an outbound read request:
+`initial-load`, `profile-switch`, `remap-matrix-read`, `custom-value-nudge-after-restore` at 22:25
+and `layout-16-by-profile`. The sixth is `ks-create-rt-2` at 22:08, whose replies contain a complete
+68-key read of both layouts inside its 415-frame inbound-only window; its outbound half was never
+recorded, so a search for read requests misses it. Most statements below about which keyset a key
+was in rest on those two in-sitting reads. Each claim says whether
 it is measured or inferred, and a verification pass on 2026-09-03 rewrote the ones that had it
 wrong.
 
@@ -21,17 +25,17 @@ Two per-key layouts hold membership, and they are **independent groupings over t
 | `0xFE` | rapid trigger keyset | `0`, `1`, `2` |
 
 `0` means the key is in no keyset of that kind. Measured over the 36 files: written values are
-`0, 3, 5, 6, 7, 8, 9` and read values are `0, 1, 2, 4, 5, 6, 7, 9`. An earlier version of this table
+`0, 3, 5, 6, 7, 8, 9` and read values are `0, 1, 2, 3, 4, 5, 6, 7, 9`. An earlier version of this table
 said `7` and `8` were never written; the 2026-09-04 captures write both. The read values above `5`
 all come from `layout-16-by-profile`, the only capture that reads membership on profile 1 after the
 2026-08-29 sitting.
 
-**A key can sit in one of each at the same time. Inferred, not read.** No capture reads a key with
-both `0xFF != 0` and `0xFE != 0`. What the 22:25 read measures is the two layouts differing over
-the same keys: `u` and `i` at `0xFF=0`, `0xFE=1`, while `o` and `p` sat at `0xFF=5`, `0xFE=0`. Dual
-membership is inferable for `w` from a window rather than a read: `rt-on-w-0.5` wrote `w 0xFE=1` at
-22:46 and `rt-off-w` cleared it at 22:54, and the reads either side of that window both show
-`w 0xFF=1` with no `0xFF` write in between.
+**A key can sit in one of each at the same time. Measured.** `ks-create-rt-2`'s 68-key read at 22:08
+returns `u` and `i` holding `0xFF = 3` and `0xFE = 1` at once. An earlier revision of this paragraph
+said no capture reads a key with both non-zero and called dual membership an inference; that was a
+statement about outbound read requests, and this capture has none. The same read shows the two
+layouts grouping differently over the same board: `0xFF` as `1={a,d,s,w} 2={esc} 3={i,o,p,u}
+4={j,k}` against `0xFE` as `1={i,u} 2={m}`.
 
 Independence was confirmed three ways, one fewer than an earlier draft claimed:
 
@@ -74,8 +78,9 @@ ascending index order with deleted indices simply absent.
 `o,p` to `5`; `ks-delete-ap-1` `u,i,o,p` to `0`; `ks-steal-ap` `a,g` to `6`; `ks-steal-equal-value`
 `h,j` to `9`; and from 2026-09-04, `ks-value-over-all` the whole board to `3`,
 `ks-value-five-members` `w,a,s,d,g` to `3`, `ks-consume-whole` `w,a,s,d,g` to `7`, `ks-span-two`
-`w,u,i,a` to `8`, `ks-remove-one-key` `j` to `0` and `ks-remove-to-empty` `k` and `l` to `0`. An earlier version of this paragraph said `7` and `8` were never written; the
-2026-09-04 captures write both, allocated normally as max plus one. The last captured allocation
+`w,u,i,a` to `8`, `ks-remove-one-key` `j` to `0` and `ks-remove-to-empty` `k` and `l` to `0`. An
+earlier version of this paragraph said `7` and `8` were never written; the 2026-09-04 captures
+write both, allocated normally as max plus one. The last captured allocation
 before `h,j` took `9` was `6`, and the three captures in between write no `0xFF` record at all. From
 the frames alone the corpus shows a maximum of `6` followed by an allocation of `9`, which
 contradicts max plus one. The earlier draft rescued it by asserting a pre-state of "up to 8" that no
@@ -161,11 +166,12 @@ matching what the board read back at the time. Grouped by capture group:
 |---|---|---|
 | 2026-08-28, Phase 1 | `0`, 1806 records over 8 files | `0`, 38 records over 5 files |
 | 2026-08-29 and `custom-value-nudge-after-restore`, all profile 1 | `100`, 2884 records over 14 files | `100`, 580 records over 14 files |
-| 2026-09-04 keyset captures, all profile 2 | `0`, 3132 records over 7 files | `0`, 412 records over 7 files |
+| 2026-09-04 keyset captures, all profile 2 | `0`, 3270 records over 8 files | `0`, 414 records over 8 files |
 
 Where a file both reads and writes them, the written value equals the value it read for that key. Of
-the 34 captures that predate `layout-16-by-profile` and `ks-remove-one-rt`, 25 both read and write them, four read without
-writing, four do neither, and `ks-create-ap-1` writes eight records of `100` while containing no read
+the 34 captures that predate `layout-16-by-profile` and `ks-remove-one-rt`, 25 both read and write
+them, four read without writing, four do neither, and `ks-create-ap-1` writes eight records of
+`100` while containing no read
 frames at all. Hard-coding either value would write it over the other. An earlier draft said they are
 written `100` in every template, which is false for three of the seven rows above.
 
@@ -173,7 +179,7 @@ written `100` in every template, which is false for three of the seven rows abov
 
 ### The MODE promotion, and what is actually measured about it
 
-Searching all 34 files for a MODE record written non-zero over a usage whose most recent read in the
+Searching all 36 files for a MODE record written non-zero over a usage whose most recent read in the
 same file was `0`, there are exactly three:
 
 ```
@@ -453,7 +459,8 @@ point keysets and two rapid trigger ones still present after that restore.
 actuation point keyset is created membership first, values second, and that rapid trigger keysets
 reverse it. Both were readings of a single capture in which the members were already at the global
 value, so the create wrote membership alone and the value change was a separate user action seconds
-later. Measured over the corpus: **values precede membership in 15 captures**, for both layouts.
+later. Measured over the corpus: **values precede membership in 16 of the 19 captures that
+write it**, for both layouts.
 Three do not, and all three are explained rather than counter-examples. `ks-create-ap-1` and
 `ks-create-ap-3` open with membership at frame 0, with their value writes 6.8 and 4.4 seconds later,
 which the timestamps support as separate user actions. `ks-steal-equal-value` writes membership at
@@ -469,7 +476,7 @@ been wrong: it would have left the keyset's sensitivity in place, where the vend
 when it read 0.20mm. The reset target tracks the global rather than being a constant.
 
 **Layouts `0x16` and `0x17` are not the global rapid trigger sensitivity**, and they are not always
-zero either. They were recorded as "never once observed non-zero" across 1858 records. Every value
+zero either. They were recorded as "never once observed non-zero" across 1806 records. Every value
 seen for them in a Phase 1 capture is `0` and every value seen in a keyset-sitting capture is `100`,
 and they stayed at `100` through two global sensitivity changes that moved `0x14`/`0x15` to `150`
 and then `200`. What changed the value is **not** measured. The only capture of a `0` to `100`
@@ -540,7 +547,8 @@ on one side and corroborated on the other, and the two sides differ in every val
 
 **Profile 1's values were unchanged from 2026-08-29; its membership was not.** Every value in the
 list above matches where the 2026-08-29 sitting left it. The keysets do not: that sitting ended at
-indices `{1, 2, 4, 5, 6, 9}` and profile 1 read back `{2, 4, 5, 6, 7, 9}`, keyset 1 gone, 7 appeared,
+indices `{1, 2, 4, 5, 6, 9}`, reconstructed from the 22:25 read plus the two allocations after
+it rather than read directly, and profile 1 read back `{2, 4, 5, 6, 7, 9}`, keyset 1 gone, 7 appeared,
 5 holding `w,s,x` rather than what it held. Something changed profile 1's membership between the two
 dates and nothing in the corpus records it. An earlier revision of this section called profile 1
 "intact", which is true of its values and false of its keysets.
@@ -570,14 +578,22 @@ all 68 keys before every single-key change, which is why two removals cost 142 f
 exactly 30 read-request frames carrying 68 distinct usages for each of `0x04`, `0x14`, `0x15`,
 `0x16`, `0x17` and `0x08`, and no other layout.
 
-**Membership is not in it.** Corpus wide, an outbound read request naming `0xFF` or `0xFE` appears
-in exactly five of the 36 captures, ten frames in each: `initial-load`, `profile-switch`,
-`remap-matrix-read`, `custom-value-nudge-after-restore` and `layout-16-by-profile`. All five are
-connect, profile-switch or re-read scenarios. **None of the 22 keyset captures reads membership once**, including every create, delete,
-steal, value change and removal. The configurator's picture of which keys are in which keyset comes
-from a connect and lives in the browser for the rest of the session.
+**Membership is not in that sweep.** None of the three removal captures reads `0xFF` or `0xFE` at
+any point, and the same holds for 22 of the 23 keyset captures.
 
-This is the opposite of `wh`, which reads membership live on every command, and it is why the
+**The exception matters and an earlier revision of this section denied it.** `ks-create-rt-2` is a
+keyset capture and it does carry a whole-board membership read, 68 records of each layout, after its
+own nine write frames. Only the outbound request half is missing from the file, so a search for read
+requests finds nothing while the replies sit there in full. This section previously said "none of
+the 22 keyset captures reads membership once", which is false of the device and true only of what
+the shim recorded.
+
+So the honest claim is narrower than the heading suggests: **the configurator does not re-read
+membership before or during a single-key value change**, measured over the three removal captures
+and the value changes. Whether it re-reads at other moments is not settled, and `ks-create-rt-2`
+shows it doing so at least once mid-sitting.
+
+That still differs from `wh`, which reads membership live on every command, and it is still why the
 configurator can show a keyset list that no longer matches the board while `wh` cannot.
 
 ## SEPARATE PRESS AND RELEASE is not a stored bit
@@ -632,11 +648,15 @@ all, and one of them, `profile-switch`, is profile 2 despite being a Phase 1 cap
 aggregated across the whole corpus mixes profiles, which is fine for framing and checksum counts and
 misleading for values.
 
-**One file is half-captured.** `ks-create-rt-2` holds 408 consecutive inbound frames with no
-outbound counterpart, the only unbalanced file in the corpus. Its nine write frames all sit outside
-that window, so nothing recorded here depends on it, but any statement of the form "every write in
-the corpus" is blind to whatever the vendor sent during it. `capture/README.md` warns about the
-mirror failure, writes logged with no replies, and not about this one.
+**One file is half-captured, and it is load-bearing.** `ks-create-rt-2` runs 487 inbound frames
+against 73 outbound, a difference of 414, in one run of 415 consecutive frames from index 139. It is
+the only unbalanced file in the corpus. An earlier revision said "nothing recorded here depends on
+it", which was wrong twice over: those replies carry a complete 68-key read of both membership
+layouts, which is the second in-sitting membership read this document rests on and the direct
+measurement of dual `0xFF`/`0xFE` membership. What is genuinely missing is the request half, so any
+search for read requests silently skips it, and any statement of the form "every write in the
+corpus" is blind to whatever the vendor sent during the window. `capture/README.md` warns about the
+mirror failure, writes logged with no replies, and now about this one too.
 
 Read requests and writes are separable by the `cmd 0x23` payload's lead byte, which matters when a
 write carries a genuinely zero value. Counting **outbound** `cmd 0x23` frames only, since every

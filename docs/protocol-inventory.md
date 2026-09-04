@@ -64,7 +64,7 @@ except `0x00`, where including them would have added every padding slot in the s
 | `0x17` | 1806 | 1 | Same as `0x16`, and always written with it |
 | `0x19` | 680 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 412 | 2 | rapid trigger keyset membership, an index and not a boolean: only `0` and `1` in this ten-capture session, reaching `2` only in the wider 36-capture corpus, see `docs/keysets.md`, untouched by edits within a set |
-| `0xff` | 408 | 3 | read 210 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 36-capture corpus |
+| `0xff` | 408 | 3 | read 204 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 36-capture corpus |
 
 The counts above are what these ten captured scenarios happened to exercise, not the fields'
 possible ranges: layout `0x04` (actuation point) only ever took `0, 300, 850, 1200, 1700, 2000,

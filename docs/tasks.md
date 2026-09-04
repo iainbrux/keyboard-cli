@@ -42,8 +42,9 @@ rather than as settings it recognises.
   gap closed everywhere else a mode value's rapid trigger state gets named, including `wh-cli`'s
   `keyset.rs` `mode_fault`, `raw_mode_rt_on`'s eventual successor once `wh set ap` moved onto
   `keyset::plan`.
-- [x] ~~**2.4 Write keyset membership.**~~ `docs/keysets.md` specified it completely from fifteen
-  capture scenarios: one write template shared by every operation, values always before membership,
+- [x] ~~**2.4 Write keyset membership.**~~ `docs/keysets.md` specified it completely from the
+  fifteen capture scenarios available at the time: one write template shared by every operation,
+  values before membership (three exceptions measured later),
   membership one record per frame and always last, non-owned layouts rewritten at each key's current
   value, the whole template written only when an owned value differs, max-plus-one allocation from
   live membership with no gap reuse, and a new keyset taking the global value rather than its
@@ -408,12 +409,12 @@ rather than as settings it recognises.
 
 ### Protocol gaps
 
-- [ ] **Command `0x18`.** Suspected RGB or LED control, 10 request and reply pairs across five files. `0x2c` was resolved on
-  2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
+- [ ] **Command `0x18`.** Suspected RGB or LED control, 10 request and reply pairs across five
+  files. `0x2c` was resolved on 2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
 - [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
   by anything in Phase 1.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
-  observed non-zero across 1858 records. That held for Phase 1 only: they read `100` on every key of
+  observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every key of
   profile 1 from 2026-08-29 onward, and `0` on every key of profile 2, measured directly in
   `layout-16-by-profile`. They are not the global rapid trigger sensitivity, measured 2026-08-29:
   they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.
