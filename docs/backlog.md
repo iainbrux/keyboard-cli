@@ -448,7 +448,7 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
 - `0xFE` is the **rapid trigger keyset membership**, measured from write evidence in this very
   session: 424 records in total, of which the write evidence is two request and reply pairs, `1` on
   a keyset create and `0` on a delete. `0xFF` is the **actuation point keyset index**, read `210` times and written
-  `0` in this ten-capture session; host-written and measured directly only in the wider 27-capture
+  `0` in this ten-capture session; host-written and measured directly only in the wider 36-capture
   corpus. Both are indices, not booleans. See the keyset entry above and `docs/keysets.md`.
 
 ### One key identity still inferred

@@ -154,10 +154,10 @@ parsing them as layout records produces nonsense).
 | `0x08` | 2252 | 5 | Mode (touch mode nibble plus advanced-key nibble). Modelled and used by `wh` |
 | `0x14` | 1858 | 3 | RT press depth, micrometres. Modelled and used by `wh` |
 | `0x15` | 1858 | 4 | RT release depth, micrometres. Modelled and used by `wh` |
-| `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Reads `100` on every key of profile 1 and `0` on every key of profile 2, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
+| `0x16` | 1858 | 1 | Recorded as always `0` from a corpus with no keysets in it. Read `0` on profile 1 throughout 2026-08-28, `100` on profile 1 from 2026-08-29 onward, and `0` in every 2026-09-04 keyset capture, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
 | `0x17` | 1858 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
 | `0x19` | 700 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 27-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
+| `0xfe` | 424 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 36-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
 | `0xff` | 420 | 3 | Actuation point keyset index, host-written, measured to `9`. Recorded here as read-but-never-written from a corpus that had never created a keyset. Read and used by `wh` (Phase 2) |
 
 
@@ -290,7 +290,7 @@ rather than fixed-width:
 | `p[25]` | `0x10` | Firmware string length, 16 |
 | `p[26..42]` | `App_V1.1.046000\0` | Firmware string, NUL-terminated |
 | `p[43..54]` | `Aug 20 2026` | Build date, NUL-terminated |
-| `p[55..60]` | `ff ff ff ff ff` | Padding |
+| `p[55..60]` | not constant | Trailing bytes. `initial-load` and `custom-value-nudge-after-restore` give `ff ff ff ff ff`; `remap-matrix-read` gives `00 00 00 00 ff` over the same device, firmware and session, so this is not a fixed pad |
 
 The firmware length and serial length happened to both be `0x10` on the measured device; nothing
 guarantees that on a different unit, which is why the parser reads the length byte rather than
@@ -324,13 +324,22 @@ Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
 - Sending argument `0xFF` reads the current profile. The reply echoes the sub-order and returns a
   zero-based index in `payload[2]`.
 - Sending a zero-based index selects that profile; the reply echoes the same index back, the same
-  shape as a read. The corpus contains exactly two selects, to index `1` and index `0`
-  (`captures/profile-switch.jsonl`), not one for each of the board's four profiles. That `0x00` to
+  shape as a read. The corpus contains four selects across two files, to index `1` then `0` in
+  `captures/profile-switch.jsonl` and index `0` then `1` in `captures/layout-16-by-profile.jsonl`,
+  never one for each of the board's four profiles. That `0x00` to
   `0x03` is the full valid range is an extrapolation, not a measurement of all four: it rests on
   `wh-proto`'s own `MAX_WIRE_INDEX = 3` bound and the vendor UI showing four profile slots, not on
   having selected profiles 2 and 3 on the wire and watched them succeed.
-- Select measurably takes roughly 120 times as long as a read (task 19b group B measurement, from
-  the same two selects above); a caller doing both in sequence should not assume they cost the same.
+- Select measurably takes roughly 120 times as long as a read (from the selects above, which
+  round-trip in 122 to 141ms against 0.5 to 1.1ms for a read); a caller doing both in sequence
+  should not assume they cost the same.
+
+- **Which profile a capture was taken on is usually not in the capture.** Only five of the 36 files
+  record it: three read it (`initial-load`, `remap-matrix-read` and `custom-value-nudge-after-restore`,
+  all answered index `0`) and two select it. `profile-switch` selects index `1` first, so despite
+  being a Phase 1 capture every read in it is profile 2. Per-key state is per profile
+  (`docs/keysets.md`), so two captures may not be compared on values without establishing both
+  sides, and for 31 of the 36 that cannot be done from the frames.
 
 Phase 1 implemented read only. `wh profile <1-4>` (Phase 2) added select, over exactly this wire
 behaviour.
@@ -346,10 +355,11 @@ Honestly, what this corpus does not resolve:
   `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
   may be something else entirely.
 - Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. They read
-  `0` in every Phase 1 capture, then `100` on every key of profile 1 from 2026-08-29 onward,
-  including through two global sensitivity changes. They have never read non-zero on profile 2. What
-  moved them on profile 1 is not measured, and `wh` never writes them so it is not ours. Tying it to
-  a keyset existing rather than to the sitting or the firmware remains an inference.
+  `0` in every Phase 1 capture, then `100` on profile 1 from 2026-08-29 onward, including through
+  two global sensitivity changes, and `0` in every 2026-09-04 keyset capture. They have never been
+  read non-zero on profile 2. What moved them on profile 1 is not measured, and `wh` never writes
+  them so it is not ours. Tying it to a keyset existing rather than to the sitting or the firmware
+  remains an inference.
   `0x19` is still only ever `0x0000` or `0x3e2c`. `0xff` and `0xfe` are no longer open: both are
   host-written keyset indices, allocated max plus one, measured in `docs/keysets.md`.
 - Commands `0x18` and `0x2c`: unidentified at the command level, discussed above.

@@ -182,7 +182,7 @@ git commit -m "[feat] - Put free keys in a keyset when wh set ap gives them a va
 
 ---
 
-### Task 2: `wh keyset remove` for actuation point keysets
+### Task 2: `wh keyset remove`
 
 **Files:**
 - Modify: `crates/wh-cli/src/cli.rs` (the `KeysetWhat` enum, after the `Delete` variant)
@@ -192,12 +192,27 @@ git commit -m "[feat] - Put free keys in a keyset when wh set ap gives them a va
 - Test: `crates/wh-cli/tests/keyset.rs`
 
 **Interfaces:**
-- Consumes, all already present in `crates/wh-cli/src/keyset.rs`: `global_ap_or_bail<T: Transport>(s: &mut Session<T>, m: &Membership, flag: &str) -> Result<Um>`; `Target::Ap(Um)`; `describe_member(kind: Kind, plan: &keyset::WritePlan, usage: u8) -> String`; `kind_name(kind: Kind) -> &str`; `verify_write<T: Transport>(out, s, kind, op: &str, plan) -> Result<()>`; `kind_of(arg: KeysetKindArg) -> Kind`. From `wh-device`: `keyset::read_membership`, `keyset::group`, `keyset::Change::ap(Um)`, `keyset::KeysetIndex::clear(Kind)`, `keyset::plan(s, usages, change, membership) -> Result<WritePlan>`, `keyset::apply`. From `run.rs`: `resolve_keys(s, &keys, store) -> Result<Vec<u8>>`, `auto_backup(s, store, command)`, `print_frames(out, frames)`, `mm(f64) -> Result<Um>`.
-- Produces: `keyset::remove<T: Transport>(out: &mut impl Write, s: &mut Session<T>, kind: Kind, usages: &[u8], value: Option<Um>) -> Result<keyset::WritePlan>`.
+- Consumes, all already present in `crates/wh-cli/src/keyset.rs`: `global_ap_or_bail<T: Transport>(s: &mut Session<T>, m: &Membership, flag: &str) -> Result<Um>`; `global_rt_or_bail<T: Transport>(s, m, flag) -> Result<(Um, Um)>`; `Target::Ap(Um)`; `Target::Rt(Um, Um)`; `describe_member(kind: Kind, plan: &keyset::WritePlan, usage: u8) -> String`; `kind_name(kind: Kind) -> &str`; `verify_write<T: Transport>(out, s, kind, op: &str, plan) -> Result<()>`; `kind_of(arg: KeysetKindArg) -> Kind`. From `wh-device`: `keyset::read_membership`, `keyset::group`, `keyset::Change::ap(Um)`, `keyset::Change::rt_off(Um, Um)`, `keyset::KeysetIndex::clear(Kind)`, `keyset::plan(s, usages, change, membership) -> Result<WritePlan>`, `keyset::apply`. From `run.rs`: `resolve_keys(s, &keys, store) -> Result<Vec<u8>>`, `resolve_rt_override(value, press, release) -> Result<Option<(Um, Um)>>`, `auto_backup(s, store, command)`, `print_frames(out, frames)`, `mm(f64) -> Result<Um>`.
+- Produces: `keyset::remove<T: Transport>(out: &mut impl Write, s: &mut Session<T>, kind: Kind, usages: &[u8], value: Option<Um>, rt: Option<(Um, Um)>) -> Result<keyset::WritePlan>`.
 
-**Scope.** This task builds the actuation point half only. `wh keyset remove rt` must be **rejected with a clear message saying the rapid trigger case is not yet measured**, not silently accepted and not quietly treated as `remove ap`. The rapid trigger half is Task 3 and is deliberately absent from this plan until a capture exists for it, because what the removed key's MODE nibble should become is otherwise a guess.
+**Scope.** Both kinds. The rapid trigger case was unmeasured when this plan was first written and has since been captured, so there is no guard and no deferral.
 
-**What the vendor does, measured.** `docs/keysets.md`, section "Removing one key from a keyset", records `ks-remove-one-key` and `ks-remove-to-empty`. Removing `J` from a three-key keyset sends the ordinary five-step template for `J` alone, ending in one `0xFF = 0` record, and writes **nothing at all** for the members that stay. The MODE record stays at touch nibble 1: the removed key is **not** dropped to nibble 0. Removing the last member is the same five frames with no teardown, so there is no empty-keyset case to handle. `keyset::plan` with `Change::ap(base)` and `KeysetIndex::clear(Kind::Ap)` already produces exactly this.
+**What the vendor does for an actuation point keyset, measured.** `docs/keysets.md`, section "Removing one key from a keyset", records `ks-remove-one-key` and `ks-remove-to-empty`. Removing `J` from a three-key keyset sends the ordinary five-step template for `J` alone, ending in one `0xFF = 0` record, and writes **nothing at all** for the members that stay. The MODE record stays at touch nibble 1: the removed key is **not** dropped to nibble 0. Removing the last member is the same five frames with no teardown, so there is no empty-keyset case to handle. `keyset::plan` with `Change::ap(base)` and `KeysetIndex::clear(Kind::Ap)` already produces exactly this.
+
+**What the vendor does for a rapid trigger keyset, measured.** `captures/ks-remove-one-rt.jsonl`, 2026-09-04. `N` and `M` were rapid trigger keyset 1, both at MODE `0x30` (touch nibble 3) with press `300` and release `400`; the global sensitivity was `100`. Removing `N` sent five frames naming only `N`:
+
+```
+n/0x08 = 16                            MODE, touch nibble 1
+n/0x04 = 1100                          its own actuation point, rewritten unchanged
+n/0x08 = 16, n/0x14 = 100, n/0x15 = 100
+n/0x16 = 0,  n/0x17 = 0
+n/0xFE = 0
+```
+
+`M` carried no records at all. Two things follow, and the second is the one most likely to be got wrong:
+
+- **Touch nibble 1, rapid trigger off**, not nibble 2 (follow the board's global). This is the same target `ks-delete-rt`'s whole-keyset delete writes, so `Change::rt_off(press, release)` is correct and the rapid trigger branch is identical to `delete`'s.
+- **The removed key's actuation point is preserved.** `N` stayed at `1100` and did not return to the global `2000`. A rapid trigger removal does not own layout `0x04`. Reusing the actuation point branch's `Change::ap` here would reset it, which is why Step 7 pins this with its own test rather than a comment.
 
 - [ ] **Step 1: Add the clap variant**
 
@@ -209,18 +224,26 @@ In `crates/wh-cli/src/cli.rs`, add to `enum KeysetWhat` immediately after `Delet
         kind: KeysetKindArg,
         #[command(flatten)]
         keys: KeysArg,
-        /// Value in mm to return the keys to: the actuation point they will hold once they are
-        /// in no keyset. Defaults to the board's global, and is required when the keys outside
-        /// every keyset disagree on it.
+        /// Value in mm to return the keys to: the actuation point for an ap keyset, or the rapid
+        /// trigger base for an rt keyset. Defaults to the board's global, and is required when
+        /// the keys outside every keyset disagree on it.
         #[arg(long)]
         value: Option<f64>,
+        /// Press sensitivity in mm to return the keys to, overriding --value's press half.
+        /// Refused on an ap keyset; pass --value instead.
+        #[arg(long)]
+        press: Option<f64>,
+        /// Release sensitivity in mm to return the keys to, overriding --value's release half.
+        /// Refused on an ap keyset; pass --value instead.
+        #[arg(long)]
+        release: Option<f64>,
         /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,
     },
 ```
 
-There is deliberately no `--press` or `--release` here, unlike `Create`, `Set` and `Delete`: this task does not implement the rapid trigger case, and offering the flags would imply it does.
+The flags mirror `Delete`'s exactly, including that `--press`/`--release` on an `ap` keyset are refused up front in the dispatch arm rather than silently ignored.
 
 - [ ] **Step 2: Write the failing end-to-end test**
 
@@ -320,15 +343,8 @@ pub(crate) fn remove<T: Transport>(
     kind: Kind,
     usages: &[u8],
     value: Option<Um>,
+    rt: Option<(Um, Um)>,
 ) -> Result<keyset::WritePlan> {
-    if kind != Kind::Ap {
-        bail!(
-            "wh keyset remove supports actuation point keysets only: what a removed key's mode \
-             nibble should become for rapid trigger is not measured, and guessing it could turn \
-             rapid trigger off on a key that should keep it. Use `wh keyset delete rt <index>` \
-             to remove the whole keyset"
-        );
-    }
     let m = keyset::read_membership(s, kind)?;
     let sets = keyset::group(&m);
     let leaving: Vec<(u16, u8)> = usages
@@ -341,14 +357,30 @@ pub(crate) fn remove<T: Transport>(
             kind_name(kind)
         );
     }
-    let v = match value {
-        Some(v) => v,
-        None => global_ap_or_bail(s, &m, "--value")?,
+    // The same two branches `delete` uses, because the vendor sends the same template for a
+    // single-key removal as for a whole-keyset delete. Rt writes touch nibble 1 and the global
+    // sensitivity, and deliberately does not touch layout 0x04: the removed key keeps its own
+    // actuation point (`ks-remove-one-rt`).
+    let (change, target) = match kind {
+        Kind::Ap => {
+            let v = match value {
+                Some(v) => v,
+                None => global_ap_or_bail(s, &m, "--value")?,
+            };
+            (keyset::Change::ap(v), Target::Ap(v))
+        }
+        Kind::Rt => {
+            let (p, r) = match rt {
+                Some(v) => v,
+                None => global_rt_or_bail(s, &m, "--press and --release")?,
+            };
+            (keyset::Change::rt_off(p, r), Target::Rt(p, r))
+        }
     };
     let moving: Vec<u8> = leaving.iter().map(|&(_, u)| u).collect();
     let cleared = keyset::KeysetIndex::clear(kind);
-    let plan = keyset::plan(s, &moving, &keyset::Change::ap(v), Some(cleared))?;
-    announce_remove(out, kind, &leaving, Target::Ap(v), &plan)?;
+    let plan = keyset::plan(s, &moving, &change, Some(cleared))?;
+    announce_remove(out, kind, &leaving, target, &plan)?;
     Ok(plan)
 }
 ```
@@ -375,14 +407,28 @@ Take each key's current value from `plan.before()`, the same source `announce_de
 In `crates/wh-cli/src/run.rs`, beside the `KeysetWhat::Delete` arm, following its exact shape:
 
 ```rust
-        KeysetWhat::Remove { kind, keys, value, dry_run } => {
+        KeysetWhat::Remove { kind, keys, value, press, release, dry_run } => {
             let kind = crate::keyset::kind_of(kind);
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset remove rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
             let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::remove(&mut out, s, kind, &usages, value)?;
+                let plan = crate::keyset::remove(&mut out, s, kind, &usages, value, rt)?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
@@ -402,13 +448,14 @@ Expected: PASS.
 
 Each must assert a value or an exact message, never merely that an error occurred:
 
-1. `keyset_remove_rt_is_refused_as_unmeasured`: `wh keyset remove rt --keys n` exits non-zero and stderr contains `not measured`. Without this, the rapid trigger guard could be deleted and nothing would notice.
-2. `keyset_remove_refuses_keys_that_are_in_no_keyset`: every named key free, exits non-zero, stderr contains `nothing to remove`.
-3. `keyset_remove_leaves_the_keyset_alive_when_others_remain`: after removing one of three, `wh keyset list ap` over a board scripted to reflect the result still reports the keyset with its two remaining members and its value. This is the assertion that a removal did not collapse a keyset it should not have.
+1. `keyset_remove_rt_turns_rapid_trigger_off_and_keeps_the_actuation_point`: the measured `ks-remove-one-rt` shape. Board: `w` and `a` are rt keyset 1 at press `300` release `400`, both MODE `0x30`; `w`'s own actuation point is `1100` and the global sensitivity is `100`. `wh keyset remove rt --keys w --dry-run` must produce, by exact full-sequence frame equality, MODE `0x10`, AP **`1100`**, press `100`, release `100`, then `w/0xFE = 0` alone. **The AP record is the point of this test.** Assert `1100` explicitly: a rewrite that reused the actuation point branch would send the global `2000` there and reset a value the vendor preserves, and every other record in the frame would still look right.
+2. `keyset_remove_ap_refuses_press_and_release`: `wh keyset remove ap --keys w --press 0.10` exits non-zero and stderr names `--press`, mirroring `keyset_delete_ap_refuses_press_alone`.
+3. `keyset_remove_refuses_keys_that_are_in_no_keyset`: every named key free, exits non-zero, stderr contains `nothing to remove`.
+4. `keyset_remove_leaves_the_keyset_alive_when_others_remain`: after removing one of three, `wh keyset list ap` over a board scripted to reflect the result still reports the keyset with its two remaining members and its value. This is the assertion that a removal did not collapse a keyset it should not have.
 
 - [ ] **Step 8: Prove each test fails when the code is wrong**
 
-For each of the four tests, mutate the specific behaviour it claims to check, run it, record the failure message, restore. Suggested mutations: make `remove` pass `usages` rather than `moving` to `plan`; drop the `KeysetIndex::clear` to `None`; delete the `Kind::Ap` guard; make `leaving.is_empty()` return `Ok` instead of bailing. **Name each mutation and its resulting failure in your report.**
+For each of the five tests, mutate the specific behaviour it claims to check, run it, record the failure message, restore. Suggested mutations: make `remove` pass `usages` rather than `moving` to `plan`; drop the `KeysetIndex::clear` to `None`; make the `Kind::Rt` arm use `Change::ap` instead of `Change::rt_off`, which must fail the preserved-actuation-point assertion; make `leaving.is_empty()` return `Ok` instead of bailing. **Name each mutation and its resulting failure in your report.**
 
 - [ ] **Step 9: Run the three gates**
 
@@ -420,20 +467,14 @@ cargo fmt --all --check
 
 - [ ] **Step 10: Update the docs**
 
-- `README.md`: add `wh keyset remove` to the command reference beside `wh keyset delete`, saying it takes named keys out and returns them to the global value, and that it is actuation point only for now because the rapid trigger case is unmeasured.
-- `docs/tasks.md`: mark 2.21 partially done rather than closed. Record that the actuation point half shipped and matches the measured vendor template, and that the rapid trigger half waits on a capture of the vendor taking one key out of a rapid trigger keyset.
+- `README.md`: add `wh keyset remove` to the command reference beside `wh keyset delete`, saying it takes named keys out of their keyset and returns them to the board's global value, for both kinds.
+- `docs/keysets.md`: extend the "Removing one key from a keyset" section with the rapid trigger measurement from `ks-remove-one-rt`, quoted in the Scope block above. Say plainly that the removed key goes to touch nibble 1 (rapid trigger off) rather than nibble 2 (following the global), and that its own actuation point is preserved. Both are measurements, not inferences.
+- `docs/tasks.md`: close 2.21, recording that both kinds shipped and that the rapid trigger behaviour it was waiting on is now measured.
 
 - [ ] **Step 11: Commit**
 
 ```bash
 git add -A
-git commit -m "[feat] - Add wh keyset remove for actuation point keysets"
+git commit -m "[feat] - Add wh keyset remove to take keys out of a keyset"
 ```
 
----
-
-## Not yet planned: the rapid trigger half of 2.21
-
-Deliberately absent. `wh keyset remove rt` needs to know what the removed key's MODE touch nibble becomes, and the corpus does not contain the vendor taking a single key out of a rapid trigger keyset. Two readings are both plausible and they differ in behaviour: nibble 1, rapid trigger off, matching `ks-delete-rt`'s whole-keyset delete; or nibble 2, rapid trigger following the board's global settings, matching the rule that a key outside a keyset follows the base.
-
-A capture of that operation settles it in one step. When it exists, this plan gains Task 3 and Task 2's guard comes out. Until then the guard is the honest behaviour, and this section is the reason it is there.
