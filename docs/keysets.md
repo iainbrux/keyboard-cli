@@ -571,7 +571,7 @@ in the frames at all, so most such pairs cannot be established from the corpus a
 records that every hardware result taken on 2026-09-04 was on profile 2, which rests on the
 operator's note rather than on a capture.
 
-## The configurator does not re-read membership during a value change
+## The configurator does not re-read membership before or during a single-key value change
 
 Measured across all three 2026-09-04 removal captures. The configurator re-reads six layouts for
 all 68 keys before every single-key change, which is why two removals cost 142 frames. A sweep is
@@ -582,28 +582,29 @@ exactly 30 read-request frames carrying 68 distinct usages for each of `0x04`, `
 any point, and the same holds for 22 of the 23 keyset captures.
 
 **The exception matters and an earlier revision of this section denied it.** `ks-create-rt-2` is a
-keyset capture and it does carry a whole-board membership read, 68 records of each layout, after its
-own nine write frames. Only the outbound request half is missing from the file, so a search for read
-requests finds nothing while the replies sit there in full. This section previously said "none of
-the 22 keyset captures reads membership once", which is false of the device and true only of what
-the shim recorded.
+keyset capture and it does carry a whole-board membership read, 68 records of each layout, after
+its own nine write frames. Only the outbound request half is missing from the file, so a search for
+read requests finds nothing while the replies sit there in full. This section previously said "none
+of the 22 keyset captures reads membership once", which is false of the device and true only of
+what the shim recorded.
 
 **Two structural facts make "read" safe despite the missing request half.** Every `cmd 0x23` frame
 in the corpus carries one of exactly two length bytes, 57 or 5. Length 5 occurs 408 times, all
 inbound, all inside this window, while every write echo in this same file is length 57, so these
 frames cannot be echoes of any write shape the corpus records. And the read itself begins 52.8
 seconds after the last write, at frame 146, immediately after six inbound replies at frames 140 to
-145 whose types are connect-shaped: a `0x81` device-info reply, a `0x80` profile reply and three
-`0xab` matrix replies. That is not the identical sequence that opens `initial-load`,
-`custom-value-nudge-after-restore` and `remap-matrix-read`, which carry two `0x81` and no `0xa9`,
-so the reply types support a reconnect while the exact sequence differs. The request shape that
-would produce a length-5 reply is unattested anywhere in the corpus.
+145: `0x81` device info, `0x80` profile, `0xa9`, then three `0xab` matrix rows. Five of those six
+are connect-shaped; the `0xa9` is the one that is not. The three captures that open with a connect,
+`initial-load`, `custom-value-nudge-after-restore` and `remap-matrix-read`, all open with the
+replies `0x81`, `0x81`, `0x80`, `0xab`, `0xab`, `0xab`: two `0x81` and no `0xa9`. Each of those
+files does carry `0xa9` replies later, after its first `cmd 0x23` frame. So the reply types support
+a reconnect while the exact sequence differs. The request shape that would produce a length-5 reply
+is unattested anywhere in the corpus.
 
 So the claim this section can support is the narrow one in its heading: **the configurator does not
 re-read membership before or during a single-key value change**, measured over the three removal
-captures
-and the value changes. Whether it re-reads at other moments is not settled, and `ks-create-rt-2`
-shows it doing so at least once mid-sitting.
+captures and the value changes and the value changes. Whether it re-reads at other moments is not
+settled, and `ks-create-rt-2` shows it doing so at least once mid-sitting.
 
 That still differs from `wh`, which reads membership live on every command, and it is still why the
 configurator can show a keyset list that no longer matches the board while `wh` cannot.
