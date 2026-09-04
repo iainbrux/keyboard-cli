@@ -115,11 +115,14 @@ rather than as settings it recognises.
   `0xFE`) for the named keys only, writes them back to the base value, and leaves the rest of the
   keyset alone.
 
-  Two things are unmeasured and should be settled before or during implementation, not assumed. What
-  the vendor writes when it removes one key from a multi-key keyset is not in the corpus, only
-  whole-keyset deletion is (`ks-delete-ap-1`). And whether the firmware keeps a keyset alive when its
-  last member is removed one key at a time, rather than collapsing it, is unknown; `wh keyset list`
-  reads membership live, so this is one capture away.
+  Both open questions were measured on 2026-09-04 and the answers make this straightforward. The
+  vendor sends the ordinary five-step template for the removed key alone, ending in one `0xFF = 0`
+  record, and writes nothing at all for the members that stay (`ks-remove-one-key`). The MODE record
+  stays at touch nibble `1`, so the removed key must not be dropped to nibble `0`. Removing the last
+  member is the same five frames with no teardown of any kind (`ks-remove-to-empty`), confirmed
+  afterwards by `wh keyset list ap` reading `0xFF` live with the keyset gone, so there is no
+  empty-keyset case to handle. Build it as `keyset::plan` with the base value and a membership clear.
+  See `docs/keysets.md`.
 
 - [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes

@@ -264,6 +264,43 @@ both ways: `A` went from `0.30mm` to `2.00mm` on being pulled into a new actuati
 **Creating a keyset is therefore destructive to the values of the keys it captures.** The vendor
 does this by writing the global value, not by leaving the old one in place.
 
+### Removing one key from a keyset
+
+Measured 2026-09-04 in `ks-remove-one-key` and `ks-remove-to-empty`, over an actuation point keyset
+holding `J`, `K`, `L` at `1200` against a global of `2000`.
+
+The configurator can take a single key out of a keyset without deleting it, and does so with the
+ordinary five-step template applied to that key alone:
+
+```
+j/0x08 = 16                        MODE, touch nibble 1
+j/0x04 = 2000                      the global actuation point
+j/0x08 = 16, j/0x14 = 100, j/0x15 = 100
+j/0x16 = 0,  j/0x17 = 0
+j/0xFF = 0                         one record, last
+```
+
+**The keys that stay carry no records at all.** Removing `J` produced no write naming `K` or `L`,
+and the read sweep before the next removal showed both still at `1200`. The keyset survives losing
+a member.
+
+**The MODE record stays at touch nibble 1.** The vendor did not drop the removed key to nibble `0`
+even though it is returning to the global value and to no keyset. The operator confirmed at the
+screen that `J` rendered grey and read `2.00mm` afterwards, so a key at nibble `1`, at the global
+value, outside every keyset, greys. That is the third independent measurement that greying tracks
+`0xFF` and not the nibble.
+
+**Removing the last member is the same five frames and nothing more.** `ks-remove-to-empty` took
+`K` and then `L` out of the keyset, `L` being the last one. The write for `L` is identical in shape
+to the write for `J`: no teardown record, no `0xFF` write to any other key, nothing after the
+membership clear. Had the firmware kept a keyset table apart from the per-key `0xFF` values, the
+configurator would have had to write it. A keyset therefore stops existing when no key carries its
+index, and code deleting members needs no special case for emptying one.
+
+Confirmed off the board rather than off the configurator's cache. With the browser closed,
+`wh keyset list ap` read `0xFF` live and returned four keysets, none of them 10, and
+`wh get ap --keys j,k,l` returned `2.00mm keyset none` for all three.
+
 ## Touch nibble 2 is global rapid trigger
 
 Nibble `2` is rapid trigger following the board's global settings, and both transitions are
@@ -426,6 +463,33 @@ given both ways round. The frames measure the pairs and the reply shape and noth
 ADVANCED tab carries a SOCD control holding exactly these pairs is an observation of the UI, so the
 name is corroborated by the interface rather than measured from the wire.
 
+## The configurator never re-reads membership
+
+Measured across all three 2026-09-04 removal captures. The configurator re-reads six layouts for
+all 68 keys before every single-key change (`0x04`, `0x14`, `0x15`, `0x16`, `0x17`, `0x08`, thirty
+frames a sweep), which is why two removals cost 142 frames. **It never reads `0xFF` or `0xFE` in
+any of them.** Its picture of which keys are in which keyset comes from page load and lives in the
+browser for the rest of the session.
+
+This is the opposite of `wh`, which reads membership live on every command, and it is why the
+configurator can show a keyset list that no longer matches the board while `wh` cannot.
+
+## SEPARATE PRESS AND RELEASE is not a stored bit
+
+Measured in `ks-set-10-to-1.2`, whose read sweep covers all six layouts for all 68 keys, taken while
+the configurator was displaying `SEPARATE PRESS AND RELEASE ... ON` for a rapid trigger keyset
+holding `N` and `M`.
+
+Those two keys read `0x14 = 300`, `0x15 = 400`, `0x08 = 0x30`, and **`0x16 = 0` and `0x17 = 0`, the
+same as the other 66 keys**. Nothing in the six layouts the configurator reads distinguishes them
+from a separate-off key except that press and release differ. The global block agrees: separate off,
+and a single `RT SENSITIVITY` over keys whose `0x14` and `0x15` are both `100`.
+
+The keyset had been created by `wh`, which wrote MODE, `0x04`, `0x14`, `0x15` and `0xFE` and no
+separate flag of any kind. So within the layouts the vendor reads there is no candidate bit, and the
+toggle is displayed from `0x14 != 0x15`. This is a statement about those six layouts; a bit in a
+layout neither `wh` nor the configurator reads would not show up here.
+
 ## Still open
 
 - **Where the global rapid trigger sensitivity is stored.** No global command carries it. It appears
@@ -449,9 +513,9 @@ name is corroborated by the interface rather than measured from the wire.
 
 ## Corpus
 
-Thirty-one capture files, 5344 frames, all decoding with correct framing and checksums and no hard
-failures. Up from ten files and 1224 frames after Phase 1, and from twenty-seven after the
-2026-08-29 sittings.
+Thirty-four capture files, 5630 frames, all decoding with correct framing and checksums and no hard
+failures. Up from ten files and 1224 frames after Phase 1, twenty-seven after the 2026-08-29
+sittings, and thirty-one after the first 2026-09-04 sitting.
 
 Read requests and writes are separable by the `cmd 0x23` payload's lead byte, which matters when a
 write carries a genuinely zero value. Lead `0x00` occurs 1035 times and is all-zero valued every
