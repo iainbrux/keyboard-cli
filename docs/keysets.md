@@ -583,10 +583,12 @@ any point, and the same holds for 22 of the 23 keyset captures.
 
 **The exception matters and an earlier revision of this section denied it.** `ks-create-rt-2` is a
 keyset capture and it does carry a whole-board membership read, 68 records of each layout, after
-its own nine write frames. Only the outbound request half is missing from the file, so a search for
-read requests finds nothing while the replies sit there in full. This section previously said "none
-of the 22 keyset captures reads membership once", which is false of the device and true only of
-what the shim recorded.
+its own nine write frames. Only the outbound request half is missing, and that is provable to the
+frame: the 414 unmatched inbound frames decompose exactly as the six handshake replies at 140 to
+145 plus 408 contiguous length-5 read replies at 146 to 553, so nothing inbound is missing either.
+A search for read requests therefore finds nothing while the replies sit there in full. This
+section previously said "none of the 22 keyset captures reads membership once", which is false of
+the device and true only of what the shim recorded.
 
 **Two structural facts make "read" safe despite the missing request half.** Every `cmd 0x23` frame
 in the corpus carries one of exactly two length bytes, 57 or 5. Length 5 occurs 408 times, all
@@ -598,12 +600,15 @@ are connect-shaped; the `0xa9` is the one that is not. The three captures that o
 `initial-load`, `custom-value-nudge-after-restore` and `remap-matrix-read`, all open with the
 replies `0x81`, `0x81`, `0x80`, `0xab`, `0xab`, `0xab`: two `0x81` and no `0xa9`. Each of those
 files does carry `0xa9` replies later, after its first `cmd 0x23` frame. So the reply types support
-a reconnect while the exact sequence differs. The request shape that would produce a length-5 reply
-is unattested anywhere in the corpus.
+a reconnect while the exact sequence differs.
+
+**What remains unattested.** No outbound frame anywhere in the corpus carries length 5, so the
+request shape that would produce these replies has never been captured. That is the gap the two
+facts above work around, not a third fact supporting them.
 
 So the claim this section can support is the narrow one in its heading: **the configurator does not
 re-read membership before or during a single-key value change**, measured over the three removal
-captures and the value changes and the value changes. Whether it re-reads at other moments is not
+captures and the value changes. Whether it re-reads at other moments is not
 settled, and `ks-create-rt-2` shows it doing so at least once mid-sitting.
 
 That still differs from `wh`, which reads membership live on every command, and it is still why the
