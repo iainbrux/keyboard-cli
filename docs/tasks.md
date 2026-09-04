@@ -171,7 +171,16 @@ rather than as settings it recognises.
 
   **`--keys all` becomes a full board reset**, every key to the base and every keyset destroyed,
   which is `RESET KEYSETS` in the configurator. It half-does this today for keyset members, so this
-  widens an existing hazard rather than creating one. Decide whether it needs a confirmation.
+  widens an existing hazard rather than creating one.
+
+  **It carries the same confirmation as `wh set ap --keys all`.** Ruled by the operator on
+  2026-09-04: the two commands reach the same destruction by different routes, so guarding one and
+  not the other would be arbitrary. Print the warning naming every keyset that will cease to exist,
+  read one line from stdin, trim and lowercase it, and proceed only if it equals `yes`. EOF is a
+  rejection. `--dry-run` does not prompt. There is no bypass flag, so tests pipe `yes` on stdin.
+  The trigger is the resolved selection covering the whole matrix, not the literal `--keys all`.
+
+  Share one implementation with 2.23 rather than writing it twice.
 
 - [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
   There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
@@ -211,9 +220,16 @@ rather than as settings it recognises.
   is deliberately no `--yes` flag: a bypass would defeat the ruling, so the tests cover the confirmed
   path by piping `yes` on stdin rather than by skipping the prompt.
 
-  Implementer's choice to confirm with the operator: the match is currently specified as exact and
-  case-sensitive, so `YES` is rejected too. That follows the ruling's wording literally and is a
-  one-word change if it proves annoying.
+  **The match is case-insensitive.** Trim the line, lowercase it, and require it to equal `yes`.
+  So `YES`, `Yes` and `yEs` all pass, while `y`, `ye` and `yess` still do not. Operator's ruling.
+
+  **Trigger on the resolved selection, not on the literal flag.** The prompt fires when the
+  selection covers every key in the board's matrix, however it was written, so spelling out all 68
+  usages reaches it too. `--keys all` is the usual spelling, not the condition.
+
+  **The same prompt guards `wh keyset remove --keys all`, see 2.22.** Build it once and share it;
+  two copies will drift, and this is the one piece of code whose whole job is to be hard to get
+  past by accident.
 
   Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
   ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
