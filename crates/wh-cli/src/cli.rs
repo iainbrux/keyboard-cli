@@ -116,11 +116,22 @@ pub enum SetWhat {
     },
     /// Actuation point
     Ap {
-        #[command(flatten)]
-        keys: KeysArg,
+        /// Key selector: "w,a,s,d", "wasd", "all,!space", "f1-f12", user groups. Not used with
+        /// --base, which names the board rather than a selection.
+        #[arg(long, required_unless_present_any = ["pick", "base"], conflicts_with = "base")]
+        keys: Option<String>,
+        /// Pick keys interactively instead. Not used with --base.
+        #[arg(long, conflicts_with = "base")]
+        pick: bool,
         /// Depth in mm
+        #[arg(long, conflicts_with = "base")]
+        set: Option<f64>,
+        /// Set the board's base actuation point: every key outside every keyset moves to this
+        /// depth, and every keyset is left untouched. Takes no --keys, since it names the board
+        /// rather than a selection. Deliberately not `--mm`, which is reserved for the
+        /// configurator's "MM" CUSTOM VALUE, a different setting.
         #[arg(long)]
-        set: f64,
+        base: Option<f64>,
         /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,

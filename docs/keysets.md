@@ -349,6 +349,26 @@ sensitivities to the global, and never sets a target actuation point, so `plan` 
 own back. It does not reproduce the vendor's `0x16`/`0x17` writes or the repeated MODE record
 above, the same deliberate divergence `plan` documents for every keyset operation.
 
+### Setting the base actuation point
+
+Measured 2026-09-04 in `captures/ks-set-global-ap.jsonl`. Changing the configurator's GLOBAL
+ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys, every key outside a
+keyset on a 68-key board holding 9 members. Per key: `0x08 = 16` twice (its template puts MODE in
+steps 1 and 3), `0x04 = 1950` the new base, `0x14 = 100` and `0x15 = 100` echoed unchanged, `0x16 =
+0` and `0x17 = 0` echoed unchanged. No `0xFF` record anywhere, and not one of the nine keyset
+members was written.
+
+This is the same free-key template every other operation in this document already measures, just
+sent over the whole free-key set rather than a stolen or newly created keyset's members. It settles
+that the vendor's own idea of "the base" is exactly "layout `0x04` of every key outside a keyset",
+the same thing `wh keyset create`/`delete`/`remove` already read it as.
+
+`wh set ap --base <mm>` implements this: `keyset::plan(s, free_keys, &Change::ap(v), None)`, with
+membership held at `None` so no `0xFF` record is ever written. It carries the same two deliberate
+divergences from the template above that every other `plan`-built write already carries: it never
+writes `0x16`/`0x17`, since neither has ever been read and a constant would be an invented value,
+and it sends MODE once rather than the vendor's twice.
+
 ## Touch nibble 2 is global rapid trigger
 
 Nibble `2` is rapid trigger following the board's global settings, and both transitions are

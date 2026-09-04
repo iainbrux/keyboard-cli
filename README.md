@@ -199,6 +199,21 @@ the same way a script driving `wh keyset remove ap --keys all` already does. The
 to stderr, not stdout, so redirecting the command's output still shows it on screen and still reads
 the typed answer from stdin.
 
+**`wh set ap --base <mm>` changes the board's base actuation point instead, and is not the same
+thing as `--keys all --set <mm>` above.** The base is not a stored setting: it is what every key
+outside a keyset already holds in layout `0x04`. `--base` writes that value to every free key and
+touches no keyset at all, so every existing keyset keeps its own value untouched, while `--keys all
+--set <mm>` enrols every key, keyset members included, into one brand new keyset holding `<mm>`,
+destroying every keyset that existed before. `--base` takes no `--keys`, since it names the board
+rather than a selection, and refuses alongside `--set`, which names a selection's value instead of
+the board's. It refuses outright, rather than writing nothing and reporting success, when every key
+on the board is already in a keyset. Measured 2026-09-04 against the vendor's own GLOBAL ACTUATION
+POINT field, which writes exactly this shape; see `docs/keysets.md` for the frame counts.
+
+```
+wh set ap --base 1.95
+```
+
 Manage stored groups:
 
 ```

@@ -744,53 +744,114 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 }
             })
         }
-        SetWhat::Ap { keys, set, dry_run } => {
-            let depth = mm(set)?;
+        SetWhat::Ap {
+            keys,
+            pick,
+            set,
+            base,
+            dry_run,
+        } => {
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
-            // A separate locked stderr for the whole-board confirmation, matching
-            // `KeysetWhat::Remove`'s own split: the per-key announcement below stays on stdout
-            // since it is data someone may pipe, while the prompt is a diagnostic.
-            let stderr = std::io::stderr();
-            let mut prompt_out = stderr.lock();
-            let stdin = std::io::stdin();
-            let mut input = stdin.lock();
-            with_session(|s| {
-                let usages = resolve_keys(s, &keys, store)?;
-                // `kind` is taken from `change`, the same binding that builds the plan below, and
-                // threaded from nowhere else: `announce_steal`'s `kind` picks what it reads back,
-                // so a caller-supplied constant could drift from what the plan actually touches.
-                let change = wh_device::keyset::Change::ap(depth);
-                let kind = change.kind();
-                let m = wh_device::keyset::read_membership(s, kind)?;
-                let membership = crate::keyset::ap_membership_for(&m, &usages)?;
-                let index = match &membership {
-                    crate::keyset::ApMembership::Keep => None,
-                    crate::keyset::ApMembership::Split { index, .. } => Some(*index),
-                };
-                let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
-                // Built after `plan`, matching `remove`: only `plan` knows how many keys the
-                // promotion off touch nibble 0 actually moves. Decides its own whole-board and
-                // `Keep` triggers from `m`/`usages` rather than trusting this arm's own
-                // `membership`, and no-ops for anything but a whole-board `Split`.
-                if !dry_run {
-                    crate::keyset::confirm_whole_board_ap_set(
-                        &mut prompt_out,
-                        &m,
-                        &usages,
-                        &plan,
-                        depth,
-                        &mut input,
-                    )?;
+            match base {
+                Some(base_mm) => {
+                    // `--base` names the board, not a selection: it never touches `keys`/`pick`,
+                    // never reads or writes a `0xFF` membership record, and so never reaches
+                    // `confirm_whole_board_ap_set` at all, unlike `--keys all` below.
+                    let depth = mm(base_mm)?;
+                    with_session(|s| {
+                        let m = wh_device::keyset::read_membership(s, wh_device::keyset::Kind::Ap)?;
+                        let free: Vec<u8> = m
+                            .entries()
+                            .iter()
+                            .filter(|&&(_, v)| v == 0)
+                            .map(|&(u, _)| u)
+                            .collect();
+                        if free.is_empty() {
+                            bail!(
+                                "every key on the board is in a keyset, so there is no key \
+                                 outside a keyset to write; use `wh keyset set ap` to change a \
+                                 keyset's own value instead"
+                            );
+                        }
+                        let plan = wh_device::keyset::plan(
+                            s,
+                            &free,
+                            &wh_device::keyset::Change::ap(depth),
+                            None,
+                        )?;
+                        writeln!(
+                            out,
+                            "ap base: {} keys outside every keyset move to {:.2}mm, keysets \
+                             untouched",
+                            free.len(),
+                            depth.to_mm()
+                        )?;
+                        if dry_run {
+                            return print_frames(&mut out, &plan.frames());
+                        }
+                        auto_backup(s, store, "set ap")?;
+                        wh_device::keyset::apply(s, &plan)?;
+                        crate::keyset::verify_write_as(
+                            &mut out,
+                            s,
+                            &format!("ap base {:.2}mm", depth.to_mm()),
+                            &plan,
+                        )
+                    })
                 }
-                let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
-                if dry_run {
-                    return print_frames(&mut out, &plan.frames());
+                None => {
+                    let depth = mm(set.ok_or_else(|| {
+                        anyhow::anyhow!("--set is required unless --base is given")
+                    })?)?;
+                    let keys = crate::cli::KeysArg { keys, pick };
+                    // A separate locked stderr for the whole-board confirmation, matching
+                    // `KeysetWhat::Remove`'s own split: the per-key announcement below stays on
+                    // stdout since it is data someone may pipe, while the prompt is a diagnostic.
+                    let stderr = std::io::stderr();
+                    let mut prompt_out = stderr.lock();
+                    let stdin = std::io::stdin();
+                    let mut input = stdin.lock();
+                    with_session(|s| {
+                        let usages = resolve_keys(s, &keys, store)?;
+                        // `kind` is taken from `change`, the same binding that builds the plan
+                        // below, and threaded from nowhere else: `announce_steal`'s `kind` picks
+                        // what it reads back, so a caller-supplied constant could drift from what
+                        // the plan actually touches.
+                        let change = wh_device::keyset::Change::ap(depth);
+                        let kind = change.kind();
+                        let m = wh_device::keyset::read_membership(s, kind)?;
+                        let membership = crate::keyset::ap_membership_for(&m, &usages)?;
+                        let index = match &membership {
+                            crate::keyset::ApMembership::Keep => None,
+                            crate::keyset::ApMembership::Split { index, .. } => Some(*index),
+                        };
+                        let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
+                        // Built after `plan`, matching `remove`: only `plan` knows how many keys
+                        // the promotion off touch nibble 0 actually moves. Decides its own
+                        // whole-board and `Keep` triggers from `m`/`usages` rather than trusting
+                        // this arm's own `membership`, and no-ops for anything but a whole-board
+                        // `Split`.
+                        if !dry_run {
+                            crate::keyset::confirm_whole_board_ap_set(
+                                &mut prompt_out,
+                                &m,
+                                &usages,
+                                &plan,
+                                depth,
+                                &mut input,
+                            )?;
+                        }
+                        let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
+                        if dry_run {
+                            return print_frames(&mut out, &plan.frames());
+                        }
+                        auto_backup(s, store, "set ap")?;
+                        wh_device::keyset::apply(s, &plan)?;
+                        crate::keyset::verify_write_as(&mut out, s, &what, &plan)
+                    })
                 }
-                auto_backup(s, store, "set ap")?;
-                wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write_as(&mut out, s, &what, &plan)
-            })
+            }
         }
     }
 }

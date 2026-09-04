@@ -230,10 +230,10 @@ rather than as settings it recognises.
   and `--release` are gone from the clap variant and from the `Kind::Ap` refusal, which had nothing
   left to refuse and was deleted with them.
 
-- [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
-  There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
-  setting: it is what every key outside a keyset holds in layout `0x04`, which is also why 2.10
-  exists. So setting it means writing the value to every free key and touching no membership.
+- [x] ~~**2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**~~
+  Done 2026-09-04. The base is not a stored setting: it is what every key outside a keyset holds in
+  layout `0x04`, which is also why 2.10 exists. Setting it writes the value to every free key and
+  touches no membership.
 
   `--base` takes no `--keys` and refuses alongside `--set`: it names the board, not a selection.
   The flag is `--base` and not `--mm` by the operator's ruling, since `--mm` is reserved for 2.10's
@@ -279,11 +279,11 @@ rather than as settings it recognises.
   `crates/wh-cli/src/confirm.rs`.** Reuse it rather than building a second copy; two copies will
   drift, and this is the one piece of code whose whole job is to be hard to get past by accident.
 
-  Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
-  ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
-  `0x04` to every non-member key is the only way to set it; what is not known is whether the vendor
-  sends anything else alongside, a MODE record for instance. `begin("ks-set-global-ap")`, change the
-  field, copy.
+  Measured 2026-09-04 in `captures/ks-set-global-ap.jsonl`: changing the configurator's GLOBAL
+  ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys, every key outside a
+  keyset on a 68-key board holding 9 members, `0x04` the new base and `0x14`/`0x15`/`0x16`/`0x17`
+  echoed unchanged, no `0xFF` record anywhere. See `docs/keysets.md`, "Setting the base actuation
+  point", for the full breakdown and `wh`'s own two documented divergences from that template.
 
 - [ ] **2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
   before the part that is not.** Deferred during 2.21 because extracting it would have refactored
