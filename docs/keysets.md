@@ -336,10 +336,12 @@ n/0xFE = 0
 Two things are measured here, plainly, not inferred. **The MODE record goes to touch nibble 1,
 rapid trigger off, not nibble 2 (following the board's global).** This is the same target
 `ks-delete-rt`'s whole-keyset delete writes. **`N`'s own actuation point, `1100`, is preserved, not
-reset to the global `2000`.** A rapid trigger removal does not touch layout `0x04` at all; the value
-sent for it is `N`'s own prior reading, unchanged. `wh keyset remove rt` implements exactly this:
-`keyset::Change::rt_off` turns rapid trigger off and resets the sensitivities to the global, and
-never sets a target actuation point, so `plan` echoes the key's own back.
+reset to the global `2000`.** A rapid trigger removal does not *own* layout `0x04`; the AP record
+it still sends carries `N`'s own prior reading back unchanged, not the global. `wh keyset remove
+rt` implements both of these: `keyset::Change::rt_off` turns rapid trigger off and resets the
+sensitivities to the global, and never sets a target actuation point, so `plan` echoes the key's
+own back. It does not reproduce the vendor's `0x16`/`0x17` writes or the repeated MODE record
+above, the same deliberate divergence `plan` documents for every keyset operation.
 
 ## Touch nibble 2 is global rapid trigger
 

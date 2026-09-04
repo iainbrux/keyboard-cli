@@ -3167,7 +3167,11 @@ fn keyset_remove_ap_refuses_press_and_release() {
     );
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("--press"), "got: {err}");
+    // Not `contains("--press")`: clap's own "unexpected argument '--press' found" also
+    // contains that substring, so a renamed flag that made the real refusal unreachable would
+    // still pass a bare `--press` check. The refusal's own wording is the only thing that pins
+    // the actual code path.
+    assert!(err.contains("apply to `wh keyset remove rt`"), "got: {err}");
 
     let _ = std::fs::remove_dir_all(&config_home);
 }
@@ -3260,11 +3264,13 @@ fn remove_ap_end_to_end_script() -> Vec<String> {
     lines
 }
 
-/// Removing one member of a three-key keyset must leave the other two exactly where they were:
-/// after `wh keyset remove ap --keys w` runs for real, a fresh `wh keyset list ap` call, scripted
-/// against a board reflecting the result, still reports keyset 3 with its remaining members `a`
-/// and `s` and their value. A `remove` that cleared the whole keyset's membership instead of just
-/// the named key, the same shape as `delete`, would leave no keyset 3 for this second call to find.
+/// Removing one member of a three-key keyset must leave the other two exactly where they were.
+/// The proof is in the first run: its byte-exact script only accepts frames naming `w`, so a
+/// `remove` that rewrote or cleared `a` or `s` too (the same shape as `delete`) fails there, on a
+/// replay send mismatch, before any assertion below even runs. The second run, a fresh
+/// `wh keyset list ap` call against a hand-authored script fixed at compile time, proves something
+/// narrower: that a board left in the state `remove` is supposed to produce still lists keyset 3
+/// correctly, with `a` and `s` and no `w`. It cannot observe what the first run actually wrote.
 #[test]
 fn keyset_remove_leaves_the_keyset_alive_when_others_remain() {
     let write_lines = remove_ap_end_to_end_script();
@@ -3702,7 +3708,7 @@ fn keyset_remove_ignores_a_free_key_selected_alongside_a_member() {
         "got: {stdout}"
     );
     assert!(
-        stdout.contains("ap: d were already in no keyset, left alone"),
+        stdout.contains("ap: free key(s) d left alone, already in no ap keyset"),
         "got: {stdout}"
     );
 

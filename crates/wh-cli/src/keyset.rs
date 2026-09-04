@@ -343,8 +343,8 @@ pub(crate) fn remove<T: Transport>(
     }
     // The same two branches `delete` uses, because the vendor sends the same template for a
     // single-key removal as for a whole-keyset delete. Rt writes touch nibble 1 and the global
-    // sensitivity, and deliberately does not touch layout 0x04: the removed key keeps its own
-    // actuation point (`ks-remove-one-rt`).
+    // sensitivity, and does not own layout 0x04: the AP record it still sends carries the
+    // removed key's own prior reading back unchanged (`ks-remove-one-rt`).
     let (change, target) = match kind {
         Kind::Ap => {
             let v = match value {
@@ -405,9 +405,10 @@ fn announce_remove(
         let names: Vec<String> = free.iter().map(|&u| key_label(u)).collect();
         writeln!(
             out,
-            "{}: {} were already in no keyset, left alone",
+            "{}: free key(s) {} left alone, already in no {} keyset",
             kind_name(kind),
-            names.join(",")
+            names.join(","),
+            kind_name(kind)
         )?;
     }
     Ok(())

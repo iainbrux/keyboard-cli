@@ -173,11 +173,11 @@ full possible range. Within the corpus: layout `0x04` (actuation point) only eve
 `wh` models four of these: `0x04`, `0x08`, `0x14`, `0x15`. `0x00` and `0x01` are now identified (see
 below) but `wh` does not read or write the key mapping through them; remapping keys is out of Phase 1
 scope. `0x16`, `0x17`, and `0x19` remain unused by `wh`. `0xff` and `0xfe` are read by every `wh`
-command that needs keyset membership, and written by `wh keyset create`, `wh keyset delete`, `wh
-restore`, and by `wh set ap` when a selection allocates a keyset, whether that is a split of an
-existing one or a create over keys that were all free. `wh keyset set` changes only a
-keyset's value, never its membership: it always passes no index to `keyset::plan`, so no membership
-record is ever sent.
+command that needs keyset membership, and written by `wh keyset create`, `wh keyset delete`,
+`wh keyset remove`, `wh restore`, and by `wh set ap` when a selection allocates a keyset, whether
+that is a split of an existing one or a create over keys that were all free. `wh keyset set`
+changes only a keyset's value, never its membership: it always passes no index to `keyset::plan`,
+so no membership record is ever sent.
 How the vendor writes membership is fully measured in `docs/keysets.md`. Board keyset membership is
 not the same thing as a `wh keys group`, which is a purely host-side name for a set of keys stored
 in `wh`'s own `config.json` and never sent to the board at all. The two happen to share the word
