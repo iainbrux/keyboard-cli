@@ -504,6 +504,17 @@ pub fn global_ap<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
 ) -> Result<Global<Um>, DeviceError> {
+    global_ap_excluding(s, m, &[])
+}
+
+/// The board's base actuation point, read from `0x04` of every key holding no actuation point
+/// membership, ignoring any key in `exclude`. Callers resetting keys to the base pass those keys
+/// here: they are frequently the reason the remaining keys disagree.
+pub fn global_ap_excluding<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+    exclude: &[u8],
+) -> Result<Global<Um>, DeviceError> {
     if m.kind != Kind::Ap {
         return Err(DeviceError::KeysetKindMismatch {
             expected: Kind::Ap,
@@ -512,7 +523,7 @@ pub fn global_ap<T: Transport>(
     }
     let mut values = Vec::new();
     for &(usage, membership) in &m.entries {
-        if membership != 0 {
+        if membership != 0 || exclude.contains(&usage) {
             continue;
         }
         values.push(Um(ops::read_layout_value(s, usage, layout::AP)?));
@@ -527,6 +538,17 @@ pub fn global_rt<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,
 ) -> Result<Global<(Um, Um)>, DeviceError> {
+    global_rt_excluding(s, m, &[])
+}
+
+/// The board's base rapid trigger sensitivity, read from `0x14`/`0x15` of every key holding no
+/// rapid trigger membership, ignoring any key in `exclude`. See `global_ap_excluding` for why a
+/// caller resetting keys to the base needs this.
+pub fn global_rt_excluding<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+    exclude: &[u8],
+) -> Result<Global<(Um, Um)>, DeviceError> {
     if m.kind != Kind::Rt {
         return Err(DeviceError::KeysetKindMismatch {
             expected: Kind::Rt,
@@ -535,7 +557,7 @@ pub fn global_rt<T: Transport>(
     }
     let mut values = Vec::new();
     for &(usage, membership) in &m.entries {
-        if membership != 0 {
+        if membership != 0 || exclude.contains(&usage) {
             continue;
         }
         let press = ops::read_layout_value(s, usage, layout::RT_PRESS)?;
@@ -899,6 +921,97 @@ mod tests {
             "got {err:?}"
         );
         assert!(s.into_inner().finished());
+    }
+
+    // -- global_ap_excluding / global_rt_excluding --
+
+    /// `w` is the odd one out at 1100, three other free keys read 2000. Excluding `w` must
+    /// agree; the same board with an empty exclusion (asserted in the same test) must split,
+    /// which is what proves the parameter is doing the work rather than the fixture agreeing
+    /// on its own.
+    #[test]
+    fn global_ap_excluding_ignores_the_named_keys() {
+        let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0), (0x06, 0), (0x07, 0)]);
+
+        let mut excluded_lines = read_reply(0x05, layout::AP, 2000);
+        excluded_lines.extend(read_reply(0x06, layout::AP, 2000));
+        excluded_lines.extend(read_reply(0x07, layout::AP, 2000));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&excluded_lines.join("\n")).unwrap());
+        assert_eq!(
+            global_ap_excluding(&mut s, &m, &[0x04]).unwrap(),
+            Global::Agreed(Um(2000))
+        );
+        assert!(s.into_inner().finished());
+
+        let mut all_lines = read_reply(0x04, layout::AP, 1100);
+        all_lines.extend(read_reply(0x05, layout::AP, 2000));
+        all_lines.extend(read_reply(0x06, layout::AP, 2000));
+        all_lines.extend(read_reply(0x07, layout::AP, 2000));
+        let mut s2 = Session::new(ReplayTransport::from_jsonl(&all_lines.join("\n")).unwrap());
+        assert_eq!(
+            global_ap_excluding(&mut s2, &m, &[]).unwrap(),
+            Global::Split(vec![(Um(2000), 3), (Um(1100), 1)])
+        );
+        assert!(s2.into_inner().finished());
+    }
+
+    #[test]
+    fn global_ap_excluding_still_splits_when_the_rest_disagree() {
+        let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0), (0x06, 0), (0x07, 0)]);
+        let mut lines = read_reply(0x04, layout::AP, 2000);
+        lines.extend(read_reply(0x05, layout::AP, 2000));
+        lines.extend(read_reply(0x06, layout::AP, 1500));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        assert_eq!(
+            global_ap_excluding(&mut s, &m, &[0x07]).unwrap(),
+            Global::Split(vec![(Um(2000), 2), (Um(1500), 1)])
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    #[test]
+    fn global_ap_excluding_reports_none_when_every_free_key_is_excluded() {
+        let m = membership(Kind::Ap, &[(0x04, 0), (0x05, 0)]);
+        let mut s = Session::new(ReplayTransport::from_jsonl("").unwrap());
+        assert_eq!(
+            global_ap_excluding(&mut s, &m, &[0x04, 0x05]).unwrap(),
+            Global::NoneOutsideAKeyset
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// The `global_ap_excluding` agreement/split pairing, mirrored for rapid trigger.
+    #[test]
+    fn global_rt_excluding_ignores_the_named_keys() {
+        let m = membership(Kind::Rt, &[(0x04, 0), (0x05, 0), (0x06, 0), (0x07, 0)]);
+
+        let mut excluded_lines = read_reply(0x05, layout::RT_PRESS, 100);
+        excluded_lines.extend(read_reply(0x05, layout::RT_RELEASE, 150));
+        excluded_lines.extend(read_reply(0x06, layout::RT_PRESS, 100));
+        excluded_lines.extend(read_reply(0x06, layout::RT_RELEASE, 150));
+        excluded_lines.extend(read_reply(0x07, layout::RT_PRESS, 100));
+        excluded_lines.extend(read_reply(0x07, layout::RT_RELEASE, 150));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&excluded_lines.join("\n")).unwrap());
+        assert_eq!(
+            global_rt_excluding(&mut s, &m, &[0x04]).unwrap(),
+            Global::Agreed((Um(100), Um(150)))
+        );
+        assert!(s.into_inner().finished());
+
+        let mut all_lines = read_reply(0x04, layout::RT_PRESS, 50);
+        all_lines.extend(read_reply(0x04, layout::RT_RELEASE, 60));
+        all_lines.extend(read_reply(0x05, layout::RT_PRESS, 100));
+        all_lines.extend(read_reply(0x05, layout::RT_RELEASE, 150));
+        all_lines.extend(read_reply(0x06, layout::RT_PRESS, 100));
+        all_lines.extend(read_reply(0x06, layout::RT_RELEASE, 150));
+        all_lines.extend(read_reply(0x07, layout::RT_PRESS, 100));
+        all_lines.extend(read_reply(0x07, layout::RT_RELEASE, 150));
+        let mut s2 = Session::new(ReplayTransport::from_jsonl(&all_lines.join("\n")).unwrap());
+        assert_eq!(
+            global_rt_excluding(&mut s2, &m, &[]).unwrap(),
+            Global::Split(vec![((Um(100), Um(150)), 3), ((Um(50), Um(60)), 1)])
+        );
+        assert!(s2.into_inner().finished());
     }
 
     // -- plan: the skip rule, one test per OR-term --
