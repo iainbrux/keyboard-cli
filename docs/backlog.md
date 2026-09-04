@@ -402,8 +402,15 @@ on an already-correct board would empty the useful history without ever touching
 
 **What to decide, if it is picked up.** Whether the guard belongs in `auto_backup` itself, where it
 would cover every command at once, or at each call site. The first is one change and risks
-suppressing a backup some caller wants; the second is several and will be applied unevenly. The
-plan is already built at every call site, so `plan.is_empty()` is available either way.
+suppressing a backup some caller wants; the second is several and will be applied unevenly.
+
+Note that a call-site guard is not uniformly available. `auto_backup` has nine call sites in
+`crates/wh-cli/src/run.rs`, and three of them have nothing to test: `set rt` off and on build their
+records through `ops::set_rt_off` and `ops::set_rt` after the backup is taken, and `restore` goes
+through `ops::restore_all` and never builds a `WritePlan` at all. The other six do hold a plan
+before backing up, so `plan.is_empty()` is available there and only there. An earlier draft of this
+entry claimed it was available at every call site; that was wrong, and it was the recommendation the
+entry rested on.
 
 ## Post 1.0, not necessary
 
