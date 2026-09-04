@@ -271,13 +271,33 @@ out, not something to rush while one is in flight.
 
 **Measured in full on 2026-08-29. See `docs/keysets.md`**, which supersedes this entry and specifies
 task 2.4. In short: `0xFF` and `0xFE` are both host-written and both indices, they are independent
-groupings with separate counters, allocation is max plus one and never reuses a freed index, and a
-delete resets the value to the global before clearing membership.
+groupings with separate counters, allocation is max plus one over live membership, so a freed
+index returns to the pool and only gaps below the maximum are skipped, and a delete resets the
+value to the global before clearing membership.
 
 Two things this entry previously got wrong. `0xFF` was described as inferred from read correlation
-with no evidence anything writes it; it is written, one record per frame. And the cause of the
-configurator greying our writes was asserted as `0xFF` being left at zero; that remains an untested
-hypothesis, now ranked behind the MODE nibble one and recorded as such.
+with no evidence anything writes it; it is written, one record per frame. And the greying cause was
+first asserted as `0xFF` being left at zero, then demoted behind a MODE nibble hypothesis.
+
+**Settled on 2026-09-04, and the `0xFF` reading was the right one.** Two controlled experiments on
+the real board, each changing one thing:
+
+- `F` was put at MODE touch nibble 0 by a hand-edited `wh restore`, the only key on a board of 68 to
+  hold it, while staying outside any keyset at the global 2.00mm. It rendered identically to `H`,
+  `J`, `K` and `L` at nibble 1, also outside any keyset at 2.00mm. **The nibble makes no
+  difference.**
+- `J,K,L` were then put in a keyset at exactly the global 2.00mm, the same value `H` holds outside
+  one. `J,K,L` rendered highlighted, `H` grey. **Membership makes the difference, and the value does
+  not, since all four held the same one.**
+
+So the configurator distinguishes on layout `0xFF` alone. The board accepting a nibble-0 write and
+reporting it back is measured from frames; the rendering is an operator observation of the
+interface, and is what it is: two screenshots taken minutes apart with one variable changed.
+
+**A consequence worth carrying.** `wh set ap` over keys that are all free writes values and no
+membership, which is measured vendor behaviour for that shape, so those keys stay grey. In the
+configurator a per-key actuation point cannot be set without creating a keyset. That divergence was
+invisible until greying was understood and is recorded in `docs/tasks.md`.
 
 ### Listing backups, and what `--last` should mean
 
@@ -420,13 +440,16 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   `initial-load` by reading each key's `0x00` against its `0x01`: esc maps to grave, and 1 through 0
   map to F1 through F10, holding across 69 distinct values in two independent series. That is
   exactly how the board behaves under FN.
-- `0x16` and `0x17`, 1858 records each across the corpus, written as zero alongside every rapid
-  trigger change and **never once observed non-zero**. Purpose unknown.
+- `0x16` and `0x17`, 1858 records each in this ten-capture session, zero in every one of them.
+  Overturned since: both read and are written `100` throughout the keyset sitting, 580 write records
+  across fourteen files. What moved them is unmeasured. See `docs/keysets.md`. Purpose unknown.
 - `0x19`, 700 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
   Purpose unknown.
-- `0xFE` is the **rapid trigger keyset membership**, measured from write evidence. `0xFF` is
-  **inferred** as the actuation point keyset index, from read correlation only: read `210` times,
-  written `0`. See the keyset entry above.
+- `0xFE` is the **rapid trigger keyset membership**, measured from write evidence in this very
+  session: 424 records in total, of which the write evidence is two request and reply pairs, `1` on
+  a keyset create and `0` on a delete. `0xFF` is the **actuation point keyset index**, read `210` times and written
+  `0` in this ten-capture session; host-written and measured directly only in the wider 27-capture
+  corpus. Both are indices, not booleans. See the keyset entry above and `docs/keysets.md`.
 
 ### One key identity still inferred
 

@@ -30,10 +30,12 @@ matches every outgoing frame against a scripted JSONL capture byte for byte. Eve
 runs against the second one, which is why the matching must never be loosened.
 
 **Writes are read-modify-write.** A settings write reads the key's current MODE first, so that
-changing one thing cannot silently clear another. `ap_records` promotes touch nibble 0 to 1 and
-deliberately leaves 1, 3, 4 and unknown nibbles alone; `rt_records` preserves `RtContinuous`. This is
-the single most important invariant in the codebase and it exists because clobbering a nibble
-silently disables a feature the user set from the vendor UI.
+changing one thing cannot silently clear another. `wh set ap`'s live path is `keyset::plan` with
+`Change::ap`, whose `apply_touch` promotes touch nibble 0 to 1 and deliberately leaves 1, 3, 4 and
+unknown nibbles alone; `ops::ap_records` still does the same but is no longer on that path.
+`rt_records` preserves `RtContinuous`. This is the single most important invariant in the codebase
+and it exists because clobbering a nibble silently disables a feature the user set from the vendor
+UI.
 
 **Only one process can hold the device.** The vendor HID collection (usage page `0xFFA0`) is
 exclusive, so `wh` fails with `DeviceError::Busy` while terminal.wallhack.com has it open. This is
@@ -46,7 +48,7 @@ above.
 ## Commands
 
 ```bash
-cargo test --workspace                                    # 272 tests
+cargo test --workspace                                    # 409 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo build -p wh-cli --release --target x86_64-pc-windows-gnu   # the real binary

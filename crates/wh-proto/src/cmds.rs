@@ -79,11 +79,31 @@ pub mod layout {
     pub const RT_PRESS: u8 = 0x14; // Layout_RTP
     pub const RT_RELEASE: u8 = 0x15; // Layout_RTR
     /// Actuation point keyset index. Read as 1 for w,a,s,d and 2 for esc, matching the two
-    /// keysets the vendor UI showed. Never observed being written, so do not write it.
+    /// keysets the vendor UI showed. Host-written: `docs/keysets.md` measures the vendor writing
+    /// it, and `wh_device::keyset` writes it too, one record per frame, always last.
     pub const KEYSET_AP: u8 = 0xFF;
     /// Rapid trigger keyset membership. Written 1 on create (`captures/rt-on-w-0.5.jsonl`) and
     /// 0 on delete (`captures/rt-off-w.jsonl`).
     pub const KEYSET_RT: u8 = 0xFE;
+}
+
+/// Which of the two independent keyset groupings a layout or index belongs to. Re-exported from
+/// `wh_device::keyset` as `Kind`, which is the name callers use; it lives here because it does
+/// no I/O and its only method maps to the two `layout` constants above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeysetKind {
+    Ap,
+    Rt,
+}
+
+impl KeysetKind {
+    /// `layout::KEYSET_AP` (0xFF) or `layout::KEYSET_RT` (0xFE).
+    pub fn layout(self) -> u8 {
+        match self {
+            KeysetKind::Ap => layout::KEYSET_AP,
+            KeysetKind::Rt => layout::KEYSET_RT,
+        }
+    }
 }
 
 /// MaxPack from constants/byte.ts.
@@ -113,6 +133,19 @@ pub fn write_key_records(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
         .collect()
 }
 
+/// The same records, but one per report instead of batched.
+///
+/// Measured: vendor write frames carry 1, 2, 3, 4, 6, 7, 8, 9 or 12 records, never 13 or 14 (only
+/// reads use the full 14); keyset membership (`0xff`, `0xfe`) is always one record per frame. This
+/// matches that record count; the vendor's own frame pads to length byte `0x39` where this emits
+/// `0x05`, a difference the board accepts (`docs/tasks.md`).
+pub fn write_key_records_singly(records: &[KeyRecord]) -> Vec<[u8; REPORT_LEN]> {
+    records
+        .iter()
+        .map(|r| write_key_records(std::slice::from_ref(r))[0])
+        .collect()
+}
+
 /// cmdLayout with rw=read: single [key, layout, 0, 0] record.
 pub fn read_key_layout(key: u8, layout_id: u8) -> [u8; REPORT_LEN] {
     frame(cmd::KEY, &[RW_READ, key, layout_id, 0, 0]).expect("5 bytes")
@@ -131,16 +164,17 @@ pub fn parse_key_reply(payload: &[u8]) -> Result<KeyRecord, DecodeError> {
 }
 
 /// Layout_Mode: touch mode in the high nibble of the low byte, advanced-key mode in the low
-/// nibble (recdata.getLayoutModelRecdata). Nibble values measured across 1224 captured frames:
-/// 0 = follow global, 1 = per-key actuation, 3 = rapid trigger, 4 = rapid trigger continuous.
-/// Nibble 2 never appeared on the wire, so it stays folded into `Unknown`.
+/// nibble (recdata.getLayoutModelRecdata). Nibble values measured: 0 = follow global travel,
+/// 1 = per-key actuation, 2 = rapid trigger following the global settings, 3 = rapid trigger with
+/// its own settings, 4 = rapid trigger continuous.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchMode {
     Global,       // 0x0
     Single,       // 0x1
-    Rt,           // 0x3, continuous off
-    RtContinuous, // 0x4, continuous on
-    Unknown(u8),  // any other nibble (0x2 included); preserved so read-modify-write is lossless
+    RtGlobal,     // 0x2, rapid trigger following the global settings
+    Rt,           // 0x3, own settings, continuous off
+    RtContinuous, // 0x4, own settings, continuous on
+    Unknown(u8),  // any other nibble; preserved so read-modify-write is lossless
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -161,6 +195,7 @@ impl Mode {
         let touch = match nibble {
             0x0 => TouchMode::Global,
             0x1 => TouchMode::Single,
+            0x2 => TouchMode::RtGlobal,
             0x3 => TouchMode::Rt,
             0x4 => TouchMode::RtContinuous,
             n => TouchMode::Unknown(n),
@@ -175,6 +210,7 @@ impl Mode {
         let t = match self.touch {
             TouchMode::Global => 0x0u8,
             TouchMode::Single => 0x1,
+            TouchMode::RtGlobal => 0x2,
             TouchMode::Rt => 0x3,
             TouchMode::RtContinuous => 0x4,
             TouchMode::Unknown(n) => n & 0x0F,
@@ -493,6 +529,30 @@ mod tests {
         assert_eq!(frames[1][1], 25);
     }
 
+    /// Membership must go one record per frame. A batched write here would be a silent
+    /// divergence from every capture that writes `0xff` or `0xfe`.
+    #[test]
+    fn write_key_records_singly_emits_one_frame_per_record() {
+        let recs = vec![
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_AP,
+                value: 6,
+            },
+            KeyRecord {
+                key: 0x0A,
+                layout: layout::KEYSET_AP,
+                value: 6,
+            },
+        ];
+        let frames = write_key_records_singly(&recs);
+        assert_eq!(frames.len(), 2, "one frame per record, never batched");
+        for (f, r) in frames.iter().zip(&recs) {
+            assert_eq!(f[1], 5, "rw byte plus exactly one 4-byte record");
+            assert_eq!(&f[4..9], &[RW_WRITE, r.key, r.layout, r.value as u8, 0]);
+        }
+    }
+
     #[test]
     fn read_key_layout_is_single_record_read() {
         let f = read_key_layout(0x1A, layout::AP); // 'w'
@@ -537,13 +597,14 @@ mod tests {
         assert_eq!(m.value(), 0x48);
     }
 
-    /// Nibble 2 never appeared in any of 1224 captured frames; it must stay folded into
-    /// `Unknown` rather than aliasing `Rt`, or a read-modify-write on a key in this state would
-    /// silently coerce it to `Rt`'s wire value.
+    /// Nibble 2 is rapid trigger following the global settings, measured 2026-08-29: turning
+    /// GLOBAL RAPID TRIGGER on wrote it to all 68 keys, since no rapid trigger keyset existed in
+    /// that capture to skip; the off write and both sensitivity writes are what measure the skip
+    /// over keys in a rapid trigger keyset (`docs/keysets.md`). Must not alias `Rt` (nibble 3).
     #[test]
-    fn mode_nibble_2_is_never_observed_and_stays_unknown() {
+    fn mode_nibble_2_is_rapid_trigger_from_the_global_settings() {
         let m = Mode::from_value(0x23);
-        assert_eq!(m.touch, TouchMode::Unknown(0x2));
+        assert_eq!(m.touch, TouchMode::RtGlobal);
         assert_eq!(m.advanced, 0x03);
         assert_eq!(m.value(), 0x23);
     }
@@ -560,10 +621,10 @@ mod tests {
     /// unmodified: `wh-cli`'s `dump`/`restore` depends on this being a true identity.
     #[test]
     fn mode_round_trips_the_full_16_bit_value_including_a_non_zero_high_byte() {
-        let v = 0x0221u16; // high byte 0x02, touch nibble 0x2 (Unknown, never observed), advanced nibble 0x1
+        let v = 0x0221u16; // high byte 0x02, touch nibble 0x2 (RtGlobal), advanced nibble 0x1
         let m = Mode::from_value(v);
         assert_eq!(m.high, 0x02);
-        assert_eq!(m.touch, TouchMode::Unknown(0x2));
+        assert_eq!(m.touch, TouchMode::RtGlobal);
         assert_eq!(m.advanced, 0x01);
         assert_eq!(m.value(), v);
     }

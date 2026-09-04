@@ -93,6 +93,50 @@ range over `wh-proto`'s own key table, not the physical layout, so `f1-f12` pars
 nothing on this board: the K-001 is 68 keys with no F row, and `wh keys list` is the source of truth
 for what actually exists to select.
 
+Manage keysets, the vendor's per-key groupings for actuation point (`ap`) and rapid trigger (`rt`)
+settings (`0xFF` and `0xFE` on the wire, independent of each other):
+
+```
+wh keyset list
+wh keyset list ap
+wh keyset create ap --keys u,i,o,p --value 1.5
+wh keyset create rt --keys j,k,l --press 0.3 --release 0.5
+wh keyset set ap 3 --value 1.2
+wh keyset delete ap 3
+```
+
+`wh keyset list` with no kind lists both `ap` and `rt`; naming one lists that kind. Each keyset is
+shown with its index, value, and member keys: one shared value when the members agree
+(`1 1.50mm  u,i,o,p`), or each distinct value with the keys holding it when they do not
+(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt` does not write `0xFE`; running it on part of
+an rt keyset's members can leave that keyset's members holding different values, which
+`wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
+keyset's value in place. `create`, `delete`, `wh set ap` below, and `wh restore` (for keys whose
+snapshot recorded it, see below) each write keyset membership. `create` and `delete` both take
+`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value,
+and passing it is required when the keys outside every keyset disagree, or when none are left
+outside one.
+
+**Creating a keyset writes the same value to every member.** It writes the board's current global
+value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
+--keys u,i,o,p --value 1.5` sets all four to 1.50mm.
+
+**`wh set ap` over a selection that is not exactly one existing keyset's members, and not entirely
+free keys, moves the whole selection into one new keyset, and says so.** Three shapes: a selection
+that is part of a keyset moves the selected members into a new index, leaving the rest of that
+keyset in place (`wh set ap --keys w,s --set 1.5`, where `w` and `s` sit inside a keyset with `a`
+and `d`, moves `w` and `s` into a new index and leaves `a` and `d` in the original one). A
+selection that is a whole keyset plus a free key moves the keyset and the free key together into a
+new index. A selection spanning two existing keysets moves the selected members from each into one
+new index, leaving each keyset's unselected members in place.
+
+A newly allocated index is one more than the current maximum live index, or `1` if none exists.
+Selecting the whole board with `--keys all` follows the same rule as any other selection: it
+leaves every keyset's membership as it is if every key is already free, or if one keyset already
+holds every key on the board (the value written still changes on both); on any other board it
+creates one new keyset holding every key, and every keyset that existed before ends with no
+members. See `docs/keysets.md`, "an operator observation", for what evidence supports each shape.
+
 Manage stored groups:
 
 ```
@@ -138,20 +182,21 @@ wh selftest
 
 ## A safety note before you write anything
 
-`wh set`, `wh restore`, and `wh selftest` write to the physical keyboard. `wh set rt` and `wh set ap`
-accept `--dry-run` (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports
-a real run would send, and sends nothing. Use it to check a command before it touches hardware,
-especially the first time you type a new key selector. `wh restore` and `wh selftest` have no
-`--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
-only ever rewrites a setting to the value it already read.
+`wh set`, `wh keyset create|set|delete`, `wh restore`, and `wh selftest` write to the physical
+keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete` accept `--dry-run`
+(`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports a real run would
+send, and sends nothing. Use it to check a command before it touches hardware, especially the first
+time you type a new key selector. `wh restore` and `wh selftest` have no `--dry-run`; `wh restore`
+takes its own auto-backup before writing (see below), and `wh selftest` only ever rewrites a setting
+to the value it already read.
 
-Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`)
-names which transport it opened, on stderr, one line, before doing anything else: `transport:
-hardware (real keyboard)` or `transport: replay (<path>)`. Check that line before trusting that a run
-did what you expected, especially when driving `wh` from a script or another tool where the rest of
-the output might scroll past. `wh keys list` and `wh keys group` never open a transport at all (they
-only ever touch the local key store), so they print no such line; that absence is expected for those
-two, not a sign the announcement failed.
+Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
+`keyset list|create|set|delete`, `profile`) names which transport it opened, on stderr, one line,
+before doing anything else: `transport: hardware (real keyboard)` or `transport: replay (<path>)`.
+Check that line before trusting that a run did what you expected, especially when driving `wh` from
+a script or another tool where the rest of the output might scroll past. `wh keys list` and
+`wh keys group` never open a transport at all (they only ever touch the local key store), so they
+print no such line; that absence is expected for those two, not a sign the announcement failed.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 
@@ -185,8 +230,14 @@ mode value back verbatim. Hand-editing `"rt": false` in a snapshot file before r
 turn rapid trigger off, and `wh restore` will report success and a verified readback while doing
 exactly that: writing the mode value the file actually carries, unaffected by `rt`. If you want to
 change what a restore writes, change the settings on the board and take a fresh backup, not the
-`rt` field in an old one. The keyset fields are informational the same way: `wh restore` ignores
-them entirely, since keyset membership is not yet something `wh` writes (see `docs/tasks.md`).
+`rt` field in an old one. The keyset fields are read into the snapshot and `wh restore` writes them
+back too, when the snapshot recorded them: values first, batched, then membership one record per
+key per layout, last, the vendor's own per-operation shape (measured, `docs/keysets.md`); applying
+that shape to a whole-board restore, including writing every key's actuation point membership
+before any key's rapid trigger membership, is not itself measured, since no capture contains a
+`wh restore` at all. A snapshot taken before these fields existed has no membership to write back:
+`wh restore` leaves those keys' membership on the board exactly as it found it and says so on
+stderr, rather than asserting the `0` the missing fields would otherwise default to.
 
 **It does not contain**, and `wh restore` cannot bring back:
 
@@ -225,29 +276,81 @@ cached to go stale.
 
 Two things look like exceptions and are not:
 
-- `set rt`, `set ap`, and `selftest` each read a key's current settings, then write back a change
-  built from that read. Between the read and the write, the board could in principle be changed by
-  hand (or by another tool); that is a real read-modify-write window, not `wh` caching anything.
+- `set rt`, `set ap`, and `keyset create`/`set`/`delete` each read a key's current settings, then
+  write back a change built from that read (the last three through the same `keyset::plan`).
+  `selftest` does the same at the board level, not a key's: it reads the global travel and dead
+  zones and writes back the identical values, a no-op write that proves the path rather than
+  changing anything. Between a read and its write, the board could in principle be changed by hand
+  (or by another tool); that is a real read-modify-write window, not `wh` caching anything.
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
 
-## Hardware verification still outstanding
+## Hardware verification
+
+### Confirmed on the real board, 2026-09-04
+
+Every result below was measured on **profile 2**. Per-key state is per profile, measured in
+`layout-16-by-profile`: the two profiles were carrying different actuation points, different
+sensitivities and different keysets on the same day. Nothing here has been checked on profile 1.
+
+- **`wh keyset create`, `set`, `delete`, and `wh set ap`'s split all work against the keyboard.**
+  Each verified its own readback and took an auto-backup first. `create` over three free keys
+  already at the global emitted membership records only, the skip rule; `set` emitted values and no
+  membership; `delete` returned its members to the global and cleared membership last, one record
+  per frame; and `wh set ap` over two of a four-member keyset moved exactly those two into a fresh
+  index and left the other two where they were.
+- **`wh set ap --keys all` and `wh restore` both work, and together they are a full round trip.**
+  The whole-board set collapsed four keysets into one index over all 68 keys, 91 frames of which 68
+  were membership, one record per key. `wh restore --last` then put all four back **including their
+  indices, 2, 7, 8 and 9, gaps and all**. Allocation is max plus one, so no `create` could reproduce
+  that set; restoring a snapshot's indices verbatim is what `KeysetIndex::restoring` exists for and
+  this is its first confirmation on hardware.
+- **Timings, measured, and they retire a concern rather than confirming one.** Whole-board
+  `wh set ap`: 0.85 s, against 0.52 s for its dry run. `wh restore`: 0.70 s. Full `wh dump`: 0.47 s,
+  despite now issuing six reads per key rather than four. Roughly 1300 HID roundtrips complete
+  inside a second; there is no performance problem to design around.
+- **`wh profile` round trips.** Read `2`, switch to `1`, read `1`, switch back to `2`, read `2`,
+  with the per-profile snapshot warning printed on each switch.
+- **The vendor cannot tell `wh`'s keysets from its own.** Operator observation of the interface, not
+  a frame measurement: with two keysets made by the vendor and two produced by `wh`, the
+  configurator's actuation point tab listed all four in its own pane, in ascending index order, with
+  their values rendered normally. Every key `wh` had written showed its value undimmed.
+- **`wh set ap` on a rapid trigger keyset member leaves rapid trigger alone.** `N` and `M` were put
+  in rapid trigger keyset 1 at 0.30/0.40mm, then `wh set ap --keys n --set 1.1` moved `N`'s actuation
+  point. Afterwards `N` still read rapid trigger on at 0.30/0.40mm in keyset 1, and `M` was
+  untouched. The MODE record sent was `0x0030`, the key's own nibble 3 resent unchanged, which is
+  `keyset::plan` promoting nibble 0 and nothing else. Creating that keyset also confirmed the
+  **separate counters**: the rapid trigger index allocated as `1` while the actuation point counter
+  stood at `10`.
+- **The configurator greys on keyset membership, and on nothing else.** Settled by two controlled
+  experiments, each changing one variable (`docs/backlog.md`). A key moved to MODE touch nibble 0,
+  the only one on the board holding it, rendered identically to its nibble-1 neighbours outside any
+  keyset at the same value, so the nibble is irrelevant. A keyset then created at exactly the global
+  value rendered highlighted while a non-member holding that same value stayed grey, so the value is
+  irrelevant. Layout `0xFF` is the whole of it.
+
+### Still outstanding
 
 These are built and tested against replay scripts, not yet confirmed on the real board:
 
-- `wh set ap` on an untouched key should no longer render greyed in the vendor UI. That the MODE
-  touch nibble is what causes the greying is a hypothesis, not an established cause: see
-  `docs/backlog.md`.
-- `wh set ap` on a key with rapid trigger on should leave rapid trigger on. `wh` now checks this
-  itself: it reads every key's MODE before the write and fails the run, naming the key and both
-  values, if a key it deliberately left alone reads back changed.
-- If `wh set ap` fails part way through its write batch, expect a partial result. A key's MODE and
-  AP records can land in different frames (measured over the 68 captured keys of a whole-board
-  write: 126 records in 9 frames, 4 keys straddling a boundary), so those keys are left detached
-  from global travel, still holding their old actuation point. `wh restore --last` rolls the board
-  back from the auto-backup taken before the write.
-- `wh profile 2` then `wh profile` should confirm the switch landed.
-- A full `wh dump` should be timed: it now issues six reads per key rather than four.
+- `wh set ap` over keys that are **all outside a keyset** leaves them rendering grey, and that is
+  now understood rather than outstanding: greying tracks membership, so writing values without
+  membership cannot change it. Whether `wh` should create a keyset there, as the configurator's own
+  interface always does, is a decision rather than a check: `docs/tasks.md` 2.20.
+- If `wh set ap` fails part way through its write batch, expect a partial result. `keyset::plan`
+  packs each key's own value records (MODE/AP/RT_PRESS/RT_RELEASE) into one frame, so a
+  failure among them can only land between keys, never inside one key's own group; a split's
+  membership records follow, one key per frame, so the same is true there too. But across the two
+  halves, a failure can now leave a key's values changed with its membership untouched, or move
+  some of a split's keys into the new keyset while leaving others behind in the old one.
+  **`wh restore --last` does fix this now.** It restores AP, MODE, RT_PRESS, RT_RELEASE, and both
+  keyset memberships from the auto-backup taken before the write, values first and membership one
+  record per key per layout, last: the vendor's own per-operation shape, measured
+  (`docs/keysets.md`). Applying that shape to a whole-board restore, including writing every key's
+  actuation point membership before any key's rapid trigger membership, is not itself measured; no
+  capture contains a `wh restore` at all. The restore path itself now works on hardware, see above;
+  what is untested is a restore run against a board left half-written by a failure.
+
 
 ## Protocol
 

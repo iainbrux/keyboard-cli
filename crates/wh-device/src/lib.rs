@@ -2,6 +2,7 @@
 
 #[cfg(windows)]
 pub mod hid;
+pub mod keyset;
 pub mod ops;
 pub mod replay;
 pub mod session;

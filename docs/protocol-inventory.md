@@ -3,6 +3,12 @@
 Generated from all ten capture files of the 2026-08-28 hardware session. Everything here is counted
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
+**Every count here is of that ten-file sample and no other.** The corpus is now 35 files and 5788
+frames, and several values were first seen after this session. Where a row and `docs/protocol.md` or
+`docs/keysets.md` disagree, those two are current and this is a record of what the first session
+measured. Any absolute in a row below, "always", "never", "only ever", is a statement about these
+ten files.
+
 **1224 frames, 0 framing failures and 0 checksum failures.** The checksum formula
 `(0x35 + 0x5C + len + cmd + payload.last()) & 0xFF` holds on every single captured frame in both
 directions. Replies set bit 7 of the command byte.
@@ -52,11 +58,11 @@ nonsense.
 | `0x08` | 2252 | 5 | mode. Modelled |
 | `0x14` | 1858 | 3 | RT press, micrometres. Modelled |
 | `0x15` | 1858 | 4 | RT release, micrometres. Modelled |
-| `0x16` | 1858 | 1 | **always `0`**, never once observed non-zero. Written alongside every RT change |
-| `0x17` | 1858 | 1 | **always `0`**, same |
+| `0x16` | 1858 | 1 | `0` in every one of these frames. Later sessions read and write `100`, see `docs/keysets.md` |
+| `0x17` | 1858 | 1 | Same as `0x16`, and always written with it |
 | `0x19` | 700 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
-| `0xfe` | 424 | 2 | keyset membership. `1` on keyset create, `0` on delete, untouched by edits within a set |
-| `0xff` | 420 | 3 | read 210 times, written 0 before 2026-08-29; **host-written and measured since**, see `docs/keysets.md`. Only ever `0`, `1` or `2`. See `docs/backlog.md` for the read-correlation inference |
+| `0xfe` | 424 | 2 | rapid trigger keyset membership, an index and not a boolean: only `0` and `1` in this ten-capture session, reaching `2` only in the wider 27-capture corpus, see `docs/keysets.md`, untouched by edits within a set |
+| `0xff` | 420 | 3 | read 210 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 27-capture corpus |
 
 The counts above are what these ten captured scenarios happened to exercise, not the fields'
 possible ranges: layout `0x04` (actuation point) only ever took `0, 300, 850, 1200, 1700, 2000,
@@ -97,6 +103,7 @@ Note the vendor UI displays firmware as `V0.046` while the device string is `App
 ## The global record, cmd `0x29`
 
 Reply payload is `000000640000000000000000000000` in all three captures that read it. `p[3..5]` is
-`0x0064`. We call the field "travel" from the upstream spec, but **the meaning is not measured**: the
-vendor only ever reads this record and never writes it, and 0.1mm is not a plausible switch travel
-for a board whose printed scale runs to 3.5mm.
+`0x0064`. We call the field "travel" from the upstream spec, but **the meaning is not measured**:
+the vendor only reads this record in these ten captures, and 0.1mm is not a plausible switch travel
+for a board whose printed scale runs to 3.5mm. A later session measures a write, always carrying
+`press_dead=200` and `release_dead=200`, see `docs/keysets.md`.

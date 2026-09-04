@@ -1,6 +1,6 @@
 [package]
 name = "wh-proto"
-version = "0.1.1-alpha"
+version = "0.2.0-alpha"
 edition.workspace = true
 # Not license.workspace: this crate, alone among the four, contains a Rust port of MIT-licensed
 # Sparklink source (frame.rs, cmds.rs; see their own module docs), so the workspace-wide

@@ -15,7 +15,7 @@ use wh_proto::value::Um;
 pub fn run(cli: Cli) -> Result<()> {
     // Opened once here: `Store::open` only resolves a path, so it is cheap even for commands
     // that never read it. Every command that needs one takes this `&Store` instead of reaching
-    // for the config directory again; `Dump` and `Profile` touch no config at all.
+    // for the config directory again; `Dump`, `Profile`, and `Selftest` touch no config at all.
     let store = Store::open()?;
     match cli.cmd {
         Cmd::Keys { what } => keys(what, &store),
@@ -27,6 +27,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Restore { file, last, force } => restore(file, last, force, &store),
         Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
+        Cmd::Keyset { what } => keyset_cmd(what, &store),
     }
 }
 
@@ -138,8 +139,10 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
             rt_press_mm: ks.rt_press.to_mm(),
             rt_release_mm: ks.rt_release.to_mm(),
             mode_raw: ks.mode.value(),
-            ap_keyset: ks.ap_keyset,
-            rt_keyset: ks.rt_keyset,
+            // Always `Some`: this is a live read, never a stale or absent value, so `wh
+            // restore` from this snapshot can always tell "no keyset" apart from "unknown".
+            ap_keyset: Some(ks.ap_keyset),
+            rt_keyset: Some(ks.rt_keyset),
         });
     }
     Ok(wh_config::snapshot::Snapshot {
@@ -229,16 +232,19 @@ fn dump(table: bool) -> Result<()> {
                 "key", "ap", "apks", "rt", "press", "release", "rtks"
             )?;
             for k in &snap.keys {
+                // `.unwrap_or(0)` is safe here, not a silent fallback: `snap` came from
+                // `snapshot_from_device` a few lines up in this same function, which always
+                // sets `Some`. A stored snapshot with an absent field never reaches this table.
                 writeln!(
                     out,
                     "{:<12} {:>4.2}mm {:>4} {:>4} {:>6.2}mm {:>6.2}mm {:>4}",
                     k.name,
                     k.ap_mm,
-                    keyset_display(k.ap_keyset),
+                    keyset_display(k.ap_keyset.unwrap_or(0)),
                     if k.rt { "on" } else { "off" },
                     k.rt_press_mm,
                     k.rt_release_mm,
-                    keyset_display(k.rt_keyset)
+                    keyset_display(k.rt_keyset.unwrap_or(0))
                 )?;
             }
         }
@@ -507,9 +513,9 @@ fn two_usages_absent_from_table() -> (u8, u8) {
 }
 
 /// Writes one line to stderr, best-effort: a closed stderr (`wh ... 2>/dev/null`) must not
-/// panic over something merely informational. Unlike stdout writes in this module, the
-/// `Result` is discarded rather than propagated.
-fn best_effort_eprintln(msg: &str) {
+/// panic over something merely informational. Unlike stdout writes across this crate, the
+/// `Result` is discarded rather than propagated. `pub(crate)` since `keyset.rs` calls it too.
+pub(crate) fn best_effort_eprintln(msg: &str) {
     let _ = writeln!(std::io::stderr(), "{msg}");
 }
 
@@ -519,6 +525,27 @@ fn best_effort_eprintln(msg: &str) {
 /// every millimetre value in this crate must go through this conversion instead.
 fn mm(v: f64) -> Result<Um> {
     Ok(Um::from_mm(v, 0.0, 4.0)?)
+}
+
+/// Resolves `wh keyset create rt`'s three flags into the `Option<(Um, Um)>` shape
+/// `keyset::create` takes: `--press`/`--release` override a `--value` base, exactly as
+/// `wh set rt`'s `--press`/`--release` override `--set`. `None` only when none of the three
+/// were given at all, so `keyset::create` falls back to the board's global instead.
+fn resolve_rt_override(
+    value: Option<Um>,
+    press: Option<Um>,
+    release: Option<Um>,
+) -> Result<Option<(Um, Um)>> {
+    if value.is_none() && press.is_none() && release.is_none() {
+        return Ok(None);
+    }
+    let p = press
+        .or(value)
+        .ok_or_else(|| anyhow::anyhow!("--release given without --press or --value"))?;
+    let r = release
+        .or(value)
+        .ok_or_else(|| anyhow::anyhow!("--press given without --release or --value"))?;
+    Ok(Some((p, r)))
 }
 
 /// Takes and saves an auto-backup, recording `command` (e.g. `set rt`) as its origin. `restore`
@@ -547,7 +574,7 @@ fn print_frames(out: &mut impl Write, frames: &[[u8; 64]]) -> Result<()> {
 
 /// Shared tail of every write command's readback verification. `bad` is one already-formatted
 /// line per mismatch, built by the caller so each verifier can name exactly what differed.
-fn report_verification(
+pub(crate) fn report_verification(
     out: &mut impl Write,
     what: &str,
     usages: &[u8],
@@ -652,93 +679,6 @@ fn verify_rt_off<T: Transport>(
     report_verification(out, "rt off", &usages, &bad)
 }
 
-/// Verifies an actuation point write: AP for every key with an AP entry in `plan.records`
-/// (`ops::ap_records` emits exactly one per key), and MODE for *every* key, either against the
-/// promoted value it was sent or, for a key that got no MODE record, against the value read from
-/// it before the write. A key left alone on purpose whose MODE moved anyway is a failure: that is
-/// the firmware clearing rapid trigger behind an actuation point change.
-///
-/// Derives the key list from `plan` rather than a separate `usages` parameter, so the two can
-/// never disagree, mirroring `verify_rt`. One line per key, naming both faults when both are
-/// wrong, rather than hiding the mode fault behind the depth one.
-fn verify_ap<T: Transport>(
-    out: &mut impl Write,
-    s: &mut Session<T>,
-    depth: Um,
-    plan: &ops::ApPlan,
-) -> Result<()> {
-    let mut bad = Vec::new();
-    let mut usages = Vec::new();
-    for r in plan.records.iter().filter(|r| r.layout == layout::AP) {
-        let u = r.key;
-        usages.push(u);
-        let ks = ops::read_key_settings(s, u)?;
-        let promoted = plan
-            .records
-            .iter()
-            .find(|r| r.key == u && r.layout == layout::MODE)
-            .map(|r| r.value);
-        if let Some(line) = ap_fault_line(&key_label(u), depth, &ks, promoted, plan.prior_mode(u)) {
-            bad.push(line);
-        }
-    }
-    report_verification(out, &format!("ap {:.2}mm", depth.to_mm()), &usages, &bad)
-}
-
-/// The one line `verify_ap` reports for a key, or `None` when the readback is right.
-///
-/// `promoted` is the MODE value this key was sent, if any; `prior` is the MODE it read before the
-/// write. A promoted key must report what it was sent, and a key deliberately left alone must
-/// report `prior` unchanged, or the firmware moved MODE by itself. Split out from `verify_ap`
-/// because `report_verification` writes these lines to stderr, where a test cannot read them back.
-fn ap_fault_line(
-    name: &str,
-    depth: Um,
-    ks: &ops::KeySettings,
-    promoted: Option<u16>,
-    prior: Option<u16>,
-) -> Option<String> {
-    let mut faults = Vec::new();
-    if ks.ap != depth {
-        faults.push(format!(
-            "board reports {:.2}mm, wanted {:.2}mm",
-            ks.ap.to_mm(),
-            depth.to_mm()
-        ));
-    }
-    let got = ks.mode.value();
-    match promoted {
-        Some(want) if got != want => faults.push(format!(
-            "board reports mode {got:#06x}, wanted mode {want:#06x} (single, key no longer \
-             follows global travel)"
-        )),
-        None => {
-            if let Some(before) = prior.filter(|&before| got != before) {
-                faults.push(format!(
-                    "board reports mode {got:#06x} (rt {}), expected mode {before:#06x} unchanged \
-                     (rt {}); nothing wrote mode for this key",
-                    if ks.rt_enabled() { "on" } else { "off" },
-                    if raw_mode_rt_on(before) { "on" } else { "off" },
-                ));
-            }
-        }
-        Some(_) => {}
-    }
-    if faults.is_empty() {
-        return None;
-    }
-    Some(format!("{name}: {}", faults.join("; ")))
-}
-
-/// Whether a raw MODE value has rapid trigger on, for reporting a pre-write value held as a bare
-/// `u16` rather than a parsed `KeySettings`.
-fn raw_mode_rt_on(mode_raw: u16) -> bool {
-    matches!(
-        cmds::Mode::from_value(mode_raw).touch,
-        cmds::TouchMode::Rt | cmds::TouchMode::RtContinuous
-    )
-}
-
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
 /// cannot disagree with themselves, unlike a bare `off: bool` plus a separate
 /// `Option<(Um, Um)>` could.
@@ -810,16 +750,64 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             let mut out = stdout.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
+                // `kind` is taken from `change`, the same binding that builds the plan below, and
+                // threaded from nowhere else: `announce_steal`'s `kind` picks what it reads back,
+                // so a caller-supplied constant could drift from what the plan actually touches.
+                let change = wh_device::keyset::Change::ap(depth);
+                let kind = change.kind();
+                let m = wh_device::keyset::read_membership(s, kind)?;
+                let membership = crate::keyset::ap_membership_for(&m, &usages)?;
+                let index = match &membership {
+                    crate::keyset::ApMembership::Keep => None,
+                    crate::keyset::ApMembership::Split { index, .. } => Some(*index),
+                };
+                let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
+                let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
                 if dry_run {
-                    let plan = ops::ap_records(s, &usages, depth)?;
-                    return print_frames(&mut out, &cmds::write_key_records(&plan.records));
+                    return print_frames(&mut out, &plan.frames());
                 }
                 auto_backup(s, store, "set ap")?;
-                let plan = ops::set_ap(s, &usages, depth)?;
-                verify_ap(&mut out, s, depth, &plan)
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_write_as(&mut out, s, &what, &plan)
             })
         }
     }
+}
+
+/// Confirms `plan` resolved to `depth`, then builds the label `verify_write_as` reports and, for
+/// a split, prints `announce_steal` first. Split out of `set`'s `SetWhat::Ap` arm so a test can
+/// hand it a `plan` and `depth` that disagree: through the real `Change::ap(depth)` construction
+/// that arm itself uses, the two can never actually diverge, since both come from the same value,
+/// so this is the only way to prove `confirm_ap_target` is wired into the write path at all, not
+/// only correct on its own.
+fn ap_write_label(
+    out: &mut impl Write,
+    kind: wh_device::keyset::Kind,
+    membership: &crate::keyset::ApMembership,
+    plan: &wh_device::keyset::WritePlan,
+    depth: Um,
+) -> Result<String> {
+    // Cross-checked against `depth` independently of whatever `plan` itself computed: see
+    // `confirm_ap_target`'s own doc for why `verify_write_as`'s board-vs-sent check alone cannot
+    // catch a conversion bug that sends the wrong value everywhere.
+    crate::keyset::confirm_ap_target(plan, depth)?;
+    // The label names what actually happened, not a generic "keyset op": a selection that keeps
+    // its membership never touched a keyset at all, and must not claim it did, while a split did
+    // create one and says which.
+    Ok(match membership {
+        crate::keyset::ApMembership::Keep => format!("ap {:.2}mm", depth.to_mm()),
+        crate::keyset::ApMembership::Split { index, losing } => {
+            crate::keyset::announce_steal(
+                out,
+                kind,
+                losing,
+                index.value(),
+                crate::keyset::Target::Ap(depth),
+                plan,
+            )?;
+            format!("ap keyset {} at {:.2}mm", index.value(), depth.to_mm())
+        }
+    })
 }
 
 /// Reads the active profile with no argument, or selects one with `1..=4`. A select takes no
@@ -847,6 +835,140 @@ fn profile_cmd(number: Option<u8>) -> Result<()> {
             Ok(())
         }
     })
+}
+
+/// `Create`/`Set`/`Delete` are named explicitly, not matched by `_`, so a renamed or added
+/// `KeysetWhat` variant is a compile error here rather than a silent "not yet implemented".
+/// Decided before `with_session` opens the device, since the vendor HID collection is exclusive.
+fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
+    use crate::cli::KeysetWhat;
+    match what {
+        KeysetWhat::List { kind } => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| match kind {
+                Some(k) => crate::keyset::list(&mut out, s, crate::keyset::kind_of(k)),
+                None => {
+                    crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Ap)?;
+                    crate::keyset::list(&mut out, s, wh_device::keyset::Kind::Rt)
+                }
+            })
+        }
+        KeysetWhat::Create {
+            kind,
+            keys,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            // Refused up front, before any flag is even converted: `--press`/`--release` mean
+            // nothing on an actuation point create, and silently ignoring them would let a typo'd
+            // command believe it set a sensitivity that was never used.
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset create rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
+            let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let usages = resolve_keys(s, &keys, store)?;
+                let plan = crate::keyset::create(&mut out, s, kind, &usages, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &plan.frames());
+                }
+                auto_backup(s, store, "keyset create")?;
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_write(&mut out, s, kind, "create", &plan)
+            })
+        }
+        KeysetWhat::Set {
+            kind,
+            index,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            // Same refusal as `create`: rapid trigger flags mean nothing on an actuation point
+            // operation, so a typo'd flag must be refused, not silently ignored.
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset set rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
+            let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let plan = crate::keyset::set_value(s, kind, index, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &plan.frames());
+                }
+                auto_backup(s, store, "keyset set")?;
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_write(&mut out, s, kind, "set", &plan)
+            })
+        }
+        KeysetWhat::Delete {
+            kind,
+            index,
+            value,
+            press,
+            release,
+            dry_run,
+        } => {
+            let kind = crate::keyset::kind_of(kind);
+            if kind == wh_device::keyset::Kind::Ap && (press.is_some() || release.is_some()) {
+                bail!(
+                    "--press and --release apply to `wh keyset delete rt`; pass --value for an \
+                     actuation point keyset"
+                );
+            }
+            let value = value.map(mm).transpose()?;
+            let rt = match kind {
+                wh_device::keyset::Kind::Ap => None,
+                wh_device::keyset::Kind::Rt => {
+                    let press = press.map(mm).transpose()?;
+                    let release = release.map(mm).transpose()?;
+                    resolve_rt_override(value, press, release)?
+                }
+            };
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let plan = crate::keyset::delete(&mut out, s, kind, index, value, rt)?;
+                if dry_run {
+                    return print_frames(&mut out, &plan.frames());
+                }
+                auto_backup(s, store, "keyset delete")?;
+                wh_device::keyset::apply(s, &plan)?;
+                crate::keyset::verify_write(&mut out, s, kind, "delete", &plan)
+            })
+        }
+    }
 }
 
 fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
@@ -880,6 +1002,11 @@ struct RestoreKey {
     mode_raw: u16,
     rt_press: Um,
     rt_release: Um,
+    /// `None` when the snapshot predates keyset recording: distinct from `Some(0)`, a live read
+    /// that found the key outside any keyset. `restore_membership_records` and `verify_restore`
+    /// both key off this to leave a key's membership alone rather than assert `0` for it.
+    ap_keyset: Option<u16>,
+    rt_keyset: Option<u16>,
 }
 
 fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<RestoreKey>> {
@@ -902,11 +1029,60 @@ fn validate_restore_keys(snap: &wh_config::snapshot::Snapshot) -> Result<Vec<Res
                 mode_raw: k.mode_raw,
                 rt_press,
                 rt_release,
+                ap_keyset: k.ap_keyset,
+                rt_keyset: k.rt_keyset,
             })
         })
         .collect()
 }
 
+/// Membership records for a restore, actuation point first then rapid trigger, each built
+/// through `KeysetIndex::restoring` so an index from a snapshot can never be mistaken for one
+/// allocation produced.
+///
+/// A key recorded at `Some(0)` still gets a record: skipping it would be incoherent with
+/// `verify_restore` below, which would then read the board's real, live index back, find it
+/// disagreeing with the snapshot's `0`, and fail a restore that never touched that key on
+/// purpose. The write is otherwise unconditional and unverified against the vendor's own
+/// per-operation rules, which is safe only because `verify_restore` re-reads every layout
+/// afterwards, so a firmware side effect here surfaces as a reported mismatch, not silent drift.
+/// A key recorded at `None`, meaning the snapshot predates these fields, gets no record at all:
+/// `restore` cannot assert a membership it was never told.
+fn restore_membership_records(keys: &[RestoreKey]) -> Result<Vec<KeyRecord>> {
+    use wh_device::keyset::{KeysetIndex, Kind};
+    let ap: Vec<(u8, KeysetIndex)> = keys
+        .iter()
+        .filter_map(|k| {
+            k.ap_keyset
+                .map(|v| (k.usage, KeysetIndex::restoring(Kind::Ap, v)))
+        })
+        .collect();
+    let rt: Vec<(u8, KeysetIndex)> = keys
+        .iter()
+        .filter_map(|k| {
+            k.rt_keyset
+                .map(|v| (k.usage, KeysetIndex::restoring(Kind::Rt, v)))
+        })
+        .collect();
+    let mut out = wh_device::keyset::membership_records_for_restore(&ap)?;
+    out.extend(wh_device::keyset::membership_records_for_restore(&rt)?);
+    Ok(out)
+}
+
+/// How many keys `restore_membership_records` left untouched because the snapshot predates
+/// keyset recording, ap and rt counted separately since a hand-edited file could carry one field
+/// and not the other. `restore` prints this to stderr so the gap reads as a reported limitation,
+/// not as the silent success it was before this existed.
+fn restore_membership_skip_counts(keys: &[RestoreKey]) -> (usize, usize) {
+    let ap = keys.iter().filter(|k| k.ap_keyset.is_none()).count();
+    let rt = keys.iter().filter(|k| k.rt_keyset.is_none()).count();
+    (ap, rt)
+}
+
+/// `k.mode_raw` is written verbatim, including touch nibble `0` if the snapshot recorded it,
+/// which puts the key back on global travel: the one place in `wh` that writes that touch nibble,
+/// which the vendor has never been observed writing (`docs/keysets.md`). Membership restore can
+/// also write other unobserved values, such as keyset index `7`; this is about the nibble only.
 fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
     let mut records = Vec::with_capacity(keys.len() * 4);
     for k in keys {
@@ -942,6 +1118,14 @@ fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTr
     })
 }
 
+/// Re-reads every restored key and confirms it holds every value the snapshot recorded. Every
+/// comparison, ap, rt press, rt release, mode, and both keyset memberships, is its own `if`
+/// pushing its own fault line, not one bundled condition: a bug that drops exactly one of them
+/// (mode, say, the field `mode_raw` exists so advanced-key modes survive a round trip) must fail
+/// on that comparison alone, not hide behind five others still catching the same key. A key whose
+/// snapshot had no recorded membership (`RestoreKey::ap_keyset` or `rt_keyset` is `None`) gets no
+/// membership comparison at all: comparing it against a fabricated `0` is exactly the defect
+/// `restore_membership_records` avoids by not writing one.
 fn verify_restore<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -951,23 +1135,52 @@ fn verify_restore<T: Transport>(
     let usages: Vec<u8> = keys.iter().map(|k| k.usage).collect();
     for k in keys {
         let ks = ops::read_key_settings(s, k.usage)?;
-        if ks.ap != k.ap
-            || ks.rt_press != k.rt_press
-            || ks.rt_release != k.rt_release
-            || ks.mode.value() != k.mode_raw
-        {
-            bad.push(format!(
-                "{}: board reports ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}, \
-                 wanted ap {:.2}mm press {:.2}mm release {:.2}mm mode {:#06x}",
-                key_label(k.usage),
+        let mut faults = Vec::new();
+
+        if ks.ap != k.ap {
+            faults.push(format!(
+                "ap {:.2}mm, wanted {:.2}mm",
                 ks.ap.to_mm(),
+                k.ap.to_mm()
+            ));
+        }
+        if ks.rt_press != k.rt_press {
+            faults.push(format!(
+                "rt press {:.2}mm, wanted {:.2}mm",
                 ks.rt_press.to_mm(),
+                k.rt_press.to_mm()
+            ));
+        }
+        if ks.rt_release != k.rt_release {
+            faults.push(format!(
+                "rt release {:.2}mm, wanted {:.2}mm",
                 ks.rt_release.to_mm(),
+                k.rt_release.to_mm()
+            ));
+        }
+        if ks.mode.value() != k.mode_raw {
+            faults.push(format!(
+                "mode {:#06x}, wanted {:#06x}",
                 ks.mode.value(),
-                k.ap.to_mm(),
-                k.rt_press.to_mm(),
-                k.rt_release.to_mm(),
-                k.mode_raw,
+                k.mode_raw
+            ));
+        }
+        if let Some(want) = k.ap_keyset {
+            if ks.ap_keyset != want {
+                faults.push(format!("ap keyset {}, wanted {want}", ks.ap_keyset));
+            }
+        }
+        if let Some(want) = k.rt_keyset {
+            if ks.rt_keyset != want {
+                faults.push(format!("rt keyset {}, wanted {want}", ks.rt_keyset));
+            }
+        }
+
+        if !faults.is_empty() {
+            bad.push(format!(
+                "{}: board reports {}",
+                key_label(k.usage),
+                faults.join("; ")
             ));
         }
     }
@@ -1046,6 +1259,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
     let global = snap_to_global(&snap)?;
     let keys = validate_restore_keys(&snap)?;
     let records = restore_records(&keys);
+    let membership = restore_membership_records(&keys)?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1055,11 +1269,22 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // best-effort backup silently drop this safety check with nothing failing to compile.
         let board_profile = ops::profile(s).context("reading the board's active profile")?;
         check_restore_profile(snap.profile, board_profile, force)?;
+        // Past every refusal that stops this restore before it writes anything: only from here
+        // is it true that a key's membership is (about to be) left as the board already has it,
+        // rather than describing a restore that never ran.
+        let (skipped_ap, skipped_rt) = restore_membership_skip_counts(&keys);
+        if skipped_ap > 0 || skipped_rt > 0 {
+            best_effort_eprintln(&format!(
+                "note: snapshot has no recorded actuation point keyset for {skipped_ap} key(s) \
+                 and no recorded rapid trigger keyset for {skipped_rt} key(s) (it predates \
+                 keyset recording); leaving those keys' membership on the board as it already is"
+            ));
+        }
         // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.
         auto_backup(s, store, "restore")?;
-        ops::restore_all(s, &global, &records)?;
+        ops::restore_all(s, &global, &records, &membership)?;
         // Printed only after verification passes, so stdout never claims success on a run
         // where stderr reports a mismatch.
         verify_restore(&mut out, s, &keys)?;
@@ -1304,83 +1529,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A readback for one key, with MODE and AP set by the caller and the rest fixed: only
-    /// those two fields drive `ap_fault_line`.
-    fn readback(ap: Um, mode_raw: u16) -> ops::KeySettings {
-        ops::KeySettings {
-            usage: 0x1A,
-            ap,
-            mode: cmds::Mode::from_value(mode_raw),
-            rt_press: Um(500),
-            rt_release: Um(500),
-            ap_keyset: 0,
-            rt_keyset: 0,
-        }
-    }
-
-    #[test]
-    fn ap_fault_line_is_silent_when_depth_and_an_unchanged_mode_both_match() {
-        let ks = readback(Um(1200), 0x38);
-        assert_eq!(ap_fault_line("w", Um(1200), &ks, None, Some(0x38)), None);
-    }
-
-    /// The Critical 1 case: no MODE record was sent, and the board still moved MODE from `Rt`
-    /// (0x38) to `Single` (0x18), silently clearing rapid trigger. That must be a reported fault,
-    /// not an unchecked read.
-    #[test]
-    fn ap_fault_line_catches_a_mode_the_board_changed_with_no_mode_record_sent() {
-        let ks = readback(Um(1200), 0x18);
-        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x38))
-            .expect("a mode that moved on its own must be a fault");
-        assert!(
-            line.contains("w:") && line.contains("0x0018") && line.contains("0x0038"),
-            "must name the key and both mode values: {line}"
-        );
-        assert!(
-            line.contains("rt off") && line.contains("rt on"),
-            "must say rapid trigger was on before and off now: {line}"
-        );
-    }
-
-    /// One line per key, naming both faults. The `else if` this replaced hid a MODE fault behind
-    /// an AP fault on the same key, which is exactly the pairing a failed write produces.
-    #[test]
-    fn ap_fault_line_names_both_faults_when_depth_and_mode_are_both_wrong() {
-        let ks = readback(Um(1100), 0x18);
-        let line = ap_fault_line("w", Um(1200), &ks, None, Some(0x38)).expect("both are wrong");
-        assert_eq!(
-            line.lines().count(),
-            1,
-            "still one line per key, not two: {line}"
-        );
-        assert!(
-            line.contains("1.10mm") && line.contains("1.20mm"),
-            "the depth fault must survive: {line}"
-        );
-        assert!(
-            line.contains("0x0018") && line.contains("0x0038"),
-            "the mode fault must survive alongside it: {line}"
-        );
-    }
-
-    /// A promoted key is still checked against the value it was sent, not against its prior MODE.
-    #[test]
-    fn ap_fault_line_checks_a_promoted_key_against_the_value_it_was_sent() {
-        let ks = readback(Um(1200), 0x00);
-        let line = ap_fault_line("a", Um(1200), &ks, Some(0x10), Some(0x00))
-            .expect("the promotion did not land");
-        assert!(
-            line.contains("wanted mode 0x0010"),
-            "unexpected line: {line}"
-        );
-        // And the same key reading back the promoted value is silent.
-        let ok = readback(Um(1200), 0x10);
-        assert_eq!(
-            ap_fault_line("a", Um(1200), &ok, Some(0x10), Some(0x00)),
-            None
-        );
-    }
-
     #[test]
     fn rfc3339_at_the_unix_epoch() {
         assert_eq!(rfc3339_from_unix_secs(0), "1970-01-01T00:00:00Z");
@@ -1473,5 +1621,79 @@ mod tests {
     fn key_label_falls_back_to_hex_for_an_unnamed_usage() {
         let (unnamed, _) = two_usages_absent_from_table();
         assert_eq!(key_label(unnamed), format!("0x{unnamed:02X}"));
+    }
+
+    // -- ap_write_label: proves confirm_ap_target is actually wired in --
+
+    use wh_device::replay::ReplayTransport;
+
+    fn ap_write_label_l(dir: &str, b: &[u8; 64]) -> String {
+        format!(
+            "{{\"dir\":\"{dir}\",\"hex\":\"{}\"}}",
+            wh_device::replay::hex(b)
+        )
+    }
+    fn ap_write_label_rf(cmd: u8, payload: &[u8]) -> [u8; 64] {
+        wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn ap_write_label_settings_script(
+        usage: u8,
+        ap: u16,
+        mode: u16,
+        rt_press: u16,
+        rt_release: u16,
+        ap_keyset: u16,
+        rt_keyset: u16,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (lid, val) in [
+            (layout::AP, ap),
+            (layout::MODE, mode),
+            (layout::RT_PRESS, rt_press),
+            (layout::RT_RELEASE, rt_release),
+            (layout::KEYSET_AP, ap_keyset),
+            (layout::KEYSET_RT, rt_keyset),
+        ] {
+            lines.push(ap_write_label_l("out", &cmds::read_key_layout(usage, lid)));
+            lines.push(ap_write_label_l(
+                "in",
+                &ap_write_label_rf(
+                    cmds::cmd::KEY,
+                    &[0x00, usage, lid, (val & 0xFF) as u8, (val >> 8) as u8],
+                ),
+            ));
+        }
+        lines
+    }
+
+    /// Deleting `ap_write_label`'s call to `confirm_ap_target` leaves every other test in this
+    /// crate green, since `set`'s `SetWhat::Ap` arm always builds `plan` and this check from the
+    /// same `depth`, so the two can never disagree through the real path. This test bypasses that
+    /// by building `plan` from `Change::ap(2.50mm)` and then confirming it against a different,
+    /// independently-chosen depth (1.20mm), the only way to prove the call is wired in here at
+    /// all, not merely correct in isolation (already pinned in `keyset.rs`).
+    #[test]
+    fn ap_write_label_bails_when_the_plan_disagrees_with_the_requested_depth() {
+        let lines = ap_write_label_settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let change = wh_device::keyset::Change::ap(Um(2500));
+        let plan = wh_device::keyset::plan(&mut s, &[0x1A], &change, None).unwrap();
+        let membership = crate::keyset::ApMembership::Keep;
+
+        let mut out = Vec::new();
+        let err = ap_write_label(
+            &mut out,
+            wh_device::keyset::Kind::Ap,
+            &membership,
+            &plan,
+            Um(1200),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("plan resolved w to 2.50mm, not the 1.20mm requested"),
+            "got: {err}"
+        );
     }
 }

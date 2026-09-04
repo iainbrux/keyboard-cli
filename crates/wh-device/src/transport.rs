@@ -1,4 +1,5 @@
 use std::time::Duration;
+use wh_proto::cmds::KeysetKind;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceError {
@@ -24,6 +25,20 @@ pub enum DeviceError {
         "board reported profile index {0}, but the board only has 4 profiles (wire index 0..=3)"
     )]
     ProfileOutOfRange(u8),
+    /// `keyset::next_index` found the highest live membership value already at `u16::MAX`.
+    /// Kept distinct from `Decode`: every value read parsed fine, there is simply no larger
+    /// index left to hand out.
+    #[error("cannot allocate a new keyset index: u16::MAX is already in use")]
+    KeysetIndexExhausted,
+    /// A caller passed membership or an index for the wrong keyset kind, e.g. an actuation
+    /// point `Membership` into `global_rt`, or an index allocated from one counter written
+    /// through a `plan` for the other. A caller error, caught before any frame is sent, not
+    /// anything the device said.
+    #[error("keyset kind mismatch: expected {expected:?}, got {found:?}")]
+    KeysetKindMismatch {
+        expected: KeysetKind,
+        found: KeysetKind,
+    },
     // `source` isn't interpolated into the message: thiserror wires it into
     // `Error::source()`, and `main.rs`'s anyhow `{e:#}` already walks that chain, so the
     // cause text would otherwise print twice.

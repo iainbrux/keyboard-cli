@@ -19,10 +19,14 @@ pub struct KeySettings {
 }
 
 impl KeySettings {
-    /// True for either RT variant: `TouchMode::RtContinuous` is still rapid trigger, just with
-    /// the device's own continuous-mode toggle (not something `wh` exposes) left on.
+    /// True for all three rapid trigger nibbles. `RtGlobal` (2) follows the board's global
+    /// settings, `Rt` (3) carries the key's own, and `RtContinuous` (4) adds the device's
+    /// continuous-mode toggle, which `wh` does not expose. All three mean rapid trigger is on.
     pub fn rt_enabled(&self) -> bool {
-        matches!(self.mode.touch, TouchMode::Rt | TouchMode::RtContinuous)
+        matches!(
+            self.mode.touch,
+            TouchMode::RtGlobal | TouchMode::Rt | TouchMode::RtContinuous
+        )
     }
 }
 
@@ -67,7 +71,8 @@ pub fn read_key_settings<T: Transport>(
 /// Reads one key's layout value, rejecting a reply that doesn't echo back the same key and
 /// layout id asked for. `Session::roundtrip` matches only on the command byte (0x23 for every
 /// per-key read and write ack), so a stale reply could otherwise apply key A's value to key B.
-fn read_layout_value<T: Transport>(
+/// Public: the single-layout read the keyset CLI lists through.
+pub fn read_layout_value<T: Transport>(
     s: &mut Session<T>,
     usage: u8,
     layout_id: u8,
@@ -118,6 +123,8 @@ pub fn rt_records<T: Transport>(
     for &u in usages {
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
+        // `RtGlobal` collapses to `Rt`: asking for a sensitivity is asking for the key's own,
+        // which is nibble 3. That is what the vendor writes when it makes a rapid trigger keyset.
         let touch = match cur_mode.touch {
             TouchMode::RtContinuous => TouchMode::RtContinuous,
             _ => TouchMode::Rt,
@@ -149,10 +156,14 @@ pub fn rt_records<T: Transport>(
 /// Builds the [mode] records to turn rapid trigger off on `usages`, preserving each key's
 /// advanced-mode nibble. Reads current MODE per key but sends nothing else.
 ///
-/// Only rewrites keys currently `Rt` or `RtContinuous`, to `Single` (nibble 1), never to
-/// `Global` (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key
-/// with nothing to change gets no record (see the skip below), so `wh set rt --keys all --off`
-/// on a board with few RT keys doesn't detach every other key from the global travel setting.
+/// Only rewrites keys with rapid trigger on, to `Single` (nibble 1), never to `Global`
+/// (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key with
+/// nothing to change gets no record (see the skip below), so `wh set rt --keys all --off` on a
+/// board with few RT keys doesn't detach every other key from the global travel setting.
+///
+/// `RtGlobal` counts: a key following the board's global rapid trigger has it on, so `--off`
+/// must turn it off. Nibble 1 is what the vendor itself writes when the global switch goes off
+/// (`captures/ks-global-rt-off.jsonl`), so this is the same value from the same measurement.
 ///
 /// Measured on the real device (`captures/rt-off-w.jsonl`): turning RT off wrote nibble 1, not
 /// 0. What nibble 0 does to the key's own actuation-point value is unmeasured; this function
@@ -166,7 +177,7 @@ pub fn rt_off_records<T: Transport>(
         let cur_value = read_layout_value(s, u, layout::MODE)?;
         let cur_mode = Mode::from_value(cur_value);
         let touch = match cur_mode.touch {
-            TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
+            TouchMode::RtGlobal | TouchMode::Rt | TouchMode::RtContinuous => TouchMode::Single,
             other => other,
         };
         let mode = Mode {
@@ -175,9 +186,9 @@ pub fn rt_off_records<T: Transport>(
             high: cur_mode.high,
         };
         let new_value = mode.value();
-        // Skip when nothing would change: a key that wasn't `Rt`/`RtContinuous` recomputes to
-        // the value just read, and sending it anyway would write a MODE value (nibble 0
-        // included) the vendor was never once observed sending, across 1224 captured frames.
+        // Skip when nothing would change: a key that isn't `RtGlobal`, `Rt`, or `RtContinuous`
+        // recomputes to the value just read, and sending it anyway would write a MODE value
+        // (nibble 0 included) the vendor was never once observed sending, over 3696 frames.
         if new_value != cur_value {
             records.push(KeyRecord {
                 key: u,
@@ -241,22 +252,24 @@ impl ApPlan {
 /// pre-write MODE. Reads current MODE per key but sends nothing else, so a caller can dry-run.
 ///
 /// Always writes AP. Also writes MODE, promoted to `Single`, but only when the key currently
-/// reads `Global`. The vendor writes MODE `0x18` on every actuation point change, including for
-/// keys already at `0x18`, so our rule is a strict subset of the vendor's, not a match for it.
+/// reads `Global`. Across all 27 keyset-era captures the vendor's own post-write MODE takes seven
+/// distinct values (`0x10` through `0x48`), not a fixed `0x18`; what holds over 469 measured
+/// echoes is that the vendor rewrites MODE wherever this function sends nothing at all.
 ///
-/// That MODE marker is the leading hypothesis for why a value written without it renders greyed
-/// in the vendor configurator: nibble 1 has direct write evidence in every captured actuation
-/// point change. It stays a hypothesis until the hardware session tests it.
+/// That MODE marker was the leading hypothesis for why a value written without it renders greyed
+/// in the vendor configurator. `docs/keysets.md` now ranks it unlikely to be the whole story: a
+/// single click of the global rapid trigger switch stamps nibble 1 across nearly the whole board
+/// without the user touching any key, so nibble 1 alone cannot be the marker.
 ///
 /// MODE is ordered before AP per key, matching hardware. Across keys the vendor groups all MODE
 /// writes before one AP write, measured three times over in `captures/ap-wasd-1.2.jsonl`; our
 /// per-key interleaving is a deliberate divergence whose safety is untested.
 ///
-/// `Single`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. `Rt`/`RtContinuous` matter
-/// most: an RT key still carries its own actuation point, so a depth change must not silently
-/// turn rapid trigger off. Whether the vendor forces nibble 1 here is unmeasured, so this takes
-/// the non-destructive reading. `Unknown` nibbles have never been observed on hardware, so
-/// overwriting one would discard state we cannot interpret.
+/// `Single`, `RtGlobal`, `Rt`, `RtContinuous`, and `Unknown` are all left alone. The three
+/// rapid trigger nibbles matter most: such a key still carries its own actuation point, so a
+/// depth change must not silently turn rapid trigger off. Whether the vendor forces nibble 1
+/// here is unmeasured, so this takes the non-destructive reading. `Unknown` nibbles have never
+/// been observed on hardware, so overwriting one would discard state we cannot interpret.
 ///
 /// A key's MODE and AP records can land in different write frames, and a failure between the two
 /// leaves those keys `Single`, detached from global travel, still holding their old actuation
@@ -372,20 +385,30 @@ pub fn set_profile<T: Transport>(
     Ok(got)
 }
 
-/// Writes a whole snapshot back to the board: global travel first, then every per-key record.
-/// Global travel goes first so a restore that fails partway through the per-key batch still
-/// leaves the board's overall travel consistent with what was intended.
+/// Writes a whole snapshot back to the board: the global record, then every key's values
+/// batched, then membership one record per frame, last. Values before membership, membership
+/// one-per-frame-last, is the vendor's own per-operation template and is measured
+/// (`docs/keysets.md`); applying that shape to a whole-board restore, and specifically writing
+/// every key's actuation point membership before any key's rapid trigger membership, is this
+/// crate's own inference, not a vendor behaviour: no capture contains a `wh restore` at all.
+/// Global travel goes first so a restore that fails partway through the rest still leaves the
+/// board's overall travel consistent with what was intended.
 pub fn restore_all<T: Transport>(
     s: &mut Session<T>,
     global: &cmds::GlobalTravel,
     records: &[KeyRecord],
+    membership: &[KeyRecord],
 ) -> Result<(), DeviceError> {
     s.roundtrip(&cmds::write_global_travel(
         global.travel,
         global.press_dead,
         global.release_dead,
     ))?;
-    write_records(s, records)
+    write_records(s, records)?;
+    for frame in cmds::write_key_records_singly(membership) {
+        s.roundtrip(&frame)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -644,7 +667,7 @@ mod tests {
 
     /// The reply's high byte (`payload[4]`, the wire byte `parse_key_reply` puts in
     /// `KeyRecord.value`'s upper bits) must survive a read-modify-write intact. Reply lo `0x21`
-    /// (touch `Unknown(2)`, advanced `0x1`), hi `0x02`: `rt_records` forces touch to `Rt`
+    /// (touch `RtGlobal`, advanced `0x1`), hi `0x02`: `rt_records` forces touch to `Rt`
     /// (`0x3`) while preserving the advanced nibble and high byte, giving `0x0231`.
     ///
     /// The expected value is a hand-written literal, not built via `Mode { .. }.value()` again:
@@ -771,13 +794,22 @@ mod tests {
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
         assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");
+        // Uses `KeySettings::rt_enabled` itself, not a hand-copied nibble list, so refreshing
+        // `REAL_MODES` from a capture that includes a nibble-2 (`RtGlobal`) key fails this guard
+        // for the right reason instead of passing it while the assertion below goes stale.
         assert_eq!(
             REAL_MODES
                 .iter()
-                .filter(|&&(_, v)| matches!(
-                    Mode::from_value(v).touch,
-                    TouchMode::Rt | TouchMode::RtContinuous
-                ))
+                .filter(|&&(usage, v)| KeySettings {
+                    usage,
+                    ap: Um(0),
+                    mode: Mode::from_value(v),
+                    rt_press: Um(0),
+                    rt_release: Um(0),
+                    ap_keyset: 0,
+                    rt_keyset: 0,
+                }
+                .rt_enabled())
                 .count(),
             0,
             "none of the real captured keys have RT on; that is what makes this a regression test"
@@ -1049,12 +1081,12 @@ mod tests {
         }
     }
 
-    /// An unobserved touch nibble is left exactly as found. Nibble 2 has never been seen on
+    /// An unobserved touch nibble is left exactly as found. Nibble 5 has never been seen on
     /// hardware, so overwriting it would discard state we cannot interpret.
     #[test]
     fn ap_records_leaves_an_unknown_touch_nibble_alone() {
-        // MODE 0x0220: touch nibble 2, which maps to TouchMode::Unknown(2).
-        let lines = mode_read_script(0x1A, 0x20, 0x02).join("\n");
+        // MODE 0x0250: touch nibble 5, which maps to TouchMode::Unknown(5).
+        let lines = mode_read_script(0x1A, 0x50, 0x02).join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
         let plan = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
         assert_eq!(
@@ -1065,6 +1097,68 @@ mod tests {
                 value: 1000
             }],
             "an unknown touch nibble must yield no MODE record"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// A non-`Global` touch nibble must never get a promoted MODE record from an actuation point
+    /// change, or a depth change could silently turn rapid trigger off. Uses nibble 2
+    /// (`RtGlobal`) as the example, but the code path only ever distinguishes "not Global", so
+    /// this does not by itself prove nibble 2 is treated any differently from `Unknown`.
+    #[test]
+    fn ap_records_leaves_the_global_rapid_trigger_nibble_alone() {
+        let lines = mode_read_script(0x1A, 0x20, 0x00).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let plan = ap_records(&mut s, &[0x1A], Um(1000)).unwrap();
+        assert_eq!(
+            plan.records,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::AP,
+                value: 1000
+            }],
+            "TouchMode::RtGlobal must yield no MODE record"
+        );
+        assert!(s.into_inner().finished());
+    }
+
+    /// Nibble 2 is rapid trigger on, following the global settings. Reporting it as off is what
+    /// `wh dump` did before the global rapid trigger switch was ever captured.
+    #[test]
+    fn rt_enabled_is_true_for_the_global_rapid_trigger_nibble() {
+        let ks = KeySettings {
+            usage: 0x1A,
+            ap: Um(2000),
+            mode: Mode::from_value(0x20),
+            rt_press: Um(200),
+            rt_release: Um(200),
+            ap_keyset: 0,
+            rt_keyset: 0,
+        };
+        assert_eq!(ks.mode.touch, TouchMode::RtGlobal);
+        assert!(
+            ks.rt_enabled(),
+            "a key at touch nibble 2 has rapid trigger on"
+        );
+    }
+
+    /// `--off` on a key following the global rapid trigger must actually turn it off. It writes
+    /// nibble 1, the value the vendor itself writes when the global switch goes off
+    /// (`captures/ks-global-rt-off.jsonl`).
+    #[test]
+    fn rt_off_records_turns_off_a_key_following_the_global_rapid_trigger() {
+        // MODE 0x0028: touch nibble 2, advanced nibble 8, as measured on W.
+        let lines = mode_read_script(0x1A, 0x28, 0x00).join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let recs = rt_off_records(&mut s, &[0x1A]).unwrap();
+        assert_eq!(
+            recs,
+            vec![KeyRecord {
+                key: 0x1A,
+                layout: layout::MODE,
+                value: 0x18,
+            }],
+            "nibble 2 must be written down to nibble 1, preserving the advanced nibble"
         );
         assert!(s.into_inner().finished());
     }
@@ -1477,10 +1571,11 @@ mod tests {
         assert!(set_profile(&mut s, target).is_err());
     }
 
-    /// Writes the global travel DB record first, then the per-key batch(es), no SAVE
-    /// afterwards, mirroring `set_rt`/`set_ap`'s own script shape above.
+    /// Writes the global travel DB record first, then the per-key batch(es), then membership one
+    /// record per frame last, no SAVE afterwards, mirroring `set_rt`/`set_ap`'s own script shape
+    /// above.
     #[test]
-    fn restore_all_writes_global_travel_then_key_batches_and_sends_no_save() {
+    fn restore_all_writes_global_travel_then_key_batches_then_membership_last_and_sends_no_save() {
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
@@ -1531,9 +1626,16 @@ mod tests {
             },
         ];
 
+        let membership = vec![KeyRecord {
+            key: 0x1A,
+            layout: layout::KEYSET_AP,
+            value: 3,
+        }];
+
         let db_write =
             cmds::write_global_travel(global.travel, global.press_dead, global.release_dead);
         let batches = cmds::write_key_records(&recs);
+        let membership_frames = cmds::write_key_records_singly(&membership);
 
         let mut lines = vec![
             l("out", &db_write),
@@ -1543,18 +1645,22 @@ mod tests {
             lines.push(l("out", f));
             lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
         }
-        // Script ends right after the key batches: a SAVE order afterwards would be rejected.
+        for f in &membership_frames {
+            lines.push(l("out", f));
+            lines.push(l("in", &rf(cmds::cmd::KEY, &[0x01])));
+        }
+        // Script ends right after the membership frame: a SAVE order afterwards would be rejected.
 
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        restore_all(&mut s, &global, &recs).unwrap();
+        restore_all(&mut s, &global, &recs, &membership).unwrap();
         assert!(s.into_inner().finished());
     }
 
     #[test]
     fn restore_all_skips_key_batch_when_there_are_no_records() {
-        // Only the global travel write should reach the wire; an empty `records` produces no
-        // key batch frames. Pins the resulting wire behaviour, not a specific early-return
-        // branch in `write_records`.
+        // Only the global travel write should reach the wire; empty `records` and `membership`
+        // produce no key batch frames and no membership frames. Pins the resulting wire
+        // behaviour, not a specific early-return branch in `write_records`.
         let global = cmds::GlobalTravel {
             travel: Um(2000),
             press_dead: Um(100),
@@ -1568,7 +1674,7 @@ mod tests {
         ]
         .join("\n");
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
-        restore_all(&mut s, &global, &[]).unwrap();
+        restore_all(&mut s, &global, &[], &[]).unwrap();
         assert!(s.into_inner().finished());
     }
 }
