@@ -83,14 +83,14 @@ rather than as settings it recognises.
   Still not exercised: a restore over a board left half-written by a genuine failure. See
   `README.md`.
 
-- [ ] **2.20 `wh set ap` on free keys must create a keyset.** Ruled by the operator on 2026-09-04,
+- [x] ~~**2.20 `wh set ap` on free keys must create a keyset.**~~ Ruled by the operator on 2026-09-04,
   after the greying result settled that the configurator distinguishes a recognised setting from a
   loose override on keyset membership (`0xFF`) alone, not on the MODE nibble and not on the value.
 
   The rule the operator stated: a key sits outside a keyset exactly when it holds the board's base
   value, and any other value means it belongs to one. Grey means "follows the base"; highlighted
   means "has its own value". So `wh set ap --keys h --set 1.5` on a free key must allocate a keyset
-  and put `h` in it, where today it writes the value and no membership.
+  and put `h` in it, where it previously wrote the value and no membership.
 
   This is a ruling about what `wh` should do, not a measured firmware invariant, and the difference
   matters because the board does not enforce it. `docs/keysets.md` records keyset 4 holding `2.00mm`
@@ -107,6 +107,9 @@ rather than as settings it recognises.
   This also retires task 2.2's stated rationale. The nibble 0 to 1 promotion stays, because the
   vendor demonstrably does it, but "so our writes stop rendering greyed" was the wrong reason and is
   now measured false.
+
+  Shipped: an all-free selection now allocates a keyset, and a selection that is exactly one
+  keyset's members still keeps its index.
 
 - [ ] **2.21 `wh keyset remove` to take individual keys out of a keyset. Depends on 2.20.** Ruled
   with 2.20: because setting a value never removes a key from its keyset, membership needs its own

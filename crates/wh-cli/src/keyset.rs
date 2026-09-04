@@ -359,8 +359,9 @@ fn losing_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, Vec<u8>)> {
 /// what was observed is its UI copying a mixed selection into a new one.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ApMembership {
-    /// Leave membership alone: either no selected key is in a keyset, or the selection is
-    /// exactly one keyset's members and it keeps its index.
+    /// Leave membership alone: the selection is exactly one keyset's members, so it keeps its
+    /// index. A selection of free keys does not come here; it allocates, since a key holding a
+    /// value of its own belongs to a keyset.
     Keep,
     /// Move every selected key into a newly allocated keyset, taking these members from these
     /// existing keysets.
@@ -384,9 +385,6 @@ pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembe
     }
     let sets = keyset::group(m);
     let losing = losing_members(&sets, usages);
-    if losing.is_empty() {
-        return Ok(ApMembership::Keep);
-    }
     if losing.len() == 1 {
         let (index, taken) = &losing[0];
         let whole = sets
@@ -861,6 +859,53 @@ mod tests {
                 panic!("a free key riding along with a fully-consumed keyset must still split")
             }
         }
+    }
+
+    /// The 2.20 ruling: a selection where every key is free must still allocate a keyset, where
+    /// it previously returned `Keep` and wrote no membership at all. Pins the allocated index and
+    /// the empty losing list, not merely that a `Split` came back: a rewrite that allocated the
+    /// wrong index, or invented a losing keyset, would pass a bare variant check.
+    #[test]
+    fn ap_membership_for_creates_a_keyset_when_every_selected_key_is_free() {
+        // w (0x1A) and a (0x04) are both free; the board has no keysets at all.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+
+        let got = ap_membership_for(&m, &[0x1A, 0x04]).unwrap();
+        match got {
+            ApMembership::Split { index, losing } => {
+                assert_eq!(
+                    index.value(),
+                    1,
+                    "first keyset on an empty board: {index:?}"
+                );
+                assert!(losing.is_empty(), "no keyset loses anything: {losing:?}");
+            }
+            ApMembership::Keep => panic!("an all-free selection must now create a keyset"),
+        }
+    }
+
+    /// The mirror case, unchanged by the 2.20 ruling: a selection that is exactly one keyset's
+    /// members keeps that keyset's index rather than allocating a new one. Without this, deleting
+    /// the `losing.is_empty()` early return could be over-generalised into deleting the whole
+    /// `Keep` arm, and every value change would churn a fresh keyset index.
+    #[test]
+    fn ap_membership_for_keeps_the_index_when_the_selection_is_exactly_one_keyset() {
+        // w (0x1A) and a (0x04) are keyset 1, and nothing else is selected.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+
+        assert_eq!(
+            ap_membership_for(&m, &[0x1A, 0x04]).unwrap(),
+            ApMembership::Keep,
+            "a selection that is exactly one keyset must keep its index"
+        );
     }
 
     /// `ap_membership_for` must refuse a rapid trigger `Membership`, the same guard every other
