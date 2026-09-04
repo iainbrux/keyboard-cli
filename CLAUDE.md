@@ -53,8 +53,10 @@ was taken on, which is why `wh restore` refuses a mismatch outright.
 two captures is invalid unless both sides are established, and for most pairs that cannot be done
 from the frames at all. `layout-16-by-profile` measures only profile 1: it selects index `1` as its
 last outbound frame and stops, so it contains no profile 2 read. That the two profiles held
-different values on the same day is therefore measured on one side and corroborated on the other by
-the operator's note, not measured on both. Do not flatten that to "measured".
+different values **on 2026-09-04** is therefore measured on one side and corroborated on the other
+by the operator's note, not measured on both. Do not flatten that to "measured". For 2026-08-28 both
+sides are established from frames: `initial-load` reads index `0` and `profile-switch` selects index
+`1`, and both are pure reads with no writes at all.
 
 `profile-switch` is the trap: it selects index `1` as its first frame, so despite sitting among the
 2026-08-28 captures every read in it is profile 2. Seven of the ten Phase 1 files record no profile
@@ -146,7 +148,7 @@ the code is wrong**, not merely that it passes when the code is right. Mutate th
 claims to check, watch it fail, restore, and say so in the report. Several tests in this repo were
 found to be decorative exactly that way.
 
-**Three shapes have shipped here, and they are not the same shape.**
+**Three shapes have bitten here, and they are not the same shape. Only the first reached `main`.**
 
 *A string something else can also emit.* `contains("mismatch")` matches `ReplayTransport`'s own
 "send mismatch" wording, so the test cannot tell a real readback mismatch from a broken fixture.
@@ -155,8 +157,9 @@ code's refusal from the flag not existing. Both were caught by review and streng
 patterns are still live elsewhere in `crates/wh-cli/tests/`. Assert text only `wh`'s own code emits.
 
 *A string true only of its own fixture.* A rapid trigger refusal named one cause for two different
-board states, and the test pinning it was built on the one board where that cause was true, so it
-could never fail. Ask which other boards reach the line, and whether the assertion still holds there.
+board states, and the test pinning it was built on the one board where that cause was true. The
+test could still fail on a wording change; what it could never do is catch the wrong-cause defect.
+Ask which other boards reach the line, and whether the assertion still holds there.
 
 *An assertion too narrow for the line it guards.* A confirmation prompt was asserted by one
 substring, so half the prompt could be deleted with the suite green. Found by mutation, not shipped.
@@ -164,11 +167,15 @@ substring, so half the prompt could be deleted with the suite green. Found by mu
 **And mutate one level up.** Unit tests proving a string is built correctly do not prove it reaches
 the operator through the real command path. Those are different claims and need different tests.
 
-**The fixtures do not look like the real board, in one specific way.** Measured 2026-09-04: all 68
-keys on the operator's board hold MODE `0x10`, advanced nibble 0. The fixtures use `0x18` 104 times
-against `0x10` once in `tests/keyset.rs`, and 38 against 8 in `tests/dump.rs`. The commonest real
-value is close to untested, and a fixture built by copying its neighbours inherits a board shape
-that does not exist. When a change touches MODE, add a case at `0x10`.
+**The commonest real MODE value is close to untested.** Counting the literal strings, the fixtures
+write `0x18` 104 times against `0x10` once in `tests/keyset.rs`, and 38 against 8 in `tests/dump.rs`
+(`0x0018` also appears and the grep misses it, so the real ratio is worse). Meanwhile a `wh dump` of
+profile 2 on 2026-09-04 read `0x10` on all 68 keys, and `layout-16-by-profile` read it on 64 of 68
+on profile 1 the same day. So a change touching MODE should add a case at `0x10`.
+
+The fixtures are not fabricated, and an earlier draft of this paragraph said they were. Every `0x18`
+fixture sits on `w`, `a`, `s` or `d`, and those four keys really did hold `0x18` on profile 1 on
+2026-09-04. They are a real board shape, just not the common one.
 
 ## What the code does and what it says are separate claims
 
