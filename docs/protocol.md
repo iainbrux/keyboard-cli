@@ -430,6 +430,12 @@ advanced nibble reads `8`: before the re-pair it queried W/A/S/D, after it queri
 pairings and priorities survived the reload (W-S still "S wins", Q-E still LAST-INPUT), modulo the
 per-key normalisation above.
 
+**Pairings are per profile.** Measured 2026-09-06 with `wh socd list` on real hardware: profile 1
+reads W+S and A+D, both last-input (the pairs Phase 1 found), while the 2026-09-05 sitting's edits
+(W+S with priority S, Q+E) were made on profile 4 and do not appear. Two profiles, two tables. That
+run was also the command's first against hardware: discovery, normalisation and readback all
+behaved as the replay tests predicted.
+
 Not measured: whether an orphaned `0x2c` pairing survives on the board after a remove (the remove
 never clears it on the wire; the next connect no longer queries the keys, so the read path cannot
 say), the upstream modes `3` and `4`, and the `type` field ever being nonzero.
