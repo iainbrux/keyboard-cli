@@ -589,8 +589,8 @@ interface's PROFILE 1.
 `profile-select-3` (2026-09-05, index `2` acknowledged). `profile-switch` selects index `1` as
 its **first** outbound frame, takes all 60 of its read requests there, and returns to index `0`
 at the end, so **that capture is profile 2 throughout**, not profile 1. `layout-16-by-profile`
-selects index `0`, takes 60 read requests, then selects index `1`
-as its last outbound frame and stops. The remaining 31 captures record no profile at all.
+selects index `0`, takes 60 read requests, then selects index `1` as its last outbound frame and
+stops. The remaining 48 captures record no profile at all.
 
 **What `layout-16-by-profile` measures, and what it does not.** It measures profile 1 on 2026-09-04
 in full: `0x04` of `3000` on `ESC`, `2050` on `S`, `W` and `X`, `300` on `D` and `M`, `2000` on the
