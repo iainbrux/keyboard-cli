@@ -561,6 +561,21 @@ rather than as settings it recognises.
   `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
   disagreeing one. Implemented in 2.4b and 2.13, not here.
 
+- [ ] **2.29 Two stale corpus counts in `ops::ap_records`'s doc.**
+  `crates/wh-device/src/ops.rs:264-267` says "across all 27 keyset-era captures" and "469 measured
+  echoes". The corpus is 39 files. Left deliberately when the rest of 2.16 was corrected on
+  2026-09-05: re-deriving them means simulating `ap_records`'s own per-key output against every
+  capture to decide which MODE writes it would and would not have sent, which is a materially
+  riskier measurement than counting records, and a wrong number here would be worse than a stale
+  one. 2.16's header was narrowed instead so it no longer claims these were corrected.
+
+  Both numbers support the same load-bearing claim, that the vendor rewrites MODE where
+  `ap_records` sends nothing, and that claim was not in doubt. What is stale is the evidence
+  offered for it.
+
+  When it is picked up: write the simulation as a test rather than a script, so the number is
+  re-derived by the suite instead of pasted into a comment that rots again.
+
 - [ ] **2.28 Four whole-board refusal assertions match a string three commands emit.**
   `crates/wh-cli/tests/dump.rs:2768`, `:2926`, `:2969` and `:3165` assert `contains("was not
   confirmed")` on a declined whole-board run. `wh keyset remove`, `wh keyset create` and
