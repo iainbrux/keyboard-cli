@@ -560,6 +560,25 @@ rather than as settings it recognises.
   `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
   disagreeing one. Implemented in 2.4b and 2.13, not here.
 
+- [ ] **2.28 Four whole-board refusal assertions match a string three commands emit.**
+  `crates/wh-cli/tests/dump.rs:2768`, `:2926`, `:2969` and `:3165` assert `contains("was not
+  confirmed")` on a declined whole-board run. `wh keyset remove`, `wh keyset create` and
+  `wh set ap` all end their refusal with that phrase, so none of these can tell its own command's
+  refusal from another's.
+
+  **Measured 2026-09-05, and this is not theoretical.** The same shape at
+  `crates/wh-cli/tests/keyset.rs:4439` let a mutation pass the whole workspace green while
+  `wh keyset remove ap` told the operator "rapid trigger off over the whole board was not
+  confirmed", naming a command they had not run. That one is now tightened to the full sentence and
+  the underlying hazard is closed by type, but these four still carry the weak assertion.
+
+  Found while closing 2.13 and deliberately not fixed there: they guard `confirm_whole_board_ap_set`
+  and `confirm_whole_board_create`, so tightening them would have put `wh set ap` and
+  `wh keyset create` inside a rapid trigger diff. Correct scoping, not an oversight.
+
+  Each needs its own full refusal sentence rather than the shared tail. Prove each by mutating its
+  command's noun to another command's and watching only that test fail.
+
 - [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
   non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
   - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. The promotion is measured
