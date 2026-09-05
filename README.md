@@ -180,11 +180,12 @@ following the board's global sensitivity are only moving onto their own, and are
 described separately. A touch mode `wh` has never measured is counted with the second group,
 whose wording claims only where the key ends up, so nothing ever asserts an unmeasured mode was
 off. Without these counts a board with no keysets of that kind reads as though nothing much is
-about to happen, right up until the write that pins every key permanently. It fires on the resolved selection covering the matrix, however it is
-spelled, not on the literal word `all`. `--dry-run` never prompts, since it writes nothing, and
-there is no bypass flag, so a script that used to run `wh keyset create ap --keys all` unattended
-now needs a `yes` on its stdin. The prompt goes to stderr, not stdout, so redirecting the
-command's output still shows it on screen and still reads the typed answer from stdin.
+about to happen, right up until the write that pins every key permanently. It fires on the
+resolved selection covering the matrix, however it is spelled, not on the literal word `all`.
+`--dry-run` never prompts, since it writes nothing, and there is no bypass flag, so a script that
+used to run `wh keyset create ap --keys all` unattended now needs a `yes` on its stdin. The prompt
+goes to stderr, not stdout, so redirecting the command's output still shows it on screen and still
+reads the typed answer from stdin.
 
 **`wh set ap` over a selection that is not exactly one existing keyset's members moves the whole
 selection into one new keyset, and says so.** Four shapes: a selection that is part of a keyset

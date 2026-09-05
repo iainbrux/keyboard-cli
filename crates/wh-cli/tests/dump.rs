@@ -2786,8 +2786,10 @@ fn keyset_create_rt_over_the_whole_board_requires_a_typed_yes() {
         stderr.contains("rt keyset(s) 1, 2 will cease to exist, their members absorbed"),
         "got: {stderr}"
     );
+    // The leading separator and the tail of the clause before it are part of the assertion: a
+    // clause welded straight onto the keyset clause with no `, ` would otherwise pass.
     assert!(
-        stderr.contains("2 key(s) have rapid trigger switched on"),
+        stderr.contains("their members absorbed, 2 key(s) have rapid trigger switched on"),
         "got: {stderr}"
     );
     // No key here came from nibble 2, so the sensitivity-source clause has nothing to count and
@@ -2865,14 +2867,86 @@ fn keyset_create_rt_over_the_whole_board_does_not_claim_an_already_on_key_was_of
         stderr.contains("no rt keysets exist to lose"),
         "got: {stderr}"
     );
+    // Separator and preceding clause included, so the join is pinned and not just the wording.
     assert!(
-        stderr.contains("2 key(s) move onto their own rapid trigger sensitivity"),
+        stderr.contains(
+            "no rt keysets exist to lose, 2 key(s) move onto their own rapid trigger sensitivity"
+        ),
         "got: {stderr}"
     );
     // The claim this test exists to forbid: neither key was off, and one of the two is a nibble
     // nothing has measured, so nothing may say rapid trigger is being switched on for either.
     assert!(
         !stderr.contains("rapid trigger switched on"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("rt keyset creation over the whole board was not confirmed"),
+        "got: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The board the split exists for: both rapid trigger clauses non-zero at once, which neither of
+/// the two tests above reaches. `w` at nibble 0 and `a` at nibble 1 are measured as rapid trigger
+/// off and are being switched on; `s` at nibble 2 had it on already, following the board's global
+/// sensitivity, and is only moving onto its own; `d` at nibble 3 does not move at all.
+///
+/// Asserted as one string covering both clauses and the separator that joins them, since three
+/// separate `contains` checks would let the concatenation itself break: a second clause emitted
+/// only when the first is empty prints the two switched-on keys and says nothing at all about
+/// the third key moving, with every other assertion here still passing. The counts differ from
+/// each other and from the selection's size (2, 1 and 4), so no clause can be reading the wrong
+/// one of the three.
+#[test]
+fn keyset_create_rt_over_the_whole_board_names_both_mode_clauses_when_both_apply() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 1));
+    }
+    for (usage, mode) in [
+        (0x1Au8, 0x00u16), // Global: rapid trigger off
+        (0x04, 0x10),      // Single: rapid trigger off
+        (0x16, 0x20),      // RtGlobal: on already, following the global sensitivity
+        (0x07, 0x30),      // Rt: already its own, so no mode record at all
+    ] {
+        lines.extend(key_settings_lines(usage, 1200, mode, 100, 150, 0, 1));
+    }
+    let path = write_script("keyset-create-rt-whole-board-both-clauses", &lines);
+    let config_home = scratch_config_dir("keyset-create-rt-whole-board-both-clauses");
+    let out = run_wh_stdin(
+        &[
+            "keyset",
+            "create",
+            "rt",
+            "--keys",
+            "all",
+            "--press",
+            "0.30",
+            "--release",
+            "0.40",
+        ],
+        &path,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "rt: this selects every key on the board: every key moves into the new keyset 2 at \
+             0.30/0.40mm"
+        ),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "rt keyset(s) 1 will cease to exist, their members absorbed, 2 key(s) have rapid \
+             trigger switched on, 1 key(s) move onto their own rapid trigger sensitivity"
+        ),
         "got: {stderr}"
     );
     assert!(
@@ -2916,12 +2990,14 @@ fn keyset_create_over_the_whole_board_with_no_keysets_still_names_the_mode_count
             .contains("ap: this selects every key on the board: every key moves into the new keyset 1 at 2.00mm"),
         "got: {stderr}"
     );
+    // One assertion over the join, not two over the halves: the separator between the keyset
+    // clause and the mode clause is part of what the operator reads, and two independent
+    // `contains` checks leave it free to disappear.
     assert!(
-        stderr.contains("no ap keysets exist to lose"),
-        "got: {stderr}"
-    );
-    assert!(
-        stderr.contains("4 key(s) move off global travel onto their own actuation point"),
+        stderr.contains(
+            "no ap keysets exist to lose, 4 key(s) move off global travel onto their own \
+             actuation point"
+        ),
         "got: {stderr}"
     );
     assert!(
