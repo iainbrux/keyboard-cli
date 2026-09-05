@@ -213,6 +213,29 @@ impl Target {
     }
 }
 
+/// The `Change` a reset writes, over a value the caller has already resolved. `delete` and
+/// `remove` send the same per-key template, measured in `ks-delete-rt` and `ks-remove-one-rt`, so
+/// a correction to that template has to land on both at once and this is what makes it land.
+/// `create` is not a caller: its rapid trigger arm builds `Change::rt_on`, the opposite template.
+///
+/// Resolves nothing and reads no device, deliberately. The two callers agree on the template and
+/// disagree on how they reach the value: `delete` refuses on `NoneOutsideAKeyset` and names
+/// `--value`/`--press`/`--release` as the way out, while `remove`, which has no such flags, falls
+/// back to `NO_SIGNAL_BASE` for the actuation point and refuses for rapid trigger. A helper that
+/// resolved the value as well would hand one command the other's behaviour.
+///
+/// `Change::ap`, not `Change::ap_keeping_touch`: a reset promotes touch nibble 0 ("follow global
+/// travel") to nibble 1, a per-key pinned actuation point, matching the vendor's own measured
+/// behaviour on an actuation point change (`ks-value-ap`). `ap_keeping_touch` exists for an
+/// operation that must never move a key off global travel; resetting a key to the base is not
+/// that operation.
+fn reset_change(target: Target) -> keyset::Change {
+    match target {
+        Target::Ap(v) => keyset::Change::ap(v),
+        Target::Rt(p, r) => keyset::Change::rt_off(p, r),
+    }
+}
+
 /// Creates a keyset over `usages` at the global value, or at an explicit one. Announces which
 /// existing keysets lose members first: a create overwrites its members' values with the global
 /// rather than carrying them in, so the operator sees what is about to go.
@@ -386,22 +409,26 @@ pub(crate) fn delete<T: Transport>(
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let ks = resolve_index(&keyset::group(&m), index)?;
-    let (change, target) = match kind {
+    // Resolved here, not in `reset_change`: `delete` refuses on both `Split` and
+    // `NoneOutsideAKeyset` and offers a flag as the way out, which `remove` has no flag to
+    // satisfy. Only the template built from the resolved value is shared.
+    let target = match kind {
         Kind::Ap => {
             let v = match value {
                 Some(v) => v,
                 None => global_ap_or_bail(s, &m, "--value")?,
             };
-            (keyset::Change::ap(v), Target::Ap(v))
+            Target::Ap(v)
         }
         Kind::Rt => {
             let (p, r) = match rt {
                 Some(v) => v,
                 None => global_rt_or_bail(s, &m, "--press and --release")?,
             };
-            (keyset::Change::rt_off(p, r), Target::Rt(p, r))
+            Target::Rt(p, r)
         }
     };
+    let change = reset_change(target);
     let cleared = keyset::KeysetIndex::clear(kind);
     let plan = keyset::plan(s, &ks.members, &change, Some(cleared))?;
     announce_delete(out, kind, index, target, &plan)?;
@@ -531,22 +558,21 @@ pub(crate) fn remove<T: Transport>(
         })
         .collect();
 
-    let (change, target, base_invented) = match kind {
+    // Resolved here, not in `reset_change`: `remove` has no `--value`/`--press`/`--release` to
+    // fall back on, so `remove_base_ap` invents `NO_SIGNAL_BASE` where `remove_base_rt` refuses,
+    // and neither behaves like `delete`. Only the template built from the resolved value is
+    // shared.
+    let (target, base_invented) = match kind {
         Kind::Ap => {
             let (v, invented) = remove_base_ap(s, &m, usages)?;
-            // `Change::ap`, not `Change::ap_keeping_touch`: `remove` promotes touch nibble 0
-            // ("follow global travel") to nibble 1, a per-key pinned actuation point, the same
-            // promotion `create`/`set`/`delete` already apply, matching the vendor's own measured
-            // behaviour on an actuation point change (`ks-value-ap`). `ap_keeping_touch` exists for
-            // an operation that must never move a key off global travel; nothing about resetting a
-            // key to the base is that operation, so nothing here should reach for it instead.
-            (keyset::Change::ap(v), Target::Ap(v), invented)
+            (Target::Ap(v), invented)
         }
         Kind::Rt => {
             let (p, r) = remove_base_rt(s, &m, usages)?;
-            (keyset::Change::rt_off(p, r), Target::Rt(p, r), false)
+            (Target::Rt(p, r), false)
         }
     };
+    let change = reset_change(target);
 
     // `plan` is built before the whole-matrix confirmation, not after: the prompt below describes
     // what `plan` actually contains, so the operator answers with that in front of them rather than

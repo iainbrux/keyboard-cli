@@ -287,8 +287,8 @@ rather than as settings it recognises.
   `docs/keysets.md`, "Setting the base actuation point", for the full breakdown, the nine usages,
   and `wh`'s own two documented divergences from that template.
 
-- [ ] **2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
-  before the part that is not.** Deferred during 2.21 because extracting it would have refactored
+- [x] ~~**2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
+  before the part that is not.**~~ Deferred during 2.21 because extracting it would have refactored
   `delete`, which is shipped and hardware-verified, inside a task that did not ask for it. 2.22
   changed the two branches enough that this is no longer the same task it was when first written:
   read what is actually shared before touching either.
@@ -314,6 +314,23 @@ rather than as settings it recognises.
   `NoneOutsideAKeyset` behaviour without meaning to, either direction. Share only the `Change`
   construction shape, parameterised over an already-resolved value each caller keeps producing its
   own way.
+
+  **Done 2026-09-05.** `crates/wh-cli/src/keyset.rs` gained `reset_change`, a function
+  taking an already-resolved `Target` and returning `Change::ap` or `Change::rt_off`. It takes no
+  `Session` and no `Kind` of its own: the `Target` variant carries the kind, so a caller cannot
+  hand it a value and a kind that disagree, and it can resolve nothing. `delete` still resolves
+  through `global_ap_or_bail`/`global_rt_or_bail` and `remove` still through
+  `remove_base_ap`/`remove_base_rt`, each building its own `Target` first. `create` is not a
+  caller: its rapid trigger arm needs `Change::rt_on`.
+
+  Three tests in `crates/wh-cli/tests/keyset.rs` pin the divergence over one board shape where
+  every key sits in a keyset, so no global exists to read: `delete ap` refuses and names `--value`,
+  `remove ap` falls back to `NO_SIGNAL_BASE` and says the value was invented, `remove rt` refuses
+  because no measured rapid trigger equivalent exists. Each was proved by collapsing the two
+  resolutions in turn. Wiring `delete` through `remove_base_ap` made a `--dry-run` delete announce
+  "returning members to 2.00mm" and emit three write frames for a value nobody passed; wiring
+  `remove` through `global_ap_or_bail`/`global_rt_or_bail` made both `remove` cases refuse while
+  naming `--value` and `--press and --release`, flags `wh keyset remove` does not have.
 
 - [x] ~~**2.27 `wh keyset create --keys all` is a third unguarded route to destroying every
   keyset.**~~ Found by a reviewer probing the guard added for `wh set ap --keys all`, and measured:
