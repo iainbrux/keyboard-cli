@@ -10,6 +10,55 @@ Evidence for every protocol claim below is in `docs/protocol.md`, `docs/protocol
 
 Complete. See the Done section.
 
+## Phase 3
+
+Ordered by the operator on 2026-09-05. The north star is a TUI replicating terminal.wallhack.com
+one to one, mouse-clickable and arrow-navigable. The ordering principle: extend the data model and
+finish the transport before the TUI is written, so it is written once against its final foundation.
+Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land before 3.5.
+
+- [ ] **3.1 `wh set --mm`, the configurator's "MM" CUSTOM VALUE.** The stepper step size, not an
+  actuation point. Already measured: three vendor writes in the corpus (`custom-value-change` at
+  travel 400 and 650, `custom-value-nudge-after-restore` at 150), all through `cmd 0x29` with dead
+  zones 200/200. Snapshot field renamed to `custom_value_mm` on 2026-09-05 and already restored
+  faithfully. The flag name `--mm` is reserved for this by the operator's 2026-09-04 ruling. What is
+  left is only the write command and its tests. No new captures needed.
+
+- [ ] **3.2 One capture session: SOCD, RGB/LED, dead zones.** All three need the operator at the
+  vendor UI with a capture running, so they are one sitting. Toggle SOCD pairs on and off and
+  remap which keys pair; change LED or RGB settings if the UI exposes them (suspected `cmd 0x18`,
+  payload shapes `7f7f` and `ff00ff00`, six request/reply pairs in the corpus, never identified);
+  and move the dead-zone controls if the configurator exposes any, which would settle the
+  `docs/backlog.md` question of whether the `cmd 0x29` 200/200 is a constant or a user setting at
+  its default, a question the read path cannot answer because the board reports 0 on every read.
+
+- [ ] **3.3 SOCD.** `cmd 0x2c` is almost certainly it: queries by key, replies with symmetric
+  pairs, measured as W with S and A with D. Behaviour measured, name inferred, writes never
+  observed. Blocked on 3.2's captures for the write shape. CLI surface to be designed once the
+  writes are measured.
+
+- [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
+  architectural blocker for any long-running interface. The board announces entering and leaving
+  its own adjust mode with `cmd 0x00` sub-order `0xbe` (`be 00` entering, `be 01` leaving), and
+  while adjusting it stops being a keyboard entirely. The vendor configurator ignores the first
+  and re-reads the whole board on the second. `Transport` is strictly request-then-response and
+  cannot receive it. This lands before the TUI so the TUI's read loop is written once against the
+  final transport, and it is what makes both vendor-matching re-reads and the locked-board banner
+  (which the vendor UI lacks, and the operator wants) possible.
+
+- [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,
+  arrow-navigable, values populated by reading the board on open (a full read costs ~40ms, so no
+  cache), re-reading on `be 01`, and showing a locked-board banner between `be 00` and `be 01`.
+  `ratatui` and `crossterm` are already dependencies and `wh keys --pick` is the working seed.
+  Spec to be written when this task opens; it consumes 3.1, 3.3 and 3.4.
+
+- [ ] **3.6 Key remapping, base layer and FN layer.** Layouts `0x00` and `0x01`, both measured
+  (`remap-one-key`, `initial-load`, and the FN-layer table in `docs/protocol-inventory.md`). `wh`
+  already reads them for key identity. Independent CLI work; can land before or after 3.7.
+
+- [ ] **3.7 RGB/LED, from 3.2's captures.** Investigation then build. Nothing is known today
+  beyond the suspected `cmd 0x18`.
+
 ## Phase 2
 
 Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.16
