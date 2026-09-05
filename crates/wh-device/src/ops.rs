@@ -164,8 +164,10 @@ pub fn rt_records<T: Transport>(
 ///
 /// Only rewrites keys with rapid trigger on, to `Single` (nibble 1), never to `Global`
 /// (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key with
-/// nothing to change gets no record (see the skip below), so `wh set rt --keys all --off` on a
-/// board with few RT keys doesn't detach every other key from the global travel setting.
+/// nothing to change gets no record (see the skip below), so a whole-board `--off` on a board with
+/// few RT keys doesn't detach every other key from the global travel setting. That was written
+/// about `wh set rt --keys all --off`, which no longer calls this; the property is still this
+/// function's, and `keyset::plan` reaches the same one by its own separate skip rule.
 ///
 /// `RtGlobal` counts: a key following the board's global rapid trigger has it on, so `--off`
 /// must turn it off. Nibble 1 is what the vendor itself writes when the global switch goes off
@@ -795,10 +797,14 @@ mod tests {
     }
 
     /// Replays all 68 real per-key MODE values from `captures/initial-load.jsonl` (none of them
-    /// RT-enabled, confirmed below) through `rt_off_records`, exactly what
-    /// `wh set rt --keys all --off` sends. Guards against rewriting any of the 58 nibble-0 keys
-    /// unconditionally, and against emitting a record that just echoes each key's unchanged
-    /// value: the correct output is no records at all.
+    /// RT-enabled, confirmed below) through `rt_off_records`. Guards against rewriting any of the
+    /// 58 nibble-0 keys unconditionally, and against emitting a record that just echoes each key's
+    /// unchanged value: the correct output is no records at all.
+    ///
+    /// This is a claim about `rt_off_records` and nothing else. It once said "exactly what
+    /// `wh set rt --keys all --off` sends", which stopped being true the moment that command moved
+    /// to `keyset::plan`: it now sends a `0xFE = 0` record for every selected key regardless of
+    /// what its MODE reads, so on this board it sends 68 records where this test expects none.
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
         assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");

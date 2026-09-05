@@ -1198,11 +1198,19 @@ fn set_rt_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
 
 /// The reads `wh set rt --off` issues before it plans anything, against the two-key board:
 /// `resolve_keys`' matrix read, `keyset::read_membership`'s own matrix read and `0xFE` sweep, then
-/// `keyset::global_rt`'s press/release pair for every key that sweep found outside a keyset.
-/// `rt_keysets` is each key's `0xFE` value in matrix order ('w' then 'a'), and `sensitivities` the
-/// pair each free key reads back, in the same order; a key with a non-zero `0xFE` contributes no
-/// sensitivity read at all, which is what makes `global_rt` a reading of the board's free keys.
-fn rt_off_pre_plan_lines(rt_keysets: [u16; 2], sensitivities: [(u16, u16); 2]) -> Vec<String> {
+/// `keyset::global_rt_excluding`'s press/release pair for every key that sweep found outside a
+/// keyset *and* outside the selection. `rt_keysets` is each key's `0xFE` value in matrix order
+/// ('w' then 'a'), and `sensitivities` the pair each read-back key reports, in the same order.
+///
+/// `selection` is what `--keys` resolved to, and a key in it contributes no sensitivity read at
+/// all, exactly like a key already in a keyset. That exclusion is the point: the keys being reset
+/// are usually the ones holding their own sensitivity, so a script that expected them to be read
+/// would be scripting the defect this command had in fix round 1.
+fn rt_off_pre_plan_lines(
+    rt_keysets: [u16; 2],
+    sensitivities: [(u16, u16); 2],
+    selection: &[u8],
+) -> Vec<String> {
     let mut lines = matrix_lines(); // resolve_keys
     lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
     for (usage, ks) in [0x1Au8, 0x04].into_iter().zip(rt_keysets) {
@@ -1213,7 +1221,7 @@ fn rt_off_pre_plan_lines(rt_keysets: [u16; 2], sensitivities: [(u16, u16); 2]) -
         .zip(rt_keysets)
         .zip(sensitivities)
     {
-        if ks != 0 {
+        if ks != 0 || selection.contains(&usage) {
             continue;
         }
         lines.extend(layout_read_lines(usage, layout::RT_PRESS, press));
@@ -1222,31 +1230,22 @@ fn rt_off_pre_plan_lines(rt_keysets: [u16; 2], sensitivities: [(u16, u16); 2]) -
     lines
 }
 
-/// The auto-backup phase for the boards the `set rt --off` tests below use: 'w' at whatever MODE,
-/// sensitivities and `0xFE` the scenario put it at, 'a' free at MODE 0x10 with the global
-/// 0.10/0.10mm. Distinct from `auto_backup_lines_with_modes`, which hardcodes 'w' free at 500/500
-/// and 'a' at 0/0, neither of which is true of a board with a rapid trigger keyset on it.
-fn auto_backup_lines_rt_off(
-    mode_w: u16,
-    press_w: u16,
-    release_w: u16,
-    rt_keyset_w: u16,
-) -> Vec<String> {
+/// The auto-backup phase for the boards the `set rt --off` tests below use, taking both keys'
+/// full state rather than assuming either: a board with a rapid trigger keyset on it is exactly
+/// the case these tests exist for, and `auto_backup_lines_with_modes` hardcodes 'w' free at
+/// 500/500 and 'a' at 0/0, neither of which such a board holds. Each key is
+/// `(ap, mode, press, release, ap keyset, rt keyset)`, `WasdKeyState`'s own shape.
+fn auto_backup_lines_rt_off(w: WasdKeyState, a: WasdKeyState) -> Vec<String> {
     let mut lines = Vec::new();
     lines.extend(sync_lines("SNRTOFFTEST00001", "V1.0.0.001"));
     lines.extend(profile_lines(0));
     lines.extend(global_travel_lines(500, 200, 200));
     lines.extend(matrix_lines());
-    lines.extend(key_settings_lines(
-        0x1A,
-        1000,
-        mode_w,
-        press_w,
-        release_w,
-        0,
-        rt_keyset_w,
-    ));
-    lines.extend(key_settings_lines(0x04, 1500, 0x10, 100, 100, 0, 0));
+    for (usage, (ap, mode, press, release, apks, rtks)) in [(0x1Au8, w), (0x04, a)] {
+        lines.extend(key_settings_lines(
+            usage, ap, mode, press, release, apks, rtks,
+        ));
+    }
     lines
 }
 
@@ -1315,7 +1314,7 @@ fn rt_off_membership_records() -> Vec<KeyRecord> {
 /// substring assertion still passes.
 #[test]
 fn set_rt_off_dry_run_resets_sensitivities_and_clears_membership() {
-    let mut lines = rt_off_pre_plan_lines([1, 0], [(500, 500), (100, 100)]);
+    let mut lines = rt_off_pre_plan_lines([1, 0], [(500, 500), (100, 100)], &[0x1A]);
     // `plan`'s own six-layout read of 'w': rapid trigger on (touch nibble 3) with advanced nibble
     // 1 and high byte 0x02, its own 0.50/0.50mm, and rapid trigger keyset 1.
     lines.extend(key_settings_lines(0x1A, 1000, 0x0231, 500, 500, 0, 1));
@@ -1369,9 +1368,12 @@ fn set_rt_off_dry_run_resets_sensitivities_and_clears_membership() {
 /// right is a different claim from proving it reaches the operator, which is why both exist.
 #[test]
 fn set_rt_off_end_to_end_clears_membership_and_verifies() {
-    let mut lines = rt_off_pre_plan_lines([1, 0], [(500, 500), (100, 100)]);
+    let mut lines = rt_off_pre_plan_lines([1, 0], [(500, 500), (100, 100)], &[0x1A]);
     lines.extend(key_settings_lines(0x1A, 1000, 0x0231, 500, 500, 0, 1));
-    lines.extend(auto_backup_lines_rt_off(0x0231, 500, 500, 1));
+    lines.extend(auto_backup_lines_rt_off(
+        (1000, 0x0231, 500, 500, 0, 1),
+        (1500, 0x10, 100, 100, 0, 0),
+    ));
     lines.extend(write_lines(
         &rt_off_value_records(0x0211, 1000, 100, 100),
         &rt_off_membership_records(),
@@ -1412,11 +1414,15 @@ fn set_rt_off_end_to_end_clears_membership_and_verifies() {
 /// so a spurious value bundle hits an unscripted send and `ReplayTransport` rejects it.
 #[test]
 fn set_rt_off_on_an_already_off_key_clears_membership_and_writes_no_value_records() {
-    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)]);
+    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)], &[0x1A]);
     // 'w' at MODE 0x10: touch Single, the commonest real value on this board, rapid trigger
-    // already off, and already holding the global 0.10/0.10mm.
+    // already off, and already holding the global 0.10/0.10mm that 'a', the one key left outside
+    // the selection, is what the base is read from.
     lines.extend(key_settings_lines(0x1A, 1000, 0x10, 100, 100, 0, 0));
-    lines.extend(auto_backup_lines_rt_off(0x10, 100, 100, 0));
+    lines.extend(auto_backup_lines_rt_off(
+        (1000, 0x10, 100, 100, 0, 0),
+        (1500, 0x10, 100, 100, 0, 0),
+    ));
     lines.extend(write_lines(&[], &rt_off_membership_records()));
     lines.extend(key_settings_lines(0x1A, 1000, 0x10, 100, 100, 0, 0));
 
@@ -1446,35 +1452,47 @@ fn set_rt_off_on_an_already_off_key_clears_membership_and_writes_no_value_record
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The four-key board every disagreement test below shares: 'w' holds its own 0.50/0.50mm while
-/// 'a', 's' and 'd' all sit at 0.10/0.10mm, and no key is in a rapid trigger keyset. So
-/// `global_rt` reads four free keys and finds two distinct values, three keys at one and one at
-/// the other, which is what makes the refusal's descending order observable rather than a tie.
-fn rt_off_split_board_lines() -> Vec<String> {
+/// The four-key board both disagreement tests below share. Every key is free of a rapid trigger
+/// keyset; 'w', the one being reset, holds its own 0.50/0.50mm, and the three keys the selection
+/// leaves behind do not agree with each other either: 'a' at 0.50/0.50mm, 's' and 'd' at
+/// 0.10/0.10mm. So the disagreement is among keys *outside* the selection, which is the only case
+/// where refusing is right. 'w' contributes no reading at all, being excluded, which is what stops
+/// the ordinary "turn rapid trigger off on the one key that has it" run from refusing.
+///
+/// `read_sensitivities` is whether the sweep happens at all: `--press`/`--release` skips it
+/// entirely, and a script carrying reads that never happen fails as loudly as one missing reads
+/// that do.
+///
+/// The counts are 2 and 1, and the first value read is the one held by a single key, so the
+/// refusal's descending order is observable rather than a tie or an accident of read order.
+fn rt_off_split_board_lines(read_sensitivities: bool) -> Vec<String> {
     let mut lines = matrix_lines_wasd(); // resolve_keys
     lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
     for usage in [0x1Au8, 0x04, 0x16, 0x07] {
         lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
     }
-    for (usage, (press, release)) in [0x1Au8, 0x04, 0x16, 0x07].into_iter().zip([
-        (500u16, 500u16),
-        (100, 100),
-        (100, 100),
-        (100, 100),
-    ]) {
-        lines.extend(layout_read_lines(usage, layout::RT_PRESS, press));
-        lines.extend(layout_read_lines(usage, layout::RT_RELEASE, release));
+    if read_sensitivities {
+        // 'w' (0x1A) is absent: it is the selection, and the base read excludes it.
+        for (usage, (press, release)) in
+            [0x04u8, 0x16, 0x07]
+                .into_iter()
+                .zip([(500u16, 500u16), (100, 100), (100, 100)])
+        {
+            lines.extend(layout_read_lines(usage, layout::RT_PRESS, press));
+            lines.extend(layout_read_lines(usage, layout::RT_RELEASE, release));
+        }
     }
     lines
 }
 
-/// `--off` on a board whose free keys disagree refuses rather than picking a winner, names each
-/// distinct value with how many keys hold it in descending order of count, and names
-/// `--press`/`--release` as the way past. Asserts the whole sentence: a bare `!success` would also
-/// pass if the run merely ran off the end of the script, which is a different failure entirely.
+/// `--off` on a board where the keys left outside the selection disagree refuses rather than
+/// picking a winner, names each distinct value with how many keys hold it in descending order of
+/// count, and names both ways past: the override flags, and widening the selection. Asserts the
+/// whole sentence, because a bare `!success` would also pass on a run that merely reached the end
+/// of a short script, which is what a mutant that stops refusing actually produces here.
 #[test]
 fn set_rt_off_refuses_when_the_free_keys_disagree_and_names_the_override_flags() {
-    let path = write_script("set-rt-off-split", &rt_off_split_board_lines());
+    let path = write_script("set-rt-off-split", &rt_off_split_board_lines(true));
     let config_home = scratch_config_dir("set-rt-off-split");
 
     let out = run_wh(&["set", "rt", "--keys", "w", "--off"], &path, &config_home);
@@ -1486,11 +1504,76 @@ fn set_rt_off_refuses_when_the_free_keys_disagree_and_names_the_override_flags()
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
-            "the keys outside every keyset disagree on the global rapid trigger sensitivity \
-             (3 key(s) at 0.10/0.10mm, 1 key(s) at 0.50/0.50mm), so there is no one global value \
-             to use; pass --press and --release to say which"
+            "the keys left outside this selection and outside every rapid trigger keyset \
+             disagree on the global sensitivity (2 key(s) at 0.10/0.10mm, 1 key(s) at \
+             0.50/0.50mm), so there is no one value to reset to; pass --press and --release to \
+             say which, or include those keys in the selection so they are reset too"
         ),
         "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The other half of the exclusion rule, and the regression fix round 1 caught: a free key with
+/// rapid trigger on and its own sensitivity, every other key at the board's base. That is the
+/// commonest way anyone runs this command, and reading the base without excluding the selection
+/// makes 'w' its own disagreement and refuses it. Here the base read sees only 'a', 's' and 'd',
+/// all agreeing at 0.10/0.10mm, so it succeeds with no override at all.
+#[test]
+fn set_rt_off_on_the_one_key_holding_its_own_sensitivity_does_not_refuse() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
+    }
+    // The base read, 'w' excluded: the three keys left behind all agree at 0.10/0.10mm.
+    for usage in [0x04u8, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::RT_PRESS, 100));
+        lines.extend(layout_read_lines(usage, layout::RT_RELEASE, 100));
+    }
+    lines.extend(key_settings_lines(0x1A, 1000, 0x0231, 500, 500, 0, 0));
+
+    let path = write_script("set-rt-off-own-sensitivity", &lines);
+    let config_home = scratch_config_dir("set-rt-off-own-sensitivity");
+
+    let out = run_wh(
+        &["set", "rt", "--keys", "w", "--off", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "the key being reset must not count as its own disagreement: stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // No source parenthetical: this value really was read from the board's own free keys, unlike
+    // the override test below, and the sentence must not claim otherwise in either direction.
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l
+                == "rt: returning w to 0.10/0.10mm, mode Rt to Single, already in no rt keyset"),
+        "unexpected stdout: {stdout}"
+    );
+
+    let mut expected: Vec<String> =
+        cmds::write_key_records(&rt_off_value_records(0x0211, 1000, 100, 100))
+            .iter()
+            .map(|f| hex(f))
+            .collect();
+    expected.extend(
+        cmds::write_key_records_singly(&rt_off_membership_records())
+            .iter()
+            .map(|f| hex(f)),
+    );
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "unexpected frames: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
@@ -1547,11 +1630,13 @@ fn set_rt_off_with_press_and_release_writes_on_a_board_whose_free_keys_disagree(
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // "returning to" reads as a destination the board defines, which 0.30/0.40mm is not: nothing
+    // was read to reach it. The parenthetical is asserted inside the whole line, so removing it
+    // fails here and so does welding it onto the wrong clause.
     assert!(
-        stdout
-            .lines()
-            .any(|l| l
-                == "rt: returning w to 0.30/0.40mm, mode Rt to Single, already in no rt keyset"),
+        stdout.lines().any(|l| l
+            == "rt: returning w to 0.30/0.40mm (from --press/--release, not the board's base), \
+                mode Rt to Single, already in no rt keyset"),
         "unexpected stdout: {stdout}"
     );
     assert!(
@@ -1564,14 +1649,15 @@ fn set_rt_off_with_press_and_release_writes_on_a_board_whose_free_keys_disagree(
 }
 
 /// `--off` on a board where every key sits in a rapid trigger keyset: nothing is left to read a
-/// global sensitivity from, so it refuses and names the override flags. The board shape this
-/// sentence is true of is exactly that one, every key holding a non-zero `0xFE`. Unlike
-/// `remove_base_rt`, which excludes its own selection from the read and so has a second board
-/// shape reaching the same `Global` variant (free keys exist but every one of them is selected),
-/// `wh set rt --off` reads the global with nothing excluded, so this variant has one cause here.
+/// global sensitivity from, so it refuses and names the override flags. The board shape this exact
+/// sentence is true of is that one and only that one, every key holding a non-zero `0xFE`.
+/// `rt_off_base` excludes the selection, so `NoneOutsideAKeyset` carries a second board shape too,
+/// free keys existing while every one of them is selected, and that one has its own sentence and
+/// its own test below. Asserting either here without saying which board it holds for would be an
+/// assertion true only of its own fixture, which cannot catch a wrong-cause defect.
 #[test]
 fn set_rt_off_refuses_when_no_key_sits_outside_a_rapid_trigger_keyset() {
-    let lines = rt_off_pre_plan_lines([1, 1], [(500, 500), (500, 500)]);
+    let lines = rt_off_pre_plan_lines([1, 1], [(500, 500), (500, 500)], &[0x1A]);
 
     let path = write_script("set-rt-off-no-free-key", &lines);
     let config_home = scratch_config_dir("set-rt-off-no-free-key");
@@ -1585,14 +1671,275 @@ fn set_rt_off_refuses_when_no_key_sits_outside_a_rapid_trigger_keyset() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
-            "every key on the board is in a keyset, so there is no global rapid trigger \
-             sensitivity to read; pass --press and --release to say which value to use"
+            "no key is outside a rapid trigger keyset, so there is no global sensitivity to \
+             reset these to; pass --press and --release to say which value to use"
         ),
         "unexpected stderr: {stderr}"
     );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The two-key board both whole-board tests below share: 'w' and 'a' are the only members of
+/// rapid trigger keyset 1, so `--keys all` empties it and it ceases to exist. 'w' has rapid
+/// trigger on with its own 0.50/0.50mm, 'a' is already off at MODE 0x10 and already at
+/// 0.10/0.10mm, so exactly one touch nibble moves and exactly one key gets a value bundle. No
+/// sensitivity sweep is scripted: a whole-board selection excludes every free key from the base
+/// read, and these tests pass `--press`/`--release` instead.
+fn rt_off_whole_board_reads() -> Vec<String> {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_RT, 1));
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_RT, 1));
+    lines.extend(key_settings_lines(0x1A, 1000, 0x0231, 500, 500, 0, 1));
+    lines.extend(key_settings_lines(0x04, 1500, 0x10, 100, 100, 0, 1));
+    lines
+}
+
+/// The prompt both whole-board tests assert, in full. Held in one place because the two of them
+/// assert it for opposite reasons, one that it was answered and one that it was refused, and a
+/// wording change must not be able to satisfy one while the other quietly stops matching the
+/// prompt at all.
+const RT_OFF_WHOLE_BOARD_PROMPT: &str = "this selects every key on the board: every key moves to \
+     0.10/0.10mm, and rt keyset(s) 1 will cease to exist, 1 key(s) have rapid trigger switched off";
+
+/// `wh set rt --keys all --off` empties every rapid trigger keyset on the board, which before this
+/// command wrote membership at all it could not do, so it takes the same typed `yes` the other
+/// three whole-board routes take. The prompt goes to stderr and must not appear on stdout, the
+/// hazard 2.25 measured: a redirected stdout would otherwise trap it in the file with nothing on
+/// screen while the run blocks on stdin.
+///
+/// The whole prompt is asserted, not one clause: half of it could be deleted with a substring
+/// assertion still green, which is a defect this project has already found by mutation once.
+#[test]
+fn set_rt_off_over_the_whole_board_requires_a_typed_yes() {
+    let mut lines = rt_off_whole_board_reads();
+    lines.extend(auto_backup_lines_rt_off(
+        (1000, 0x0231, 500, 500, 0, 1),
+        (1500, 0x10, 100, 100, 0, 1),
+    ));
+    // Only 'w' gets a value bundle: 'a' is already off and already at 0.10/0.10mm. Both get the
+    // membership clear regardless, which is what empties keyset 1.
+    lines.extend(write_lines(
+        &rt_off_value_records(0x0211, 1000, 100, 100),
+        &[
+            KeyRecord {
+                key: 0x1A,
+                layout: layout::KEYSET_RT,
+                value: 0,
+            },
+            KeyRecord {
+                key: 0x04,
+                layout: layout::KEYSET_RT,
+                value: 0,
+            },
+        ],
+    ));
+    lines.extend(key_settings_lines(0x1A, 1000, 0x0211, 100, 100, 0, 0));
+    lines.extend(key_settings_lines(0x04, 1500, 0x10, 100, 100, 0, 0));
+
+    let path = write_script("set-rt-off-whole-board-yes", &lines);
+    let config_home = scratch_config_dir("set-rt-off-whole-board-yes");
+
+    let out = run_wh_stdin(
+        &[
+            "set",
+            "rt",
+            "--keys",
+            "all",
+            "--off",
+            "--press",
+            "0.1",
+            "--release",
+            "0.1",
+        ],
+        &path,
+        &config_home,
+        "yes\n",
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(RT_OFF_WHOLE_BOARD_PROMPT),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("this selects every key on the board"),
+        "the prompt belongs on stderr and nowhere else: {stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| {
+            l
+            == "rt: removing w from keyset 1, 0.50/0.50mm to 0.10/0.10mm (from --press/--release, \
+                not the board's base), mode Rt to Single, keyset 1 ceases to exist"
+        }),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| {
+            l
+            == "rt: removing a from keyset 1, 0.10/0.10mm to 0.10/0.10mm (from --press/--release, \
+                not the board's base), keyset 1 ceases to exist"
+        }),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| l == "rt off: 2 keys verified"),
+        "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The negative half: anything but `yes` stops the run before the auto-backup, so the script below
+/// carries no write frames at all. A guard that prompted and then wrote anyway would send an
+/// unscripted frame and `ReplayTransport` would reject it, which is a second, independent proof
+/// that nothing was written beyond the refusal sentence itself.
+#[test]
+fn set_rt_off_over_the_whole_board_refuses_anything_but_yes() {
+    let path = write_script("set-rt-off-whole-board-no", &rt_off_whole_board_reads());
+    let config_home = scratch_config_dir("set-rt-off-whole-board-no");
+
+    let out = run_wh_stdin(
+        &[
+            "set",
+            "rt",
+            "--keys",
+            "all",
+            "--off",
+            "--press",
+            "0.1",
+            "--release",
+            "0.1",
+        ],
+        &path,
+        &config_home,
+        "no\n",
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(RT_OFF_WHOLE_BOARD_PROMPT),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("rapid trigger off over the whole board was not confirmed"),
+        "unexpected stderr: {stderr}"
+    );
+    // A refusal announces nothing: the per-key lines describe a write that is not happening.
+    assert!(
+        !stdout.contains("removing w from keyset 1"),
+        "a refused run must announce nothing: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The second board shape behind `NoneOutsideAKeyset`, and the one `wh set rt --keys all --off`
+/// always produces: free keys do exist, and every one of them is in this selection, so the base
+/// read has nothing left to look at. Distinct from the "no key is outside a rapid trigger keyset"
+/// board above, which has no free key at all, and it must say so rather than sending an operator
+/// looking for keysets that are not there. Both keys here hold `0xFE = 0`.
+///
+/// This is also why the whole-board confirmation above needs `--press`/`--release` to be reachable:
+/// without them the run refuses here, before any plan exists to confirm.
+#[test]
+fn set_rt_off_over_the_whole_board_says_every_free_key_is_in_the_selection() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // keyset::read_membership's own matrix read
+    lines.extend(layout_read_lines(0x1A, layout::KEYSET_RT, 0));
+    lines.extend(layout_read_lines(0x04, layout::KEYSET_RT, 0));
+
+    let path = write_script("set-rt-off-all-free-selected", &lines);
+    let config_home = scratch_config_dir("set-rt-off-all-free-selected");
+
+    let out = run_wh(
+        &["set", "rt", "--keys", "all", "--off"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "every key outside a rapid trigger keyset is also in this selection, so there is no \
+             global sensitivity left to reset these to; pass --press and --release to say which \
+             value to use"
+        ),
+        "unexpected stderr: {stderr}"
+    );
+    // The other cause's sentence must not be the one that came out: this board plainly has free
+    // keys, and telling its operator there are none is the exact wrong-cause defect.
+    assert!(
+        !stderr.contains("no key is outside a rapid trigger keyset"),
+        "wrong cause named: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `--off` resets both sensitivities together, so half an override is refused rather than silently
+/// discarded: discarding it would read the board's own global instead and reset the keys to a value
+/// the operator did not ask for, having just watched them type part of one. Refused before a
+/// session opens, so the script is empty and no transport is touched.
+///
+/// Both directions, because they are separate match arms: a mutant that keeps one and drops the
+/// other is exactly the shape a single-direction test cannot see.
+#[test]
+fn set_rt_off_refuses_half_an_override_in_either_direction() {
+    for args in [
+        ["set", "rt", "--keys", "w", "--off", "--press", "0.3"],
+        ["set", "rt", "--keys", "w", "--off", "--release", "0.4"],
+    ] {
+        let tag = format!(
+            "set-rt-off-half-override-{}",
+            args[5].trim_start_matches('-')
+        );
+        let path = write_script(&tag, &[]);
+        let config_home = scratch_config_dir(&tag);
+
+        let out = run_wh(&args, &path, &config_home);
+        assert!(
+            !out.status.success(),
+            "expected a non-zero exit for {args:?}, got success with stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(
+                "--off resets both sensitivities, so pass --press and --release together or \
+                 neither; with neither, the value comes from the board's own global"
+            ),
+            "unexpected stderr for {args:?}: {stderr}"
+        );
+        // Refused before anything opens a transport, so the run never even names one.
+        assert!(
+            !stderr.contains("transport:"),
+            "a malformed invocation must be refused before a session opens: {stderr}"
+        );
+
+        std::fs::remove_file(path).unwrap();
+        let _ = std::fs::remove_dir_all(&config_home);
+    }
 }
 
 /// The corrupted-advanced-nibble sibling of the `set rt --set` test above, over the rapid trigger
@@ -1602,11 +1949,14 @@ fn set_rt_off_refuses_when_no_key_sits_outside_a_rapid_trigger_keyset() {
 /// `ReplayTransport`'s own "send mismatch" would also satisfy on a broken fixture.
 #[test]
 fn set_rt_off_end_to_end_detects_a_corrupted_advanced_nibble_on_readback() {
-    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)]);
+    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)], &[0x1A]);
     // `plan`'s read of 'w': MODE 0x31 (touch Rt, advanced nibble 1), already at the global
     // sensitivity, so only the MODE nibble moves.
     lines.extend(key_settings_lines(0x1A, 1000, 0x31, 100, 100, 0, 0));
-    lines.extend(auto_backup_lines_rt_off(0x31, 100, 100, 0));
+    lines.extend(auto_backup_lines_rt_off(
+        (1000, 0x31, 100, 100, 0, 0),
+        (1500, 0x10, 100, 100, 0, 0),
+    ));
     lines.extend(write_lines(
         &rt_off_value_records(0x11, 1000, 100, 100),
         &rt_off_membership_records(),
@@ -3671,20 +4021,36 @@ fn set_rt_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
 }
 
 /// The `--off` sibling of the dry-run test above, pinning the preview for both board keys at
-/// once (`--keys all`): the membership sweep, the global sensitivity read over both free keys,
-/// and `plan`'s own six-layout read of each, and nothing else. A stray write or SAVE would hit
-/// the exhausted script and `ReplayTransport` would reject it. Both keys already sit at the
-/// global 0.10/0.10mm, so each one's bundle is driven purely by its touch nibble moving.
+/// once (`--keys all`): the membership sweep, `plan`'s own six-layout read of each key, and
+/// nothing else. A whole-board selection excludes every free key from the base read, so there is
+/// no sensitivity sweep at all here and `--press`/`--release` is required; the script carries no
+/// sweep, so an implementation that read one anyway would be rejected. A stray write or SAVE would
+/// hit the exhausted script and `ReplayTransport` would reject it too.
+///
+/// Also pins that `--dry-run` never prompts, even over a whole-board selection that would
+/// otherwise destroy every rapid trigger keyset: it writes nothing, so there is nothing to
+/// confirm, and the run must not block on a stdin the harness closed.
 #[test]
 fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
-    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)]);
+    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)], &[0x1A, 0x04]);
     lines.extend(key_settings_lines(0x1A, 1000, 0x0231, 100, 100, 0, 0));
     lines.extend(key_settings_lines(0x04, 1500, 0x0037, 100, 100, 0, 0));
     let path = write_script("set-rt-off-dry-run", &lines);
     let config_home = scratch_config_dir("set-rt-off-dry-run");
 
     let out = run_wh(
-        &["set", "rt", "--keys", "all", "--off", "--dry-run"],
+        &[
+            "set",
+            "rt",
+            "--keys",
+            "all",
+            "--off",
+            "--press",
+            "0.1",
+            "--release",
+            "0.1",
+            "--dry-run",
+        ],
         &path,
         &config_home,
     );
@@ -3695,7 +4061,12 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
+    assert!(
+        !stderr.contains("this selects every key on the board"),
+        "a dry run writes nothing and must not prompt: {stderr}"
+    );
 
     // The exact frame set, not just that each expected frame appears somewhere: pins that each
     // key's advanced nibble and high byte survive independently, and that each gets its own
@@ -3777,7 +4148,7 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
 /// `Change::rt_off`'s own `TouchChange::Off` carries the same nibble mapping.
 #[test]
 fn set_rt_off_turns_off_a_key_following_the_global_rapid_trigger() {
-    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)]);
+    let mut lines = rt_off_pre_plan_lines([0, 0], [(100, 100), (100, 100)], &[0x1A]);
     lines.extend(key_settings_lines(0x1A, 1000, 0x0220, 100, 100, 0, 0));
     let path = write_script("set-rt-off-global", &lines);
     let config_home = scratch_config_dir("set-rt-off-global");
@@ -3794,6 +4165,17 @@ fn set_rt_off_turns_off_a_key_following_the_global_rapid_trigger() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // This is the only route from `wh set rt --off` into `announce_remove`'s mode-only branch,
+    // the free key whose sensitivity does not move while its touch nibble does, so the sentence
+    // is asserted here or nowhere. Whole line, including the ", already in no rt keyset" the mode
+    // clause is joined to: a clause pinned by its own wording can be welded onto its neighbour.
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l
+                == "rt: w keeps 0.10/0.10mm, mode RtGlobal to Single, already in no rt keyset"),
+        "unexpected stdout: {stdout}"
+    );
 
     let mut expected: Vec<String> =
         cmds::write_key_records(&rt_off_value_records(0x0210, 1000, 100, 100))

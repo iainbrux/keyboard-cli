@@ -713,6 +713,13 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for `--off`'s whole-board confirmation, matching
+            // `KeysetWhat::Remove`'s own split: the per-key announcement stays on stdout since it
+            // is data someone may pipe, while the prompt is a diagnostic.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
             with_session(|s| {
                 // `resolve_keys` always reads the live matrix, dry run or not: a preview
                 // against keys the board lacks would be meaningless, and `--pick` needs a
@@ -725,7 +732,17 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                         // sensitivities and clears `0xFE` as well as moving the touch nibble, and
                         // `ops::rt_off_records`, which sends MODE alone, is the divergent one.
                         // `rt_off` only reads, so a dry run can build the same plan and stop.
-                        let plan = crate::keyset::rt_off(&mut out, s, &usages, rt)?;
+                        // `!dry_run` is what tells it whether to run the whole-board
+                        // confirmation, the same argument `keyset::remove` takes.
+                        let plan = crate::keyset::rt_off(
+                            &mut out,
+                            &mut prompt_out,
+                            s,
+                            &usages,
+                            rt,
+                            !dry_run,
+                            &mut input,
+                        )?;
                         if dry_run {
                             return print_frames(&mut out, &plan.frames());
                         }

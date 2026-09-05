@@ -91,13 +91,24 @@ just the mode nibble: it turns rapid trigger off, resets both sensitivities to t
 and clears the key's rapid trigger keyset membership, which is the order and the content measured in
 `captures/rt-off-w.jsonl`. So a key turned off this way stops being listed in an rt keyset by
 `wh keyset list` and by the vendor configurator, and a keyset whose last member is turned off ceases
-to exist, which the announcement says. The global comes from every key outside an rt keyset: when
-those keys disagree, or when no key sits outside one at all, `--off` refuses and names each value
-with how many keys hold it rather than picking a winner, and `--press`/`--release` are the way past
-it (`wh set rt --keys w --off --press 0.1 --release 0.1`). Pass both or neither: `--off` resets both
-sensitivities together. A key already off and already at the global still has its membership
-rewritten, and the announcement says so rather than claiming nothing was written, since a frame
-really is sent.
+to exist, which the announcement says. The base it resets to is read from the keys outside every
+rt keyset that the selection itself leaves behind, the same rule `wh keyset remove` follows and for
+the same reason: the key you are turning rapid trigger off on is usually the one holding its own
+sensitivity, so counting it would make it its own disagreement. If the keys left behind disagree, or
+if the selection covers every key outside a keyset (which `--keys all` always does), `--off` refuses
+and names each value with how many keys hold it rather than picking a winner. `--press`/`--release`
+are the way past that (`wh set rt --keys w --off --press 0.1 --release 0.1`), and the announcement
+says when a value came from those flags rather than from the board. Pass both or neither: `--off`
+resets both sensitivities together. A key already off and already at the base still has its
+membership rewritten, and the announcement says so rather than claiming nothing was written, since
+a frame really is sent.
+
+**A whole-board `wh set rt --keys all --off` needs a typed `yes`**, like `wh keyset remove --keys
+all` and the two other whole-board routes: it clears `0xFE` on every key, so every rapid trigger
+keyset on the board ceases to exist at once. The prompt names the value, the keysets being lost and
+how many keys have rapid trigger switched off, and goes to stderr so redirecting stdout cannot trap
+it. There is no bypass flag; scripts pipe `yes` on stdin. `--dry-run` never prompts, since it writes
+nothing.
 
 Key selectors accept comma-separated names, contiguous runs typed as one word (`wasd`), ranges
 (`a-f`), negation (`all,!space`), user-defined groups (`wh keys group fps "w,a,s,d,space"`, then
@@ -128,10 +139,10 @@ part of an rt keyset's members can leave that keyset's members holding different
 `wh keyset list` then shows as this kind of disagreement. `wh set rt --off` does write it, clearing
 membership, so it never leaves a keyset in that state. `wh keyset set` changes an existing keyset's
 value in place. `create`, `delete`, `remove`, `wh set ap` and `wh set rt --off` above, and
-`wh restore` (for keys whose snapshot recorded it, see below) each write keyset membership. `create` and `delete` take
-`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value, and
-passing it is required when the keys outside every keyset disagree, or when none are left outside
-one.
+`wh restore` (for keys whose snapshot recorded it, see below) each write keyset membership.
+`create` and `delete` take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the
+board's current global value, and passing it is required when the keys outside every keyset
+disagree, or when none are left outside one.
 
 **`wh keyset remove` resets named keys to the board's base value and to no keyset at all**, whether
 or not they were in one: it takes no value flags, since its job is a destination, not a choice. For

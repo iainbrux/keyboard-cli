@@ -240,8 +240,9 @@ point"**: it is what `wh` writes on a key that already has its own actuation poi
 layout `0x04`, to turn rapid trigger off while leaving that actuation point in place, which is why
 `Change::rt_off` writes `Single` (`1`) rather than `Global` (`0`). `ops::rt_off_records`, which
 writes the MODE record alone and leaves both sensitivities and the key's `0xFE` membership in
-place, still exists but is no longer on the `wh set rt --off` path. Following the wrong nibble by treating `1` as an
-actuation-point-write instruction, on a key that currently has rapid trigger on, silently turns
+place, still exists but is no longer on the `wh set rt --off` path. Following the wrong nibble by
+treating `1` as an actuation-point-write instruction, on a key that currently has rapid trigger on,
+silently turns
 rapid trigger off as a side effect: nothing errors, and both `dump` and the vendor UI report the key
 as rapid-trigger-off afterward, with no indication that anything other than the actuation point was
 touched.

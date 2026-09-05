@@ -498,6 +498,22 @@ rather than as settings it recognises.
   together or not at all, since `--off` resets both sensitivities and a half-given override would
   have to read the other half from the very global whose disagreement was the reason to reach for
   them.
+
+  **Two corrections from fix round 1, both measured, both changing what this entry prescribed.**
+  This entry said the sensitivities come from `keyset::global_rt`. They come from
+  `global_rt_excluding` over the selection instead, which is what 2.22 already settled for
+  `remove`: reading without excluding makes `wh set rt --keys w --off`, on the ordinary board where
+  `w` is the one key with its own sensitivity, refuse as a disagreement with itself. That is the
+  commonest way the command is run and it worked before this task. `NoneOutsideAKeyset` therefore
+  carries two board states here as it does in `remove_base_rt`, told apart from `m.entries()`; both
+  refuse and both name `--press`/`--release`.
+
+  And `wh set rt --keys all --off` became a fourth route to whole-board destruction the moment it
+  started writing membership: measured on a board with two keys in rt keyset 1, it exited 0 with
+  stdin closed, destroyed the keyset and cleared every key's `0xFE`, asking nothing. It now calls
+  the same `confirm_whole_board_remove` the other three call, so `crates/wh-cli/src/confirm.rs`
+  names four routes. A whole-board selection excludes every free key from the base read, so that
+  guard is reachable only with `--press`/`--release`; without them the run refuses earlier.
 - [x] ~~**2.14 Decide what `wh set ap` emits, before the CLI is written.**~~ Settled by
   measurement, 2026-09-03: **one shape, always.** `wh set ap` routes through `keyset::plan` with
   `Change::ap`, whether the key is in an actuation point keyset or not, and `ops::ap_records`

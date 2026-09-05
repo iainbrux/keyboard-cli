@@ -97,15 +97,23 @@ fn split_message(what: &str, counts: &[(Um, usize)], flag: &str) -> String {
     split_message_str(what, &shown, flag)
 }
 
-fn split_message_str(what: &str, shown: &[(String, usize)], flag: &str) -> String {
-    let parts: Vec<String> = shown
+/// The distinct values and their counts, rendered for a refusal: "3 key(s) at 0.10mm, 1 key(s) at
+/// 0.50mm", in the order given, which every caller takes from `Global::Split` and so is already
+/// descending by count. Shared by all three disagreement messages, which differ in what they
+/// advise and not in how they list what disagreed.
+fn value_counts_list(shown: &[(String, usize)]) -> String {
+    shown
         .iter()
         .map(|(v, n)| format!("{n} key(s) at {v}"))
-        .collect();
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+fn split_message_str(what: &str, shown: &[(String, usize)], flag: &str) -> String {
     format!(
         "the keys outside every keyset disagree on the global {what} ({}), so there is no one \
          global value to use; pass {flag} to say which",
-        parts.join(", ")
+        value_counts_list(shown)
     )
 }
 
@@ -209,6 +217,36 @@ impl Target {
         match self {
             Target::Ap(v) => format!("{:.2}mm", v.to_mm()),
             Target::Rt(p, r) => format!("{:.2}/{:.2}mm", p.to_mm(), r.to_mm()),
+        }
+    }
+}
+
+/// Where the value an announcement names came from. `announce_remove` says "returning w to X" and
+/// "w already at X", both of which read as a claim that X is a destination the board defines. That
+/// is true of one of these three sources and of neither other, so the source travels with the
+/// value rather than being inferred at the line that prints it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TargetSource {
+    /// Read from the keys outside every keyset, which is the board's own base.
+    BoardBase,
+    /// `NO_SIGNAL_BASE`: a chosen default reached when no key was left to read a base from, not a
+    /// reading. `Kind::Ap` only; the rapid trigger side refuses instead.
+    InventedBase,
+    /// Named by the operator, `wh set rt --off --press/--release`. The board never held it and
+    /// nothing was read to reach it.
+    Operator,
+}
+
+impl TargetSource {
+    /// The parenthetical each line appends straight after the value, empty for a real reading
+    /// since that is the case the sentences are already written for.
+    fn suffix(self) -> &'static str {
+        match self {
+            TargetSource::BoardBase => "",
+            TargetSource::InventedBase => {
+                " (no key outside a keyset to read a base from, using the default)"
+            }
+            TargetSource::Operator => " (from --press/--release, not the board's base)",
         }
     }
 }
@@ -517,18 +555,16 @@ fn remove_split_message(what: &str, counts: &[(Um, usize)]) -> String {
 }
 
 /// A contradictory reading from the board is not the same as no reading: overriding it would
-/// invent a value nobody chose. Shared by both kinds: `remove_base_ap` refuses this and falls back
-/// to `NO_SIGNAL_BASE` only in the separate no-signal case; `remove_base_rt` refuses both here and
-/// there, since it has no fallback to reach for.
+/// invent a value nobody chose. Shared by both of `remove`'s kinds: `remove_base_ap` refuses this
+/// and falls back to `NO_SIGNAL_BASE` only in the separate no-signal case; `remove_base_rt` refuses
+/// both here and there, since it has no fallback to reach for. `rt_off_base` builds its own
+/// wording rather than reusing this: it has `--press`/`--release` to offer and `remove` does not,
+/// so telling its operator only to widen the selection would hide the shorter way out.
 fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
-    let parts: Vec<String> = shown
-        .iter()
-        .map(|(v, n)| format!("{n} key(s) at {v}"))
-        .collect();
     format!(
         "the keys left outside every keyset disagree on the global {what} ({}); include them \
          in the selection so they are reset too",
-        parts.join(", ")
+        value_counts_list(shown)
     )
 }
 
@@ -581,19 +617,23 @@ pub(crate) fn remove<T: Transport>(
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
 
     if will_write && usages.len() == m.entries().len() {
-        confirm_whole_board_remove(prompt_out, kind, &sets, target, &plan, input)?;
+        confirm_whole_board_remove(
+            prompt_out,
+            kind,
+            &sets,
+            target,
+            &plan,
+            input,
+            &format!("{} keyset removal", kind_name(kind)),
+        )?;
     }
 
-    announce_remove(
-        out,
-        kind,
-        &leaving,
-        usages,
-        target,
-        base_invented,
-        &sets,
-        &plan,
-    )?;
+    let source = if base_invented {
+        TargetSource::InventedBase
+    } else {
+        TargetSource::BoardBase
+    };
+    announce_remove(out, kind, &leaving, usages, target, source, &sets, &plan)?;
     Ok(plan)
 }
 
@@ -604,35 +644,117 @@ pub(crate) fn remove<T: Transport>(
 /// cover `0xFE`, so whether `W` held a membership beforehand is unmeasured; what is measured is
 /// that the clear goes out unconditionally, which is `plan`'s own rule for a `Some(index)`.
 ///
-/// `rt` is the operator's `--press`/`--release`. `None` reads the board's global instead, from
-/// every key outside a rapid trigger keyset, and refuses when they disagree or when there are
-/// none, naming those two flags as the way past: `wh` never picks a winner among values nobody
-/// typed. Nothing is excluded from that read, so the "no key outside a keyset" refusal has exactly
-/// one cause here, unlike `remove_base_rt`, which excludes its own selection and so has two.
+/// `rt` is the operator's `--press`/`--release`. `None` reads the board's base through
+/// `rt_off_base`, which excludes the selection for the reason `remove_base_rt` does: the keys being
+/// reset are usually the ones holding their own sensitivity, so including them would make the
+/// commonest run of this command, turning rapid trigger off on the one key that has it, refuse as
+/// a disagreement with itself.
 ///
-/// Reuses `announce_remove`, and the wording is not a coincidence: this command now reaches the
-/// same destination `wh keyset remove rt` does, resetting each key to the base and to no keyset,
-/// so a key leaving a keyset, a keyset emptied by that, and a key that only has its membership
-/// rewritten all have to be said the same way in both. Reads only; the caller applies the plan.
+/// Reuses `announce_remove`, and the wording is not a coincidence: this command reaches the same
+/// destination `wh keyset remove rt` does, resetting each key to the base and to no keyset, so a
+/// key leaving a keyset, a keyset emptied by that, and a key that only has its membership rewritten
+/// all have to be said the same way in both. It reaches the same destruction too, which is why it
+/// calls the same whole-board confirmation: this command can empty every rapid trigger keyset on
+/// the board, which before it wrote membership at all it could not. `will_write` must agree with
+/// whether the caller goes on to send the plan, since that guard is skipped whenever it is false;
+/// `prompt_out` is the caller's stderr, `out` its stdout, the same split `remove` documents.
+///
+/// Reads only; the caller applies the plan.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn rt_off<T: Transport>(
     out: &mut impl Write,
+    prompt_out: &mut impl Write,
     s: &mut Session<T>,
     usages: &[u8],
     rt: Option<(Um, Um)>,
+    will_write: bool,
+    input: &mut impl BufRead,
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, Kind::Rt)?;
     let sets = keyset::group(&m);
     let leaving = leaving_members(&sets, usages);
-    let (press, release) = match rt {
-        Some(v) => v,
-        None => global_rt_or_bail(s, &m, "--press and --release")?,
+    let (target, source) = match rt {
+        Some((p, r)) => (Target::Rt(p, r), TargetSource::Operator),
+        None => {
+            let (p, r) = rt_off_base(s, &m, usages)?;
+            (Target::Rt(p, r), TargetSource::BoardBase)
+        }
     };
-    let target = Target::Rt(press, release);
     let change = reset_change(target);
     let cleared = keyset::KeysetIndex::clear(Kind::Rt);
+    // Built before the confirmation, matching `remove`: the prompt's mode count is read off the
+    // plan, so the operator answers with what is actually about to be sent in front of them.
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
-    announce_remove(out, Kind::Rt, &leaving, usages, target, false, &sets, &plan)?;
+    if will_write && usages.len() == m.entries().len() {
+        confirm_whole_board_remove(
+            prompt_out,
+            Kind::Rt,
+            &sets,
+            target,
+            &plan,
+            input,
+            "rapid trigger off",
+        )?;
+    }
+    announce_remove(
+        out,
+        Kind::Rt,
+        &leaving,
+        usages,
+        target,
+        source,
+        &sets,
+        &plan,
+    )?;
     Ok(plan)
+}
+
+/// The sensitivity `wh set rt --off` resets to when the operator named none: read from `0x14`/`0x15`
+/// of every key that holds no rapid trigger membership and is not itself being reset. Excluding the
+/// selection is the whole point, and it is the lesson `remove_base_rt` already learned: a key with
+/// its own sensitivity is the ordinary reason to run this command, so counting it as a disagreement
+/// would refuse the commonest run there is.
+///
+/// Both failures refuse rather than picking a winner, and both name `--press`/`--release`, which
+/// `remove` cannot do because it has no such flags. `NoneOutsideAKeyset` carries two board states
+/// here for the same reason it does in `remove_base_rt`, and they are told apart from `m.entries()`
+/// rather than conflated: no free key exists at all, or free keys exist and every one of them is in
+/// this selection, which is what a whole-board `--off` always looks like.
+fn rt_off_base<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+    usages: &[u8],
+) -> Result<(Um, Um)> {
+    match keyset::global_rt_excluding(s, m, usages)? {
+        Global::Agreed(v) => Ok(v),
+        Global::Split(counts) => {
+            let shown: Vec<(String, usize)> = counts
+                .iter()
+                .map(|((p, r), n)| (format!("{:.2}/{:.2}mm", p.to_mm(), r.to_mm()), *n))
+                .collect();
+            bail!(
+                "the keys left outside this selection and outside every rapid trigger keyset \
+                 disagree on the global sensitivity ({}), so there is no one value to reset to; \
+                 pass --press and --release to say which, or include those keys in the selection \
+                 so they are reset too",
+                value_counts_list(&shown)
+            )
+        }
+        Global::NoneOutsideAKeyset => {
+            if m.entries().iter().any(|&(_, membership)| membership == 0) {
+                bail!(
+                    "every key outside a rapid trigger keyset is also in this selection, so there \
+                     is no global sensitivity left to reset these to; pass --press and --release \
+                     to say which value to use"
+                )
+            } else {
+                bail!(
+                    "no key is outside a rapid trigger keyset, so there is no global sensitivity \
+                     to reset these to; pass --press and --release to say which value to use"
+                )
+            }
+        }
+    }
 }
 
 /// The typed confirmation guarding a remove that covers every key in the board's matrix: every
@@ -664,6 +786,7 @@ pub(crate) fn rt_off<T: Transport>(
 /// sanctioned path, not just guard against the hang. Sending the prompt to stderr instead needs no
 /// terminal check at all: stdin, still open, answers it the same way regardless of what carries
 /// the prompt itself.
+#[allow(clippy::too_many_arguments)]
 fn confirm_whole_board_remove(
     out: &mut impl Write,
     kind: Kind,
@@ -671,6 +794,7 @@ fn confirm_whole_board_remove(
     target: Target,
     plan: &keyset::WritePlan,
     input: &mut impl BufRead,
+    refusal: &str,
 ) -> Result<()> {
     let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
     let keysets = if indices.is_empty() {
@@ -689,11 +813,10 @@ fn confirm_whole_board_remove(
     // plan actually sends, the same reason `announce_remove` reads it from `plan` per key.
     let mode_clause = match kind {
         Kind::Ap => ap_mode_clause(plan),
-        // Unreachable today: this function only ever runs for a whole-board selection, and a
-        // whole-board `Kind::Rt` selection excludes every free key from `remove_base_rt`'s own
-        // read, which then always hits `NoneOutsideAKeyset` and refuses before `remove` gets
-        // this far. Kept rather than dropped, the same choice `announce_remove`'s own
-        // unreachable branch makes, in case that call pattern ever changes.
+        // Reached by `rt_off` and not by `remove`: a whole-board selection excludes every free
+        // key from the base read, which then always hits `NoneOutsideAKeyset`, and `remove` has
+        // no flag to answer that with while `wh set rt --keys all --off --press/--release` does.
+        // So this branch guards the one route that gets this far, not a hypothetical one.
         Kind::Rt => {
             let moved_modes = moved_mode_count(plan);
             if moved_modes == 0 {
@@ -708,10 +831,7 @@ fn confirm_whole_board_remove(
         target.display()
     );
     if !crate::confirm::confirm(out, &prompt, input)? {
-        bail!(
-            "{} keyset removal over the whole board was not confirmed",
-            kind_name(kind)
-        );
+        bail!("{refusal} over the whole board was not confirmed");
     }
     Ok(())
 }
@@ -734,9 +854,11 @@ fn confirm_whole_board_remove(
 /// so naming the mode transition only in the case where the value happens to already sit at the
 /// base would leave it silent in the cases the command is normally used for.
 ///
-/// Two more things named wherever `target` is shown: `base_invented` (`Kind::Ap` only, see
-/// `remove_base_ap`) says the value is a chosen default, not one read from the board, so it never
-/// renders indistinguishably from a real reading; and a `removing` line whose keyset has no member
+/// Two more things named wherever `target` is shown: `source` says where the value came from, so
+/// a chosen default (`remove_base_ap`'s `NO_SIGNAL_BASE`) or a number the operator typed
+/// (`wh set rt --off --press/--release`) never renders indistinguishably from a real reading of the
+/// board's base, which is what "returning to" and "already at" otherwise imply; and a `removing`
+/// line whose keyset has no member
 /// left outside `leaving` says that keyset ceases to exist, the same fact the whole-board prompt
 /// already names for every keyset at once, now named for a partial removal that empties just one.
 /// Each key's current value comes from `plan.before()`, the same source `announce_delete` uses.
@@ -747,18 +869,13 @@ fn announce_remove(
     leaving: &[(u16, u8)],
     usages: &[u8],
     target: Target,
-    base_invented: bool,
+    source: TargetSource,
     sets: &[Keyset],
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
-    // `Kind::Ap` only, since `remove_base_rt` refuses rather than ever reaching an invented value:
-    // says so wherever `target` is shown, rather than letting an invented number render exactly
-    // like one read from the board.
-    let invented_suffix = if base_invented {
-        " (no key outside a keyset to read a base from, using the default)"
-    } else {
-        ""
-    };
+    // Said wherever `target` is shown, rather than letting a default nobody read, or a number the
+    // operator typed, render exactly like a reading of the board's own base.
+    let source_suffix = source.suffix();
     for &u in usages {
         let prior = plan
             .before()
@@ -779,7 +896,7 @@ fn announce_remove(
             };
             writeln!(
                 out,
-                "{}: removing {} from keyset {index}, {prior_value} to {}{invented_suffix}{mode_suffix}{disappear_suffix}",
+                "{}: removing {} from keyset {index}, {prior_value} to {}{source_suffix}{mode_suffix}{disappear_suffix}",
                 kind_name(kind),
                 key_label(u),
                 target.display()
@@ -791,7 +908,7 @@ fn announce_remove(
             // "membership rewritten, value unchanged" rather than treating the write as a no-op.
             writeln!(
                 out,
-                "{}: {} already at {}{invented_suffix} in no {} keyset, membership rewritten, value unchanged",
+                "{}: {} already at {}{source_suffix} in no {} keyset, membership rewritten, value unchanged",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
@@ -800,7 +917,7 @@ fn announce_remove(
         } else if value_moves(kind, plan, prior, u) {
             writeln!(
                 out,
-                "{}: returning {} to {}{invented_suffix}{mode_suffix}, already in no {} keyset",
+                "{}: returning {} to {}{source_suffix}{mode_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
@@ -809,7 +926,7 @@ fn announce_remove(
         } else if let Some(change) = mode_change_here {
             writeln!(
                 out,
-                "{}: {} keeps {prior_value}{invented_suffix}, {change}, already in no {} keyset",
+                "{}: {} keeps {prior_value}{source_suffix}, {change}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 kind_name(kind)
@@ -822,7 +939,7 @@ fn announce_remove(
             // did change. Kept defensively, matching `describe_member`'s own fourth case.
             writeln!(
                 out,
-                "{}: {} keeps {prior_value}{invented_suffix}, already in no {} keyset",
+                "{}: {} keeps {prior_value}{source_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 kind_name(kind)
@@ -1457,6 +1574,7 @@ mod tests {
             Target::Ap(Um(2000)),
             &plan,
             &mut "yes\n".as_bytes(),
+            "ap keyset removal",
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -1486,6 +1604,7 @@ mod tests {
             Target::Ap(Um(1800)),
             &plan,
             &mut "yes\n".as_bytes(),
+            "ap keyset removal",
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
