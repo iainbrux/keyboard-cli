@@ -638,6 +638,25 @@ rather than as settings it recognises.
   `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
   disagreeing one. Implemented in 2.4b and 2.13, not here.
 
+- [ ] **2.30 `auto_backup`'s reason is a forgeable string that gets persisted.** Nine call sites in
+  `crates/wh-cli/src/run.rs` pass a literal like `"keyset create"`, which becomes
+  `snap.origin = "auto: keyset create"`, is written into the backup file, and is shown by
+  `wh backups list`. Nothing ties a real run to the label it writes: the only tests touching the
+  origin are `wh-config`'s round trip and one `dump.rs` test over a hand-built snapshot. Measured
+  consequence of a copy-paste: a wrong label persists with the whole workspace green, and an
+  operator later choosing between backups by origin restores the wrong one. `auto_backup` serves
+  five command families, so the cure is a backup-reason enum of its own, not a reuse of
+  `KeysetOp`. Found 2026-09-05 while closing 2.18; same shape as the `verify_write` op that 2.18
+  fixed, one line above which it sits.
+
+- [ ] **2.31 `confirm_whole_board_create` still takes a `kind` beside its `Target`.** The last
+  kind-beside-target in `crates/wh-cli/src/keyset.rs` (378-384). Left deliberately when 2.18
+  closed: its kind genuinely selects between `ap_mode_clause` and `rt_on_mode_clause`, and forcing
+  the wrong kind through it fails seven tests, so it is pinned today. But the `Target::kind()`
+  cure that removed the other three applies verbatim, and the reason it was left lives only in a
+  gitignored report, which is exactly how safe-by-construction arguments get lost. Either apply
+  the cure or write the safety argument at the call site.
+
 - [ ] **2.29 Two stale corpus counts in `ops::ap_records`'s doc.**
   `crates/wh-device/src/ops.rs:264-267` says "across all 27 keyset-era captures" and "469 measured
   echoes". The corpus is 39 files. Left deliberately when the rest of 2.16 was corrected on
