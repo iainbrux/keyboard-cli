@@ -207,10 +207,10 @@ pub struct Change {
 
 impl Change {
     /// An actuation point operation: set every member's `0x04` to `value`, promoting a `Global`
-    /// key to `Single` first. Matches `ops::ap_records`, which promotes on every actuation point
-    /// change; whether the vendor promotes for a keyset specifically is unmeasured, but shipped,
-    /// non-destructive behaviour is the default here. Use `ap_keeping_touch` for the rare
-    /// operation that must not move a key off global travel.
+    /// key to `Single` first. The promotion itself is measured (`ks-value-ap`, key `x`: MODE
+    /// `0x0000` to `0x0010`); whether it depends on keyset membership specifically is not, so
+    /// it is applied unconditionally here, the non-destructive default. Use `ap_keeping_touch`
+    /// for the rare operation that must not move a key off global travel.
     pub fn ap(value: Um) -> Self {
         Change {
             kind: Kind::Ap,
@@ -233,7 +233,10 @@ impl Change {
     }
 
     /// A rapid trigger operation: turn it on at `press`/`release`. Touch becomes `Rt`, unless
-    /// the key is already `RtContinuous`, which is preserved.
+    /// the key is already `RtContinuous`, which is preserved. `wh set rt --set` still reaches
+    /// the board through `ops::rt_records` instead of this constructor, so the two produce
+    /// different frames for one intent; unlike the actuation point and rt-off routes, this
+    /// split is not yet closed in `plan`'s favour.
     pub fn rt_on(press: Um, release: Um) -> Self {
         Change {
             kind: Kind::Rt,
@@ -283,7 +286,8 @@ pub struct WritePlan {
 }
 
 impl WritePlan {
-    /// Value records, packed per key below the 14-record report limit.
+    /// Value records, flat and unpacked: packing into per-key groups happens in `frames()`,
+    /// where a batch of exactly 14 is reachable.
     pub fn value_records(&self) -> &[KeyRecord] {
         &self.value_records
     }
@@ -299,12 +303,15 @@ impl WritePlan {
 
     /// Frames in send order: the value batches, then one frame per membership record.
     ///
-    /// Value records are packed key by key, never splitting one key's group (at most 4 records,
-    /// 3 when its MODE record is the nibble-0 omission) across a report boundary: a batch takes
-    /// whole groups until the next one would not fit, then starts a new frame. This is a further
-    /// deliberate divergence from the vendor, which batches layout-major; it strictly improves
-    /// partial-failure behaviour, since a failure between frames can now only ever land on a key
-    /// boundary, never inside one key's own MODE/AP pair.
+    /// Value records are packed key by key, taking whole groups until the next would not fit.
+    /// A group stays under the 14-record cap only because `plan` deduplicates `usages`, capping
+    /// each key's group at 4 records (3 at the nibble-0 omission); a repeated usage would split
+    /// here, a case `Selector::resolve` and `read_matrix` both make unreachable through the CLI.
+    ///
+    /// Packs whole per-key groups up to 14 records, rather than the vendor's own layout-major
+    /// batching: a further measured divergence, since a MODE-only write frame there caps at two
+    /// records (300 in the corpus, 275 carry two and 25 carry one, none more). Ours strictly
+    /// improves partial-failure behaviour, since a failure between frames lands on a key boundary.
     pub fn frames(&self) -> Vec<[u8; 64]> {
         let mut frames = Vec::new();
         let mut batch: Vec<KeyRecord> = Vec::new();
@@ -355,9 +362,10 @@ impl WritePlan {
 /// grounds that `wh` never reads them and a constant would be an invented value; records are
 /// emitted key-major rather than the vendor's layout-major order, the same divergence
 /// `ops::ap_records` documents, so a mid-batch failure stops at a few keys rather than every key
-/// selected; and `frames()` packs whole per-key groups rather than the vendor's own layout-major
+/// selected; `frames()` packs whole per-key groups rather than the vendor's own layout-major
 /// batching, so a failure can only ever land on a key boundary, never inside one key's own
-/// records.
+/// records; and the vendor writes MODE twice per key per operation (write template steps 1 and
+/// 3), where this writes it once.
 pub fn plan<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -400,7 +408,8 @@ pub fn plan<T: Transport>(
             || target_release != settings.rt_release
         {
             // Nibble 0 means "follow global travel": writing it unchanged would be a semantic
-            // change, not an echo, which is why `ops::rt_off_records` refuses it too.
+            // change, not an echo, which is why `ops::rt_off_records` refuses it too. Measured:
+            // 1150 MODE write records across the corpus, none at nibble 0.
             let unchanged_at_global =
                 new_mode_value == cur_mode_value && new_touch == TouchMode::Global;
             if !unchanged_at_global {
@@ -501,11 +510,12 @@ fn summarize<T: PartialEq>(values: Vec<T>) -> Global<T> {
 /// The board's actuation point outside any keyset: layout `0x04` read from every key `m` holds
 /// no membership for. Errors if `m` isn't `Kind::Ap` membership.
 ///
-/// The vendor's own method for finding this is unmeasured: it reads `0x04` from five fixed keys
-/// (`0x29`, `0xfa`, `0x31`, `0x28`, `0x52`) at the head of every capture, one of which was in a
-/// keyset and read a different value, and what it does with the disagreement could not be
-/// determined. Reading every unkeyset key and reporting agreement or its absence is the honest
-/// alternative rather than guessing which of the five the vendor trusts.
+/// The vendor's own method for finding this is unmeasured: where it reads `0x04` at all, it
+/// reads five fixed keys (`0x29`, `0xfa`, `0x31`, `0x28`, `0x52`) at the head of the capture, one
+/// of which was in a keyset and read a different value, and what it does with the disagreement
+/// could not be determined; 5 of the 39 captures contain no `0x04` read request at all. Reading
+/// every unkeyset key and reporting agreement or its absence is the honest alternative rather
+/// than guessing which of the five the vendor trusts.
 pub fn global_ap<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,

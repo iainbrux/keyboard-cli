@@ -1488,6 +1488,9 @@ pub(crate) fn verify_write_as<T: Transport>(
         let sent_value = |layout_id: u8| sent(plan.value_records(), layout_id);
         let sent_membership = |layout_id: u8| sent(plan.membership_records(), layout_id);
 
+        // Each fallback assumes the other layout is untouched by this operation: an ap change
+        // never moves 0xFE and an rt change never moves 0xFF. A hardware assumption, made right
+        // by the separate-counters finding in docs/keysets.md.
         let want_ap_keyset = sent_membership(layout::KEYSET_AP).unwrap_or(before.ap_keyset);
         if ks.ap_keyset != want_ap_keyset {
             faults.push(format!(

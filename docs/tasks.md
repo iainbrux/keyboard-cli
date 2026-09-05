@@ -579,21 +579,23 @@ rather than as settings it recognises.
   Each needs its own full refusal sentence rather than the shared tail. Prove each by mutating its
   command's noun to another command's and watching only that test fail.
 
-- [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
-  non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
-  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. The promotion is measured
-    (`ks-value-ap`, `X` from `0x0000` to `0x0010`); whether it depends on keyset membership is not.
-    Say which, see 2.14.
-  - `keyset.rs` `frames()` claims a per-key group is at most 4 records. That is a property of
-    `plan`'s output, not of `frames()`: `plan` takes a bare `&[u8]` with no dedup, and a repeated
-    usage produces a 16-record group that does split. Unreachable through the CLI, since both
-    `Selector::resolve` and `read_matrix` dedupe.
-  - `keyset.rs` `value_records()` says the slice is "packed per key below the 14-record limit". It
-    is flat and unpacked; packing happens in `frames()`, and a batch of exactly 14 is reachable.
-  - `keyset.rs` `plan`'s divergence list presents itself as complete and omits one: the vendor
-    writes MODE twice per key per operation, we write it once.
-  - `keyset.rs` says the vendor reads `0x04` from five fixed keys "at the head of every capture".
-    Five of the 27 contain no `0x04` read at all.
+- [x] ~~**2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.**~~ All
+  non-blocking, all in code files, corrected against the 39-file corpus current at close:
+  - ~~`keyset.rs` `Change::ap` calls the vendor's promotion unmeasured.~~ Closed: the comment now
+    says plainly that the promotion itself is measured (`ks-value-ap`, key `x`: MODE `0x0000` to
+    `0x0010`) and that only its dependence on keyset membership is not.
+  - ~~`keyset.rs` `frames()` claims a per-key group is at most 4 records.~~ Closed: the comment now
+    attributes the cap to `plan`'s deduplicated `usages`, not to `frames()` itself, and says a
+    repeated usage would split here, unreachable through the CLI since `Selector::resolve` and
+    `read_matrix` both dedupe.
+  - ~~`keyset.rs` `value_records()` says the slice is "packed per key below the 14-record
+    limit".~~ Closed: it now says flat and unpacked, packing happens in `frames()`, and a batch of
+    exactly 14 is reachable.
+  - ~~`keyset.rs` `plan`'s divergence list omitted that the vendor writes MODE twice per key per
+    operation.~~ Closed: added to the list.
+  - ~~`keyset.rs` said the vendor reads `0x04` from five fixed keys "at the head of every
+    capture".~~ Closed: now says "where it reads `0x04` at all", and states 5 of the 39 captures
+    contain no `0x04` read request at all (re-measured; the five is unchanged, the denominator is).
   - ~~`ops.rs` said the vendor writes MODE `0x18` on every actuation point change.~~ Closed: the
     comment now says the measured distribution across all 27 captures, `{0x10: 154, 0x18: 40,
     0x20: 376, 0x28: 24, 0x30: 12, 0x38: 10, 0x48: 2}`, and keeps the load-bearing half, that the
@@ -601,43 +603,27 @@ rather than as settings it recognises.
   - ~~`ops.rs` still said a hypothesis "stays a hypothesis until the hardware session tests it".~~
     Closed: the session ran on 2026-08-29, and the comment now points at `docs/keysets.md`'s own
     ranking, that the MODE marker is unlikely to be the whole of the greying story.
-  - `keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped the
-    measurement. Both should stand: 618 MODE write records across the corpus, none at nibble 0.
-  - `wh set rt --set` is a third pair of routes to one intent with different frames, alongside the
-    two recorded in 2.13 and 2.14, both now closed in `plan`'s favour so that this is the last one
-    left. `plan` matches the vendor here and `ops::rt_records` diverges.
+  - ~~`keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped
+    the measurement.~~ Closed: the measurement is back, re-counted at 1150 MODE write records
+    across the 39-file corpus, none at nibble 0 (the 618 the bullet named was stale).
+  - ~~`wh set rt --set` is a third pair of routes to one intent with different frames.~~ Still true
+    after `wh set rt --off` moved onto `plan`: `--set` still reaches the board through
+    `ops::rt_records`, which writes MODE unconditionally where `plan` applies the skip and
+    nibble-0 rules. Recorded on `Change::rt_on` itself.
 
-- [ ] **2.17 What the `docs/keysets.md` verification pass found that touches code. Read before
-  writing 2.4b.** An adversarial pass on 2026-09-03 checked every measured claim in that document
-  against the frames across 78 checked claims: 46 confirmed outright, 9 confirmed in part, 23
-  findings only, 29 findings in all and 8 of them flatly wrong. A second pass over the corrections
-  found nine more, seven of them introduced by the rewrite. The document is now rewritten. Three
-  findings change what the CLI should do rather than only what the document says.
+- [x] ~~**2.17 What the `docs/keysets.md` verification pass found that touches code.**~~ Of the
+  three code-touching findings:
+  - ~~`0x16`/`0x17` are not a constant.~~ Advice to a task that never added them: confirmed
+    `keyset::plan` still never writes those layouts. Nothing to change.
+  - ~~Template step 1 is a two-record cap, not one frame per distinct value.~~ Closed: re-measured
+    at 300 MODE-only write frames across the 39-file corpus (275 carry two records, 25 carry one,
+    none more), added to `frames()`'s own comment as a divergence that is measured, not a match.
+  - ~~The global rapid trigger skip is not measured as a membership test.~~ Nothing in the CLI
+    implements a whole-board rapid-trigger toggle at all; `global_ap_excluding`/`global_rt_excluding`
+    skip on membership by design, to compute a baseline, not as a guess at the vendor's own
+    undocumented rule. No comment to correct.
 
-  - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
-    any other non-owned layout, matching what each capture that reads them reads: `0` in all 38
-    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 414 from the
-    profile 2 ones. `keyset::plan` never writes them, and its stated reason, that a constant would be
-    an invented value, turns out to be right for a reason it did not know. Of the 34 captures before
-    `layout-16-by-profile`, 25 both read and write them, four read without writing, four do neither,
-    and one writes them with no read frames in the file at all.
-    If 2.4b ever adds them, read them per key. Hard-coding `100` would write `100` over `0` on a
-    board that has never held a keyset.
-  - **Template step 1 is a two-record cap, not one frame per distinct value.** Of 162 MODE-only
-    write frames, 147 carry two records and 15 carry one, and none carries more. The vendor splits
-    one value across two frames and puts two values in one. `frames()` packs whole per-key groups up
-    to 14 records, so it already diverges here; the divergence is defensible, but it is now a
-    measured one rather than a match, and the comment in `keyset.rs` should say so.
-  - **The global rapid trigger skip is not measured as a membership test.** None of the four global
-    captures reads `0xFE`. The two skipped keys are simultaneously the members of `0xFE=2` and the
-    only two keys at MODE nibble `3`, so the frames cannot separate the two rules. Worse, `u` and
-    `i` held `0xFE=1` at the last membership read and were written rather than skipped. Anything in
-    the CLI that skips on membership is choosing one of two readings, and should say which.
-
-  The remaining 26 findings are in the document. The ones worth knowing while writing the CLI: the
-  allocation of `0xFF=9` is unexplained by any frame and is no longer offered as evidence for max
-  plus one, indices are reused after a delete rather than being monotonic, and the vendor does not
-  always batch two members of one create into the same frame.
+  The remaining 26 findings are in the document, not repeated here.
 
 - [ ] **2.18 Parked findings from task 2.4b's `wh keyset create` reviews.** Five review rounds
   closed everything that changes behaviour. The bullets below are what survived, all judged not to
@@ -679,11 +665,9 @@ rather than as settings it recognises.
     board's, so a phantom usage the firmware echoes is reported as verified rather than refused.
     Fixing it needs a policy decision (refuse, skip, or gate on a flag), a live matrix read inside
     the session, and a restructure of restore's build-everything-before-sending order.
-  - The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
-    point create now asserts that `0xFE` is untouched, and the converse. `docs/keysets.md`'s
-    separate-counters finding makes that the right assumption, and it is the only one of the six
-    checks resting on the firmware not coupling two layouts. One line saying so satisfies the
-    measure-never-infer rule.
+  - ~~The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
+    point create now asserts that `0xFE` is untouched, and the converse.~~ Closed: one line added
+    in `verify_write_as` naming the assumption and the separate-counters finding that makes it right.
 
 - [x] ~~**Decision: `wh set ap --keys all` keeps its current behaviour.**~~ Ruled by the operator on
   2026-09-03, after the whole-branch review raised it. On a board holding keysets, that command
