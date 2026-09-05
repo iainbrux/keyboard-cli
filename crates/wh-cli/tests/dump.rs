@@ -2727,9 +2727,16 @@ fn keyset_create_over_the_whole_board_prompt_goes_to_stderr_not_stdout() {
 }
 
 /// `create rt --keys all` destroys every rapid trigger keyset by exactly the same mechanism, so
-/// it asks too. `Change::rt_on` also moves every one of these keys from touch Single onto its
-/// own rapid trigger sensitivity, which the prompt must count off `plan`: the keyset clause
-/// cannot say it, and on a board with no rt keysets at all it would be the only thing moving.
+/// it asks too. It also switches rapid trigger on for every key that had it off, which the
+/// prompt must count off `plan`: the keyset clause cannot say it, and on a board with no rt
+/// keysets at all it would be the only thing moving.
+///
+/// The board mixes the three origins that matter, so the count is constrained rather than
+/// coincidentally equal to the selection's size: `w` and `d` are already at touch nibble 3 (their
+/// own rapid trigger) and do not move at all, `a` is at nibble 0 and `s` at nibble 1, both
+/// measured as rapid trigger off. Two of four move, so a count read off the selection instead of
+/// off `plan` reports 4 here and fails. MODE `0x10` is the commonest real value on this board and
+/// the least covered by these fixtures, which is why `s` carries it.
 #[test]
 fn keyset_create_rt_over_the_whole_board_requires_a_typed_yes() {
     let mut lines = matrix_lines_wasd(); // resolve_keys
@@ -2737,8 +2744,15 @@ fn keyset_create_rt_over_the_whole_board_requires_a_typed_yes() {
     for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
         lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
     }
-    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
-        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, 0, ks));
+    // Touch nibble 3 on `w`/`d` (already their own rapid trigger, so no mode record at all),
+    // nibble 0 on `a` and nibble 1 on `s`, both measured as rapid trigger off.
+    for (usage, ks, mode) in [
+        (0x1Au8, 1u16, 0x30u16),
+        (0x04, 1, 0x00),
+        (0x16, 2, 0x10),
+        (0x07, 2, 0x30),
+    ] {
+        lines.extend(key_settings_lines(usage, 1200, mode, 100, 150, 0, ks));
     }
     let path = write_script("keyset-create-rt-whole-board-no", &lines);
     let config_home = scratch_config_dir("keyset-create-rt-whole-board-no");
@@ -2773,7 +2787,13 @@ fn keyset_create_rt_over_the_whole_board_requires_a_typed_yes() {
         "got: {stderr}"
     );
     assert!(
-        stderr.contains("4 key(s) move onto their own rapid trigger sensitivity"),
+        stderr.contains("2 key(s) have rapid trigger switched on"),
+        "got: {stderr}"
+    );
+    // No key here came from nibble 2, so the sensitivity-source clause has nothing to count and
+    // must be absent entirely: a count of `0`, or one read off the selection's size, fails here.
+    assert!(
+        !stderr.contains("move onto their own rapid trigger sensitivity"),
         "got: {stderr}"
     );
     assert!(
@@ -2784,6 +2804,80 @@ fn keyset_create_rt_over_the_whole_board_requires_a_typed_yes() {
         !stdout.contains("type yes to continue")
             && !stdout.contains("this selects every key on the board"),
         "the prompt must not also reach stdout: got stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The other half of the rt mode split, on the board where no key was off to begin with. `a` is
+/// at touch nibble 2, measured as rapid trigger already on but following the board's global
+/// sensitivity, and `s` is at nibble 5, which nothing has measured at all. Both move onto the new
+/// keyset's own sensitivity, and neither may be described as having rapid trigger switched on:
+/// for `a` that is measurably false, and for `s` it would be an inference stated as a
+/// measurement. `w` and `d` sit at nibble 3 and do not move.
+///
+/// Two of four move, so the count cannot come from the selection, and the switched-on clause has
+/// nothing to count and must be absent entirely rather than reading `0`.
+#[test]
+fn keyset_create_rt_over_the_whole_board_does_not_claim_an_already_on_key_was_off() {
+    let mut lines = matrix_lines_wasd(); // resolve_keys
+    lines.extend(matrix_lines_wasd()); // keyset::read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, 0));
+    }
+    for (usage, mode) in [
+        (0x1Au8, 0x30u16),
+        (0x04, 0x20), // RtGlobal: rapid trigger already on, following the global sensitivity
+        (0x16, 0x50), // Unknown(5): unmeasured, so no origin may be claimed for it
+        (0x07, 0x30),
+    ] {
+        lines.extend(key_settings_lines(usage, 1200, mode, 100, 150, 0, 0));
+    }
+    let path = write_script("keyset-create-rt-whole-board-already-on", &lines);
+    let config_home = scratch_config_dir("keyset-create-rt-whole-board-already-on");
+    let out = run_wh_stdin(
+        &[
+            "keyset",
+            "create",
+            "rt",
+            "--keys",
+            "all",
+            "--press",
+            "0.30",
+            "--release",
+            "0.40",
+        ],
+        &path,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "rt: this selects every key on the board: every key moves into the new keyset 1 at \
+             0.30/0.40mm"
+        ),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("no rt keysets exist to lose"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("2 key(s) move onto their own rapid trigger sensitivity"),
+        "got: {stderr}"
+    );
+    // The claim this test exists to forbid: neither key was off, and one of the two is a nibble
+    // nothing has measured, so nothing may say rapid trigger is being switched on for either.
+    assert!(
+        !stderr.contains("rapid trigger switched on"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("rt keyset creation over the whole board was not confirmed"),
+        "got: {stderr}"
     );
 
     std::fs::remove_file(path).unwrap();

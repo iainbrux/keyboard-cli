@@ -8,7 +8,7 @@ use wh_device::keyset::{self, Global, Keyset, Kind, Membership};
 use wh_device::ops;
 use wh_device::session::Session;
 use wh_device::transport::Transport;
-use wh_proto::cmds::{layout, KeyRecord};
+use wh_proto::cmds::{layout, KeyRecord, TouchMode};
 use wh_proto::value::Um;
 
 use crate::cli::KeysetKindArg;
@@ -258,11 +258,12 @@ pub(crate) fn create<T: Transport>(
     // each stolen member's own pre-write value, and it costs no extra reads since `plan` sends
     // them anyway. `plan` itself only reads; nothing here has written to the board yet.
     let plan = keyset::plan(s, usages, &change, Some(index))?;
-    if will_write && usages.len() == m.entries().len() {
+    if will_write {
         confirm_whole_board_create(
             prompt_out,
             kind,
-            &losing,
+            &m,
+            usages,
             index.value(),
             target,
             &plan,
@@ -284,23 +285,33 @@ pub(crate) fn create<T: Transport>(
 /// and a refusal announces nothing at all. `--dry-run` never reaches here, since it writes
 /// nothing to confirm.
 ///
-/// The trigger is the resolved selection covering the matrix, decided by `create` against the
-/// membership read it already performed, never the literal `--keys all`: spelling every key out
-/// destroys just as much.
+/// Computes its own trigger from `m` and `usages`, matching `confirm_whole_board_ap_set`, rather
+/// than trusting a caller to have checked first: both "this selects every key on the board" and
+/// the list of keysets ceasing to exist are false of a partial selection, and a caller that
+/// forgot must never reach this wording. It is the resolved selection covering the matrix that
+/// triggers it, never the literal `--keys all`: spelling every key out destroys just as much.
+/// `losing` is derived here from the same `m` and `usages` for the same reason, so the keysets
+/// named can never have come from a different selection than the one being confirmed.
 ///
 /// `out` is a caller-supplied stderr rather than stdout, for the reason
 /// `confirm_whole_board_remove`'s own doc sets out at length: a redirected stdout would trap the
 /// prompt in the file with nothing on screen, and no terminal check is needed once the prompt
 /// goes to stderr, since stdin answers it either way.
+#[allow(clippy::too_many_arguments)]
 fn confirm_whole_board_create(
     out: &mut impl Write,
     kind: Kind,
-    losing: &[(u16, Vec<u8>)],
+    m: &Membership,
+    usages: &[u8],
     new_index: u16,
     target: Target,
     plan: &keyset::WritePlan,
     input: &mut impl BufRead,
 ) -> Result<()> {
+    if usages.len() != m.entries().len() {
+        return Ok(());
+    }
+    let losing = losing_members(&keyset::group(m), usages);
     let keysets = if losing.is_empty() {
         format!("no {} keysets exist to lose", kind_name(kind))
     } else {
@@ -1043,10 +1054,12 @@ fn mode_change(plan: &keyset::WritePlan, prior: &ops::KeySettings, u: u8) -> Opt
     (new_touch != prior_touch).then(|| format!("mode {prior_touch:?} to {new_touch:?}"))
 }
 
-/// How many keys in `plan` had their touch mode actually move, per `mode_change`. Shared by every
-/// whole-board confirmation prompt and by `wh set ap --base`'s own announcement, so the count is
-/// always read off the plan being announced or confirmed, never inferred separately from a guess
-/// at how many keys sit at touch nibble 0.
+/// How many keys in `plan` had their touch mode actually move, per `mode_change`. Behind
+/// `ap_mode_clause`, `confirm_whole_board_remove`'s rapid trigger branch, and `wh set ap
+/// --base`'s own announcement, so the count is always read off the plan being announced or
+/// confirmed, never inferred separately from a guess at how many keys sit at touch nibble 0.
+/// `rt_on_mode_clause` walks `plan.before()` itself instead, since it needs the same keys split
+/// by which nibble each is leaving rather than one total.
 pub(crate) fn moved_mode_count(plan: &keyset::WritePlan) -> usize {
     plan.before()
         .iter()
@@ -1058,11 +1071,13 @@ pub(crate) fn moved_mode_count(plan: &keyset::WritePlan) -> usize {
 /// own announcement appends: empty when no key moves off touch nibble 0 ("follow global
 /// travel"), otherwise ", N key(s) move off global travel onto their own actuation point".
 /// Holds `moved_mode_count`, the sentence, and the empty-on-zero rule in one place, since these
-/// three call sites were previously three separate copies of the same wording, only the count
+/// four call sites would otherwise be four separate copies of the same wording, only the count
 /// itself shared, free to drift apart one edit at a time with the suite still green: each site
 /// is pinned by its own test with its own literal string, so a wording change at one site alone
-/// passes every gate. `confirm_whole_board_remove`'s `Kind::Rt` branch is not this: it says
-/// something different ("have rapid trigger switched off") and stays inline there.
+/// passes every gate. Neither rapid trigger clause is this: `confirm_whole_board_remove`'s
+/// `Kind::Rt` branch says something different ("have rapid trigger switched off") and stays
+/// inline there, and a create's own `Kind::Rt` clause is `rt_on_mode_clause`, which splits its
+/// count by origin rather than reporting one.
 pub(crate) fn ap_mode_clause(plan: &keyset::WritePlan) -> String {
     let moved_modes = moved_mode_count(plan);
     if moved_modes == 0 {
@@ -1072,18 +1087,44 @@ pub(crate) fn ap_mode_clause(plan: &keyset::WritePlan) -> String {
     }
 }
 
-/// The `Kind::Rt` mode-transition clause a create's whole-board confirmation appends.
-/// `Change::rt_on` sends every counted key to touch nibble 3 alike, whether it was on Global
-/// ("follow global travel"), Single, or RtGlobal ("rapid trigger, following the global
-/// sensitivity"), so this names the destination rather than saying rapid trigger was switched
-/// on, which would be false of a key already on RtGlobal.
+/// The `Kind::Rt` mode-transition clause a create's whole-board confirmation appends, split by
+/// what each moving key is coming from, since one sentence cannot honestly cover all of them.
+/// `docs/protocol.md` records as measured that touch nibbles 0 and 1 are rapid trigger off, 2 is
+/// rapid trigger on following the board's global sensitivity, and 3 and 4 are on with the key's
+/// own. So a key leaving 0 or 1 really is having rapid trigger switched on, which changes how it
+/// behaves under a keypress and has to be said; a key leaving 2 had it on already and is only
+/// changing where its sensitivity comes from.
+///
+/// Nibble 5 and above is unmeasured, so it is counted with the second group, whose sentence
+/// claims only the destination: nothing here asserts an unknown nibble was off. Both counts come
+/// off `plan`, and each clause is omitted entirely at zero rather than printed as "0 key(s)".
 fn rt_on_mode_clause(plan: &keyset::WritePlan) -> String {
-    let moved_modes = moved_mode_count(plan);
-    if moved_modes == 0 {
-        String::new()
-    } else {
-        format!(", {moved_modes} key(s) move onto their own rapid trigger sensitivity")
+    let mut switched_on = 0usize;
+    let mut own_sensitivity = 0usize;
+    for prior in plan.before() {
+        if mode_change(plan, prior, prior.usage).is_none() {
+            continue;
+        }
+        match prior.mode.touch {
+            TouchMode::Global | TouchMode::Single => switched_on += 1,
+            // RtGlobal, and any unmeasured nibble. `Rt` and `RtContinuous` never reach here at
+            // all: `Change::rt_on` leaves both exactly where they are, so `mode_change` reports
+            // nothing for them and the `continue` above has already skipped them.
+            _ => own_sensitivity += 1,
+        }
     }
+    let mut clause = String::new();
+    if switched_on > 0 {
+        clause.push_str(&format!(
+            ", {switched_on} key(s) have rapid trigger switched on"
+        ));
+    }
+    if own_sensitivity > 0 {
+        clause.push_str(&format!(
+            ", {own_sensitivity} key(s) move onto their own rapid trigger sensitivity"
+        ));
+    }
+    clause
 }
 
 /// Whether the value `kind` reports (AP for `Kind::Ap`, press/release for `Kind::Rt`) actually
@@ -1686,6 +1727,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("was not confirmed"), "got: {err}");
+    }
+
+    /// `create`'s own sibling: a selection short of the whole matrix must never reach the prompt
+    /// even when a caller hands it one directly, since both "this selects every key on the board"
+    /// and the list of keysets ceasing to exist would be false of a partial selection. The trigger
+    /// lives inside the function rather than at its one call site, so this pins it structurally
+    /// rather than trusting the caller to keep checking first. Empty input: a prompt here would
+    /// read it and hang or refuse; printing nothing and returning `Ok(())` unread is the point.
+    #[test]
+    fn confirm_whole_board_create_does_not_prompt_over_a_partial_selection() {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 1, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8]; // only one of the board's two keys
+        let index = keyset::next_index(&m).unwrap();
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1200)), Some(index)).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_create(
+            &mut out,
+            Kind::Ap,
+            &m,
+            &usages,
+            index.value(),
+            Target::Ap(Um(1200)),
+            &plan,
+            &mut "".as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing for a partial selection: {out:?}"
+        );
     }
 
     /// A selection short of the whole matrix must never reach the prompt: the function decides

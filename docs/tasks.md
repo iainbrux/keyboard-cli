@@ -340,13 +340,23 @@ rather than as settings it recognises.
   `confirm_whole_board_create` after `plan` exists and before `announce_steal`, so the prompt is
   built from the plan and a refusal announces nothing at all. `run.rs`'s `KeysetWhat::Create` arm
   passes a locked stderr, a locked stdin, and `!dry_run`, which is what keeps the guard off a
-  preview without moving the call past that arm's own `dry_run` check. Both kinds prompt: the
-  `rt` mode clause is its own wording (`rt_on_mode_clause`), since `Change::rt_on` moves a key
-  already on `RtGlobal` onto its own sensitivity rather than switching rapid trigger on, so
-  reusing `ap_mode_clause`'s or `remove`'s wording would have been false on that board. Seven
-  end-to-end tests in `crates/wh-cli/tests/dump.rs`, covering `ap` decline and accept, `rt`,
-  the prompt's absence from stdout, a partial selection, `--dry-run`, a whole-board selection
-  spelled key by key, and a board with no keysets where the mode count is the only warning.
+  preview without moving the call past that arm's own `dry_run` check. `confirm_whole_board_create`
+  decides the whole-board trigger itself from the membership and the selection, matching
+  `confirm_whole_board_ap_set`, so a caller that forgot to check cannot reach a prompt whose every
+  sentence would be false of a partial selection.
+
+  Both kinds prompt, and the `rt` mode clause (`rt_on_mode_clause`) splits its count by the nibble
+  each key is leaving, since one sentence cannot honestly cover them all: a key leaving nibble 0
+  or 1 is having rapid trigger switched on and is told so, a key leaving nibble 2 had it on
+  already and is only moving onto its own sensitivity, and an unmeasured nibble is counted with
+  the second group, whose wording claims only the destination. Reusing `ap_mode_clause`'s or
+  `remove`'s single sentence would have been false on one board or the other.
+
+  Eight end-to-end tests in `crates/wh-cli/tests/dump.rs`, covering `ap` decline and accept, the
+  two `rt` origin splits, the prompt's absence from stdout, a partial selection, `--dry-run`, a
+  whole-board selection spelled key by key, and a board with no keysets where the mode count is
+  the only warning; plus one unit test pinning that a partial selection reaching
+  `confirm_whole_board_create` directly prints nothing at all.
 
 - [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
   Found by a cold reviewer that built its own replay generator and drove the binary, after the
