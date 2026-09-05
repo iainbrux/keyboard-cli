@@ -2954,7 +2954,7 @@ fn set_ap_base_does_not_claim_movement_when_every_free_key_already_holds_the_bas
     assert!(
         stdout.contains(
             "the actuation point outside every keyset already matches 1.95mm on 4 keys, \
-             nothing written"
+             nothing written, keysets untouched"
         ),
         "got: {stdout}"
     );
@@ -3098,7 +3098,7 @@ fn set_ap_base_reports_the_mode_promotion_as_a_real_write_when_no_value_moves() 
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("no key outside a keyset changes its actuation point"),
+        stdout.contains("no key outside a keyset changes its actuation point, keysets untouched"),
         "got: {stdout}"
     );
     assert!(
