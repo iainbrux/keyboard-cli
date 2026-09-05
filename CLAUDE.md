@@ -222,6 +222,11 @@ key", and comparing only the value a command owns will miss a MODE change the sa
 | `docs/backlog.md` | Unscheduled work, with what is known and unknown for each |
 | `capture/README.md` | How to capture real device traffic |
 
+Plan and spec files under `docs/superpowers/` are dated records of what was planned, not living
+documents: a signature or example in one may no longer compile, and that is expected. Correct a
+stale statement where code reads it (comments, README, `docs/*.md`); leave plan files as the record
+of what was decided at the time.
+
 `captures/` holds real device traffic and is **gitignored**. It is the operator's own data. The
 golden test (`cargo test -p wh-proto --test golden`) decodes every frame in it; a missing directory
 is the normal state everywhere except the operator's machine.
