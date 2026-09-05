@@ -17,6 +17,13 @@ pub enum DeviceError {
     Io(String),
     #[error("could not decode reply: {0}")]
     Decode(String),
+    /// Every reply parsed cleanly, but the answers cannot all be true at once: a key flagged for
+    /// SOCD whose partner is not, two members of one pairing naming different partners, or a
+    /// readback that disagrees with what was just written. Kept distinct from `Decode`, which
+    /// means the bytes themselves did not parse: an operator told "could not decode reply" here
+    /// would go hunting a comms fault that is not there.
+    #[error("the board's SOCD state is inconsistent: {0}")]
+    SocdInconsistent(String),
     /// A profile-read reply parsed fine but named an index the board's four profiles can
     /// never produce (`wh_proto::cmds::DecodeError::ProfileOutOfRange`, from `ops::profile`).
     /// Kept distinct from `Decode`, which covers a reply that isn't shaped like a profile

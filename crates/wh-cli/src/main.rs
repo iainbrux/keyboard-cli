@@ -3,6 +3,7 @@ mod confirm;
 mod keyset;
 mod picker;
 mod run;
+mod socd;
 
 use clap::Parser;
 

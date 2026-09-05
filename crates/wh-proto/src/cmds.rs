@@ -10,6 +10,9 @@ pub mod cmd {
     pub const KEY: u8 = 0x23;
     pub const DB: u8 = 0x29;
     pub const DEFKEY: u8 = 0x2B;
+    /// SOCD pairings, measured 2026-09-05 (`docs/protocol.md`, "SOCD"). Carries the pair table
+    /// only; participation lives in the MODE layout's advanced nibble.
+    pub const SOCD: u8 = 0x2C;
 }
 
 pub const RW_READ: u8 = 0x00;
@@ -36,6 +39,19 @@ pub enum DecodeError {
     /// (a live wire index versus a stored one-based number), and the error should name which.
     #[error("profile {0} is out of range: the board has 4 profiles, numbered 1..=4")]
     ProfileNumberOutOfRange(u8),
+    /// A `cmd 0x2c` reply that is not shaped like the measured pairing record, naming which part
+    /// failed instead of the opaque `Shape` message. Only `socd::parse_pairing` uses this.
+    #[error("SOCD reply: {0}")]
+    Socd(&'static str),
+    /// A `cmd 0x2c` priority byte outside the three the corpus measured. Kept distinct from
+    /// `Socd`: the reply is shaped correctly, only the enum value inside it is one this build
+    /// cannot render or write back.
+    #[error(
+        "SOCD priority {0} is not one this build understands: 0 (last input), 1 and 2 (one key \
+         wins) are measured; the vendored docs name 3 (neutral) and 4 (depth) but no capture \
+         reached them"
+    )]
+    SocdPriority(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,6 +193,12 @@ pub enum TouchMode {
     Unknown(u8),  // any other nibble; preserved so read-modify-write is lossless
 }
 
+/// The advanced-key mode nibble value meaning SOCD. That nibble is an **enum** of advanced-key
+/// modes, `0` none through `8` SOCD and `9` RS, per the vendored docs
+/// (`research/kbdocs/keyboard/api/performance.md`), not a bitfield: every comparison against it
+/// must be `== ADVANCED_SOCD`, never a bit test, since mode `9` shares the bit.
+pub const ADVANCED_SOCD: u8 = 0x8;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mode {
     pub touch: TouchMode,
@@ -217,6 +239,19 @@ impl Mode {
         };
         let low = (t << 4) | (self.advanced & 0x0F);
         ((self.high as u16) << 8) | low as u16
+    }
+    /// Whether this key takes part in a SOCD pairing. The single place `wh` compares the
+    /// advanced nibble against `ADVANCED_SOCD`, so the enum-not-bitfield rule is stated once.
+    pub fn is_socd(self) -> bool {
+        self.advanced == ADVANCED_SOCD
+    }
+    /// The same mode with the advanced nibble cleared to `0`, keeping the touch nibble and the
+    /// high byte. What an unpair writes (`docs/protocol.md`: removing a pair clears the nibble).
+    pub fn with_advanced_cleared(self) -> Self {
+        Mode {
+            advanced: 0,
+            ..self
+        }
     }
 }
 

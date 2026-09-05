@@ -560,3 +560,20 @@ closed. It still does not capture the base layer key
 mapping (layout `0x00`), the FN layer (layout `0x01`), SOCD, dynamic keystroke, mod tap, gamepad
 configuration, RGB, or polling rate. Those are Phase 2 scope questions, and the README says plainly
 what a snapshot does and does not contain either way.
+
+**SOCD is the one of those that can diverge rather than merely be missing.** A snapshot round-trips
+each key's raw MODE value through `mode_raw`, and SOCD participation lives in that value's advanced
+nibble, but the pair table (`cmd 0x2c`) and its priorities are not captured at all. So a restore can
+set the participation flag on a key whose pairing it cannot restore, leaving the board in a state
+neither `wh socd list` nor the vendor UI can render: `wh socd list` refuses outright rather than
+showing half a pair, since a flag without a coherent partner is exactly the inconsistency
+`read_socd` is built to catch. Which of its refusals fires depends on what the board's own `cmd
+0x2c` row still holds for that key, and that is unmeasured (whether an orphaned pairing survives a
+remove is one of the section's open questions), so the guarantee here is that it stops and says
+something true, not which sentence it picks. Restoring a snapshot taken while the same pairs were
+live is fine; restoring one across a `wh socd unpair`, or onto a board whose pairs have since
+changed, is not.
+Closing this means capturing the pair table and writing it back, which needs a decision on ordering
+against the MODE writes (the board sets the flag itself on a pair write, so a restore that writes
+both would be writing something the firmware also writes) and was deliberately left out of the SOCD
+command work rather than guessed at.

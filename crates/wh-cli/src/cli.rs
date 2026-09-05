@@ -63,6 +63,43 @@ pub enum Cmd {
         #[command(subcommand)]
         what: KeysetWhat,
     },
+    /// Read and write SOCD pairs (two keys whose opposing inputs resolve to one)
+    Socd {
+        #[command(subcommand)]
+        what: SocdWhat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SocdWhat {
+    /// List the board's SOCD pairs: wh socd list
+    List,
+    /// Pair two keys: wh socd pair a d --priority d
+    ///
+    /// A key may sit in one pair only, so this refuses if either key is already paired.
+    Pair {
+        /// The first key of the pair
+        key_a: String,
+        /// The second key of the pair
+        key_b: String,
+        /// Which key wins when both are held: one of the two key names, or `last-input`. The
+        /// default comes from the same constant the announcements print, so the flag and the
+        /// output can never name it differently.
+        #[arg(long, default_value = wh_proto::socd::LAST_INPUT)]
+        priority: String,
+        /// Print the exact reports without sending
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the pair each named key belongs to, both members at once: wh socd unpair a
+    Unpair {
+        /// One or more keys, each naming the pair it belongs to
+        #[arg(required = true)]
+        keys: Vec<String>,
+        /// Print the exact reports without sending
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(clap::Args)]

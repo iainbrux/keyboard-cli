@@ -29,6 +29,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
         Cmd::Keyset { what } => keyset_cmd(what, &store),
+        Cmd::Socd { what } => socd_cmd(what, &store),
     }
 }
 
@@ -76,11 +77,30 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
 
 /// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
 /// `wh_proto::keys::TABLE`. Shared by `dump`, `get`, and `picker` so an unnamed usage prints
-/// the same label everywhere.
+/// the same label everywhere. Delegates to `wh_proto::keys::label`, which `wh-device`'s own
+/// errors also use: two copies of this would drift the first time the fallback form changed.
 pub(crate) fn key_label(usage: u8) -> String {
-    wh_proto::keys::name_for_usage(usage)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("0x{usage:02X}"))
+    wh_proto::keys::label(usage)
+}
+
+/// A touch mode in the operator's vocabulary rather than Rust's, for the sentences that name one.
+/// The five measured nibbles get the meanings `docs/protocol.md` records; anything else says it is
+/// unmeasured and gives the number, instead of leaking `Unknown(5)` tuple-variant syntax into a
+/// line an operator reads.
+///
+/// `crate::keyset::mode_change` still prints `{:?}` for its own "mode Global to Single" transition
+/// line, deliberately and as its doc comment says; this is the renderer to adopt there if that
+/// choice is ever revisited.
+pub(crate) fn touch_mode_label(t: cmds::TouchMode) -> String {
+    use cmds::TouchMode;
+    match t {
+        TouchMode::Global => "the board's global travel".to_string(),
+        TouchMode::Single => "its own actuation point".to_string(),
+        TouchMode::RtGlobal => "rapid trigger on the board's global sensitivity".to_string(),
+        TouchMode::Rt => "rapid trigger on its own sensitivity".to_string(),
+        TouchMode::RtContinuous => "continuous rapid trigger".to_string(),
+        TouchMode::Unknown(n) => format!("an unmeasured mode ({n})"),
+    }
 }
 
 /// "key" for 1, "keys" for anything else, so a count-carrying sentence never reads "1 keys".
@@ -561,6 +581,8 @@ enum BackupReason {
     KeysetSet,
     KeysetDelete,
     KeysetRemove,
+    SocdPair,
+    SocdUnpair,
     Restore,
     /// `wh backup`, the only one an operator asks for directly, hence no `auto: ` prefix.
     Manual,
@@ -580,6 +602,8 @@ impl BackupReason {
             BackupReason::KeysetSet => "auto: keyset set",
             BackupReason::KeysetDelete => "auto: keyset delete",
             BackupReason::KeysetRemove => "auto: keyset remove",
+            BackupReason::SocdPair => "auto: socd pair",
+            BackupReason::SocdUnpair => "auto: socd unpair",
             BackupReason::Restore => "auto: restore",
             BackupReason::Manual => "manual",
         }
@@ -1239,6 +1263,70 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
     }
 }
 
+fn socd_cmd(what: crate::cli::SocdWhat, store: &Store) -> Result<()> {
+    use crate::cli::SocdWhat;
+    match what {
+        SocdWhat::List => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| crate::socd::list(&mut out, &wh_device::socd::read_socd(s)?))
+        }
+        SocdWhat::Pair {
+            key_a,
+            key_b,
+            priority,
+            dry_run,
+        } => {
+            let groups = store.groups()?;
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                // Every key argument is resolved against the board's own matrix, which the SOCD
+                // read already had to fetch. A key this board does not have is refused here
+                // rather than written into a pairing `list` could never show again.
+                let board = wh_device::socd::read_socd(s)?;
+                let pair = crate::socd::resolve_pair(&board, &groups, &key_a, &key_b, &priority)?;
+                crate::socd::check_unpaired(&board, pair)?;
+                crate::socd::announce_pair(&mut out, pair)?;
+                if dry_run {
+                    return print_frames(&mut out, &[wh_proto::socd::write_pair(pair)]);
+                }
+                auto_backup(s, store, BackupReason::SocdPair)?;
+                wh_device::socd::write_socd_pair(s, pair)?;
+                crate::socd::report_pair(&mut out, pair)
+            })
+        }
+        SocdWhat::Unpair { keys, dry_run } => {
+            let groups = store.groups()?;
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                let board = wh_device::socd::read_socd(s)?;
+                let targets = crate::socd::resolve_unpair(&board, &groups, &keys)?;
+                // Every plan is built, and every announcement made, before the first write: a
+                // named key that turns out not to be paired must stop the command with nothing
+                // sent, however many pairs came before it in the list.
+                let mut plans = Vec::with_capacity(targets.len());
+                for pair in targets {
+                    let plan = wh_device::socd::plan_remove(s, pair)?;
+                    crate::socd::announce_unpair(&mut out, &plan)?;
+                    plans.push(plan);
+                }
+                if dry_run {
+                    let frames: Vec<[u8; 64]> = plans.iter().flat_map(|p| p.frames()).collect();
+                    return print_frames(&mut out, &frames);
+                }
+                auto_backup(s, store, BackupReason::SocdUnpair)?;
+                for plan in &plans {
+                    wh_device::socd::remove_socd_pair(s, plan)?;
+                    crate::socd::report_unpair(&mut out, plan)?;
+                }
+                Ok(())
+            })
+        }
+    }
+}
+
 fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1691,6 +1779,8 @@ mod tests {
         assert_eq!(BackupReason::KeysetSet.origin(), "auto: keyset set");
         assert_eq!(BackupReason::KeysetDelete.origin(), "auto: keyset delete");
         assert_eq!(BackupReason::KeysetRemove.origin(), "auto: keyset remove");
+        assert_eq!(BackupReason::SocdPair.origin(), "auto: socd pair");
+        assert_eq!(BackupReason::SocdUnpair.origin(), "auto: socd unpair");
         assert_eq!(BackupReason::Restore.origin(), "auto: restore");
         assert_eq!(BackupReason::Manual.origin(), "manual");
     }
