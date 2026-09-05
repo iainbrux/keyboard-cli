@@ -12,11 +12,14 @@ pub struct Snapshot {
     pub taken_at: String, // RFC3339, informational
     /// The board's active profile when this snapshot was taken. `ProfileNumber`, not a bare
     /// `u8`, so the UI's one-based numbering can never be confused with the wire's zero-based
-    /// index. `None` means the snapshot's profile provenance is unknown (it predates profile
-    /// recording), never that the board had no active profile: every board always has one.
-    /// Missing entirely from a snapshot file, JSON or pre-JSON TOML alike, deserializes to
-    /// `None`, so old backups still parse. Goes through `crate::profile`'s bridge functions since `wh-proto` carries no
-    /// serde dependency.
+    /// index. `None` means the snapshot's profile provenance is unknown, never that the board
+    /// had no active profile: every board always has one. No released `wh` has ever written a
+    /// profile-less snapshot (the field landed before the first tag), and `wh` cannot produce
+    /// one at all now that an out-of-range wire index stops the read, so `None` today means a
+    /// hand-edited file. The field stays `Option` because a file on disk can still lack it:
+    /// missing entirely, JSON or pre-JSON TOML alike, deserializes to `None`, so such a file
+    /// still parses. Goes through `crate::profile`'s bridge functions since `wh-proto` carries
+    /// no serde dependency.
     #[serde(
         default,
         with = "crate::profile",

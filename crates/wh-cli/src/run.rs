@@ -213,7 +213,7 @@ fn dump(table: bool) -> Result<()> {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
             // `snapshot_from_device` a few lines up always records a profile, since an index
             // outside `0..=3` stops the read, so `None` cannot be reached from here. Matched
-            // rather than unwrapped because the field is `Option` for snapshots read off disk.
+            // rather than unwrapped so a future caller cannot turn this into a panic.
             match snap.profile {
                 Some(profile) => writeln!(out, "profile {profile}")?,
                 None => writeln!(out, "profile unrecorded")?,
@@ -1426,11 +1426,16 @@ const MISSING_KEY_LIST_CAP: usize = 8;
 /// The converse is not a fault: a snapshot covering fewer keys than the board leaves the rest
 /// alone, which is what `restore` has always done.
 fn check_restore_matrix(keys: &[RestoreKey], board: &[u8]) -> Result<()> {
-    let missing: Vec<u8> = keys
-        .iter()
-        .map(|k| k.usage)
-        .filter(|u| !board.contains(u))
-        .collect();
+    // Deduped, in the snapshot's own order, the same shape `ops::read_matrix` uses: a
+    // hand-edited file can list one key twice, and counting entries rather than keys would both
+    // miscount and name the key twice. `wh backup` cannot produce that, since it builds from
+    // `read_matrix`, which dedupes already.
+    let mut missing: Vec<u8> = Vec::new();
+    for u in keys.iter().map(|k| k.usage) {
+        if !board.contains(&u) && !missing.contains(&u) {
+            missing.push(u);
+        }
+    }
     if missing.is_empty() {
         return Ok(());
     }
@@ -1897,6 +1902,21 @@ mod tests {
         assert!(
             !msg.contains("--"),
             "the refusal must not name a flag, there is not one: {msg}"
+        );
+    }
+
+    /// A hand-edited snapshot can list one key twice. `wh backup` cannot produce that, since it
+    /// builds from `read_matrix`, which dedupes, but the refusal still has to count keys rather
+    /// than entries: "2 keys this board does not have (s, s)" is wrong twice over.
+    #[test]
+    fn restore_matrix_check_counts_a_duplicated_missing_usage_once() {
+        let keys = [restore_key(0x16), restore_key(0x16)];
+        let msg = check_restore_matrix(&keys, &[0x1A])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("snapshot has 1 key this board does not have (s)"),
+            "a usage listed twice is still one key: {msg}"
         );
     }
 

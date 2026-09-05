@@ -398,8 +398,9 @@ an override:
   even if asked. Switch the board to the recorded profile first, or restore only when you actually
   mean to overwrite the profile you are currently on.
 - If the snapshot has no recorded profile at all, `wh restore` refuses, since nothing can establish
-  which profile the settings belong to. `wh` never writes such a snapshot: a board reporting a
-  profile index outside 1 to 4 fails the read outright rather than recording an unknown profile.
+  which profile the settings belong to. `wh` never writes such a snapshot: the board reports its
+  profile as a zero-based wire index, and one outside `0..=3` (the four profiles the board has)
+  fails the read outright rather than being recorded as an unknown profile.
 - If the snapshot carries a key the board in front of you does not have, `wh restore` refuses and
   names the keys. A snapshot taken on a different key matrix is unrestorable rather than partly
   restorable, deliberately: restoring it would write to keys this board does not have and then

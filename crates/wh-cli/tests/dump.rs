@@ -5238,8 +5238,8 @@ fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
 
 /// The frames `ops::restore_all` sends plus `verify_restore`'s readback: global travel write
 /// first, then the per-key batch for 'w' (ap, mode verbatim, rt press, rt release), no SAVE, then
-/// a matching readback. Shared by the happy-path and force-rescue tests below so both restore the
-/// identical snapshot content and diverge only on the profile-safety fixture around it.
+/// a matching readback. Shared by the six restore tests below that run all the way through, so
+/// each restores identical snapshot content and diverges only on the fixture around it.
 /// `membership` is `true` for a snapshot that recorded 'w' at keyset `0` (an explicit "no
 /// keyset", `Some(0)`), which sends the two membership frames below, and `false` for one that
 /// predates keyset recording at all (`None`), which must send neither: the fields differ only in
@@ -5915,15 +5915,25 @@ fn backup_fails_and_writes_nothing_on_an_out_of_range_profile_index() {
 /// rather than printing a warning and carrying on with an unknown profile. Its own test rather
 /// than a rider on `backup`'s: `dump` writes nothing to disk, so "no file appeared" cannot stand
 /// in for it, and it is the command whose degrading was visible to the operator.
+///
+/// Driven through `--table`, the only form that prints a profile line at all, against a script
+/// carrying the whole dump and not just the profile read. Both are what make the stdout
+/// assertion mean something: a dump that carried on would complete and print its table, so the
+/// assertion fails on the defect it names rather than on an exhausted script. On a correct run
+/// the frames after the profile read go unused.
 #[test]
 fn dump_fails_on_an_out_of_range_profile_index() {
     let mut lines = sync_lines("SNOUTOFRANGE0002", "V1.0.0.001");
     lines.extend(profile_lines(0xFE));
+    lines.extend(global_travel_lines(500, 200, 200));
+    lines.extend(matrix_lines());
+    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500, 0, 0));
+    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
 
     let path = write_script("dump-out-of-range", &lines);
     let config_home = scratch_config_dir("dump-out-of-range");
 
-    let out = run_wh(&["dump"], &path, &config_home);
+    let out = run_wh(&["dump", "--table"], &path, &config_home);
     assert!(
         !out.status.success(),
         "an out-of-range profile index must stop the dump: stdout: {}",
@@ -5936,9 +5946,12 @@ fn dump_fails_on_an_out_of_range_profile_index() {
         "the failure must name the profile read and the offending index: {stderr}"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // The exact string `dump`'s `None` arm prints, so this cannot pass by naming a phrase the
+    // code no longer emits. Nothing of the table may appear either: the run stops before the
+    // first `writeln!`.
     assert!(
-        !stdout.contains("profile unknown"),
-        "dump must stop rather than print an unknown profile and continue: {stdout}"
+        !stdout.contains("profile unrecorded") && !stdout.contains("SNOUTOFRANGE0002"),
+        "dump must stop rather than print an unrecorded profile and continue: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
