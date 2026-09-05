@@ -407,11 +407,18 @@ behaviour.
 Honestly, what this corpus does not resolve:
 
 - The `0x29` global record's field we call "travel": the vendor's own upstream naming calls it
-  travel, but the meaning is not measured. The vendor never writes this record in the ten captures
-  this section counts, though it does write it in the wider corpus, carrying `press_dead=200` and
-  `release_dead=200` (`docs/keysets.md`). The measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a
-  `Um`) is not a plausible switch travel for a board whose printed actuation scale runs to 3.5mm. It
-  may be something else entirely.
+  travel, but what the board does with it is not measured. What is measured (`docs/keysets.md`) is
+  which control writes it: the configurator's `"MM" CUSTOM VALUE`, the step size for its `< >`
+  buttons, which is why `wh`'s snapshot calls the field `custom_value_mm` rather than naming travel
+  or the actuation point. The vendor never writes this record in the ten captures this section
+  counts. The measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a `Um`) is not a plausible
+  switch travel for a board whose printed actuation scale runs to 3.5mm.
+- The `0x29` record's two dead zones. Measured 2026-09-05 across every `cmd 0x29` frame in
+  `captures/`: 14 read requests in 7 files, every reply reporting both as `0`, and 3 vendor writes,
+  all carrying `press_dead=200` and `release_dead=200`. A reply to a write echoes the write, so
+  those three replies are acknowledgements rather than reads. What the board does with either value
+  is unmeasured and unobservable through the read path, which is why `wh restore` sends the vendor's
+  constants rather than the zeros a snapshot records (`docs/keysets.md`).
 - Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. They read
   `0` in every Phase 1 capture, then `100` on profile 1 from 2026-08-29 onward, including through
   two global sensitivity changes, and `0` in every 2026-09-04 keyset capture. They have never been

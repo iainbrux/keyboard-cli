@@ -343,10 +343,22 @@ line of defence for exactly that if the first one is ever wrong.
 ## What a backup does and does not contain, stated plainly
 
 A snapshot recorded by `wh backup` (or the automatic backup every write command takes first)
-contains: global travel and its press/release dead zones, actuation point and rapid trigger
-press/release depth for every physical key, the raw per-key mode value, each key's raw actuation
-point and rapid trigger keyset value, and, since Phase 1, the profile the board was on when the
-snapshot was taken. Snapshots are written as JSON; older TOML backups are still read.
+contains: the board's global record (`custom_value_mm` and its press/release dead zones), actuation
+point and rapid trigger press/release depth for every physical key, the raw per-key mode value, each
+key's raw actuation point and rapid trigger keyset value, and, since Phase 1, the profile the board
+was on when the snapshot was taken. Snapshots are written as JSON; older TOML backups are still
+read, including those written before `custom_value_mm` was called that.
+
+`custom_value_mm` is **not** the global actuation point, whatever an older backup's `travel_mm`
+spelling suggests. It is the vendor configurator's `"MM" CUSTOM VALUE`, the step size for its `< >`
+controls. The global actuation point is not in that record at all: it is simply what every key
+outside a keyset holds, which is what `wh set ap --base` reads and writes.
+
+The two dead zone fields are informational only, a record of what the board reported when the
+snapshot was taken, which is `0` for both on every read measured. `wh restore` does not send them:
+it writes the constants the vendor's own configurator writes (200um each, measured across every
+`cmd 0x29` write in the capture corpus), so hand-editing either field changes nothing that reaches
+the board.
 
 Each key's `rt` field in the snapshot file is informational only, a human-readable summary of the
 raw mode value at the moment the snapshot was taken. `wh restore` never reads it; it writes the raw

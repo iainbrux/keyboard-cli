@@ -105,7 +105,9 @@ Note the vendor UI displays firmware as `V0.046` while the device string is `App
 ## The global record, cmd `0x29`
 
 Reply payload is `000000640000000000000000000000` in all three captures that read it. `p[3..5]` is
-`0x0064`. We call the field "travel" from the upstream spec, but **the meaning is not measured**:
-the vendor only reads this record in these ten captures, and 0.1mm is not a plausible switch travel
-for a board whose printed scale runs to 3.5mm. A later session measures a write, always carrying
-`press_dead=200` and `release_dead=200`, see `docs/keysets.md`.
+`0x0064`. We call the field "travel" from the upstream spec, but **what the board does with it is
+not measured**: the vendor only reads this record in these ten captures, and 0.1mm is not a
+plausible switch travel for a board whose printed scale runs to 3.5mm. A later session measures the
+configurator's `"MM" CUSTOM VALUE` control writing that field, and every write carrying
+`press_dead=200` and `release_dead=200` against a read that reports both as `0`, see
+`docs/keysets.md`.

@@ -525,7 +525,7 @@ byte-level facts elsewhere in this document.
 
 ### Settings a snapshot does not capture
 
-`wh backup` stores global travel plus four layouts per key, and, as of Phase 1, the profile the
+`wh backup` stores the global record plus four layouts per key, and, as of Phase 1, the profile the
 board was on when the snapshot was taken: `Snapshot::profile` records it. `wh restore` checks that
 recorded profile against the board's current one, and the two refusals are not the same and do not
 share an override. When the snapshot's recorded profile differs from the board's, `wh restore`

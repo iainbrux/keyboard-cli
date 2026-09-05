@@ -514,22 +514,35 @@ transition is a bare write in `ks-create-ap-1`, a file containing no reads at al
 to a keyset existing rather than to the sitting, the firmware or the configurator version is an
 inference. Purpose still unknown.
 
-**`Snapshot::global.travel_mm` is not the global actuation point.** It is the configurator's
+**`Snapshot::global.custom_value_mm` is not the global actuation point.** It is the configurator's
 `"MM" CUSTOM VALUE`, the step size for its `< >` controls. Measured: changing that control from 0.10
 to 0.15 moved the field from `0.1` to `0.15`, and the write carried `travel=150um`. The real global
 actuation point, 2.00mm, is not in that record at all; it is simply what every key in no keyset
-holds in layout `0x04`. The field should be renamed.
+holds in layout `0x04`. The field was called `travel_mm` and was renamed for exactly this reason;
+backups spelling it the old way still load, through a serde alias.
 
-## An open item on the global record
+## The global record's dead zones
 
 The vendor's `cmd 0x29` write always carries `press_dead=200` and `release_dead=200`. Those are
 constants in the vendor's own SDK template, not user settings. **The board reports both as `0` on
 read**, so the values cannot be preserved across a read-modify-write.
 
-`ops::restore_all` passes the snapshot's values into those fields, which means `wh restore` writes
-`0, 0` where the vendor has only ever written `200, 200`. Whether the board cares is unmeasured, and
-unobservable through the read path. The safe fix is to send the vendor's constants rather than the
-zeros we read back.
+Measured 2026-09-05, by parsing every `cmd 0x29` frame in `captures/`: 14 read requests across 7
+files, and every reply reports `press_dead = 0` and `release_dead = 0`; 3 vendor writes, in
+`custom-value-change` (travel 400 and 650) and `custom-value-nudge-after-restore` (travel 150), all
+three carrying `200` and `200`. A reply to a write echoes the write, so the three replies showing
+`200/200` are acknowledgements, not independent reads.
+
+`wh restore` used to pass the snapshot's own recorded values into those fields, which meant it wrote
+`0, 0` where the vendor has only ever written `200, 200`. It now sends the vendor's constants
+(`run::VENDOR_PRESS_DEAD` and `run::VENDOR_RELEASE_DEAD`) and the snapshot's dead zones are
+informational only. Whether the board cares is still unmeasured, and unobservable through the read
+path.
+
+`custom-value-nudge-after-restore` writes travel 150 with `200/200`, and `layout-16-by-profile`
+later reads travel 150 back with `0/0`, which would say the board keeps the travel and not the dead
+zones. **That is not established**: the pairing crosses two captures and neither records its
+profile, which is the comparison this project treats as invalid.
 
 ## Command `0x2c` is SOCD
 

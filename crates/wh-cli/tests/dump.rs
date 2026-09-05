@@ -322,7 +322,7 @@ fn dump_json_via_replay() {
     // The board replied with the wire's zero-based index 0; the JSON field carries the same
     // one-based value ("profile 1") the human-readable dump text below shows.
     assert_eq!(v["profile"], 1);
-    assert_eq!(v["global"]["travel_mm"], 0.5);
+    assert_eq!(v["global"]["custom_value_mm"], 0.5);
     assert_eq!(v["keys"][0]["name"], "w");
     assert_eq!(v["keys"][0]["rt"], true);
     // The fixture's MODE reply is 0x0230; mode_raw must come back exactly that, not truncated
@@ -421,6 +421,13 @@ fn dump_table_flag_prints_the_human_table() {
     assert!(
         !stdout.trim_start().starts_with('{'),
         "--table must not be JSON"
+    );
+    // The global line names the setting for what it is, the configurator's `"MM" CUSTOM VALUE`,
+    // rather than calling it travel: the actuation point is not in that record at all.
+    // `build_script` scripts the board reading 500um for it.
+    assert!(
+        stdout.contains("global: custom value 0.50mm, dead 0.20/0.20mm"),
+        "the global line must name the custom value: {stdout}"
     );
 
     std::fs::remove_file(path).unwrap();
@@ -551,6 +558,42 @@ fn backup_to_writes_the_profile_into_the_file() {
         snap.profile,
         Some(cmds::ProfileNumber::from_wire_index(0).unwrap()),
         "backup --to must record the board's profile in the file: {text}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(out_path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The global record's first field is the configurator's `"MM" CUSTOM VALUE`, not the global
+/// actuation point, so a file `wh backup` writes must spell it `custom_value_mm`. Asserted on the
+/// file's own text, not through a parse: the alias that keeps old backups loading would let a
+/// parsed round trip pass while `wh backup` still wrote the old name.
+#[test]
+fn backup_to_writes_the_custom_value_field_under_its_new_name() {
+    let path = write_script("backup-custom-value", &build_script());
+    let config_home = scratch_config_dir("backup-custom-value");
+    let out_path = std::env::temp_dir().join(format!(
+        "wh-backup-custom-value-{}.json",
+        std::process::id()
+    ));
+
+    let out = run_wh(
+        &["backup", "--to", out_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = std::fs::read_to_string(&out_path).unwrap();
+    assert!(
+        text.contains("custom_value_mm") && !text.contains("travel_mm"),
+        "backup --to must write custom_value_mm, not the old travel_mm: {text}"
     );
 
     std::fs::remove_file(path).unwrap();
@@ -5098,6 +5141,17 @@ fn set_ap_base_does_not_prompt() {
 /// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
 fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
+    restore_snapshot_json_with_dead_zones(ap_mm, profile, 0.2, 0.1)
+}
+
+/// `restore_snapshot_json` with the recorded dead zones chosen too, for the two tests that prove
+/// `restore` sends the vendor's constants rather than whatever the file holds.
+fn restore_snapshot_json_with_dead_zones(
+    ap_mm: f64,
+    profile: Option<u8>,
+    press_dead_mm: f64,
+    release_dead_mm: f64,
+) -> String {
     // `profile` is one-based (matching every other profile number in this file); built via
     // `from_one_based`, not `from_wire_index(p - 1)`, which would underflow-panic on `Some(0)`.
     let profile = profile.map(|p| cmds::ProfileNumber::from_one_based(p).unwrap());
@@ -5108,9 +5162,9 @@ fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
         profile,
         origin: None,
         global: wh_config::snapshot::GlobalToml {
-            travel_mm: 2.0,
-            press_dead_mm: 0.2,
-            release_dead_mm: 0.1,
+            custom_value_mm: 2.0,
+            press_dead_mm,
+            release_dead_mm,
         },
         keys: vec![wh_config::snapshot::KeyToml {
             name: "w".into(),
@@ -5181,10 +5235,12 @@ fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
 /// still share the same value batch and readback.
 fn restore_write_and_verify_lines(membership: bool) -> Vec<String> {
     let mut lines = Vec::new();
+    // The dead zones on the wire are the vendor's constants (200um each), not the 0.2/0.1 the
+    // shared snapshot recorded: `restore` sends what the vendor sends, whatever the file holds.
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um::from_mm(2.0, 0.0, 4.0).unwrap(),
-        wh_proto::value::Um::from_mm(0.2, 0.0, 4.0).unwrap(),
-        wh_proto::value::Um::from_mm(0.1, 0.0, 4.0).unwrap(),
+        wh_proto::value::Um(200),
+        wh_proto::value::Um(200),
     );
     lines.push(out_line(&db_write));
     lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
@@ -5286,6 +5342,118 @@ fn restore_happy_path_backs_up_and_verifies() {
     assert_eq!(
         backups, 1,
         "expected restore's auto-backup to have written exactly one file"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh restore` must put the vendor's dead zone constants on the wire, 200um each, whatever the
+/// snapshot recorded. Measured 2026-09-05 across every `cmd 0x29` frame in `captures/`: all three
+/// vendor writes carry `press_dead=200` and `release_dead=200`, while all 14 reads report `0` for
+/// both, so a restore built from what was read writes a pair the vendor never writes.
+/// `restore_write_and_verify_lines` scripts the 200/200 frame and `ReplayTransport` matches byte
+/// for byte, so sending the snapshot's own values fails on the send, not on an assertion here.
+fn assert_restore_sends_the_vendor_dead_zones(tag: &str, press_dead_mm: f64, release_dead_mm: f64) {
+    let config_home = scratch_config_dir(tag);
+    let snap_path = std::env::temp_dir().join(format!("wh-{tag}-{}.json", std::process::id()));
+    std::fs::write(
+        &snap_path,
+        restore_snapshot_json_with_dead_zones(1.2, Some(1), press_dead_mm, release_dead_mm),
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines(true));
+    let path = write_script(tag, &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("restored 1 key from snapshot") && stdout.contains("verified"),
+        "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The dead zones a snapshot taken off a real board actually holds: every measured read reports
+/// `0` for both, so this is the case that made `wh restore` write `0, 0`.
+#[test]
+fn restore_sends_the_vendor_dead_zones_from_a_snapshot_recording_zeros() {
+    assert_restore_sends_the_vendor_dead_zones("restore-dead-zones-zero", 0.0, 0.0);
+}
+
+/// Dead zones that are neither zero nor the constant, so the constants cannot be passing here by
+/// happening to agree with the file: they do not come from the snapshot at all.
+#[test]
+fn restore_sends_the_vendor_dead_zones_from_a_snapshot_recording_other_values() {
+    assert_restore_sends_the_vendor_dead_zones("restore-dead-zones-other", 0.35, 0.45);
+}
+
+/// A stored JSON snapshot spelling the global field `travel_mm`, the name it had before it was
+/// corrected to `custom_value_mm`. Real backups on the operator's disk are written that way, one of
+/// which proved a destroy-and-restore hardware test, so the serde alias has to keep them restoring.
+/// Hand-written rather than serialized, since no serializer can produce the old name any more, and
+/// it restores the same values `restore_write_and_verify_lines` scripts, so the custom value has to
+/// arrive intact for the global write to match rather than merely be tolerated by the parser.
+#[test]
+fn restore_from_a_snapshot_spelling_the_old_travel_mm_still_works() {
+    let config_home = scratch_config_dir("restore-old-travel-mm");
+    let snap_path = std::env::temp_dir().join(format!(
+        "wh-restore-old-travel-mm-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &snap_path,
+        r#"{
+  "firmware": "V1.0.0.001",
+  "serial": "SNRESTORETEST001",
+  "taken_at": "2026-08-28T12:00:00Z",
+  "profile": 1,
+  "global": { "travel_mm": 2.0, "press_dead_mm": 0.2, "release_dead_mm": 0.1 },
+  "keys": [
+    { "name": "w", "usage": 26, "ap_mm": 1.2, "rt": true, "rt_press_mm": 0.5,
+      "rt_release_mm": 0.6, "mode_raw": 544, "ap_keyset": 0, "rt_keyset": 0 }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines(true));
+    let path = write_script("restore-old-travel-mm", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("restored 1 key from snapshot") && stdout.contains("verified"),
+        "unexpected stdout: {stdout}"
     );
 
     std::fs::remove_file(snap_path).unwrap();
@@ -5802,7 +5970,7 @@ fn sample_backup_snapshot(origin: &str) -> wh_config::snapshot::Snapshot {
         profile: Some(cmds::ProfileNumber::from_one_based(1).unwrap()),
         origin: Some(origin.into()),
         global: wh_config::snapshot::GlobalToml {
-            travel_mm: 2.0,
+            custom_value_mm: 2.0,
             press_dead_mm: 0.2,
             release_dead_mm: 0.2,
         },
@@ -5886,7 +6054,7 @@ fn restore_last_prints_the_picked_snapshot_and_its_origin() {
         profile: Some(cmds::ProfileNumber::from_one_based(1).unwrap()),
         origin: Some("manual".into()),
         global: wh_config::snapshot::GlobalToml {
-            travel_mm: 2.0,
+            custom_value_mm: 2.0,
             press_dead_mm: 0.2,
             release_dead_mm: 0.1,
         },
@@ -5942,7 +6110,7 @@ fn snapshot_json_with_keysets() -> String {
         profile: Some(cmds::ProfileNumber::from_one_based(1).unwrap()),
         origin: None,
         global: wh_config::snapshot::GlobalToml {
-            travel_mm: 2.0,
+            custom_value_mm: 2.0,
             press_dead_mm: 0.2,
             release_dead_mm: 0.1,
         },
@@ -6021,10 +6189,11 @@ fn restore_script_with_keyset_readback(w: KeyReadback, a: KeyReadback) -> Vec<St
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
 
+    // Dead zones: the vendor's constants, not the 0.2/0.1 `snapshot_json_with_keysets` records.
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um(2000),
         wh_proto::value::Um(200),
-        wh_proto::value::Um(100),
+        wh_proto::value::Um(200),
     );
     lines.push(out_line(&db_write));
     lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
@@ -6312,7 +6481,8 @@ fn restore_reports_a_mode_mismatch() {
 /// would dissolve whatever keyset it actually belongs to, and it must tell the operator it left
 /// membership alone rather than saying nothing. `ReplayTransport` matches byte for byte and this
 /// script contains no `0xff`/`0xfe` write for 'w' at all, so a regression that sent one would fail
-/// on the unscripted send rather than merely on an assertion below.
+/// on the unscripted send rather than merely on an assertion below. Its global field spells
+/// `travel_mm`, as a backup of that age does; the current name is `custom_value_mm`.
 #[test]
 fn restore_from_a_snapshot_that_predates_keysets_leaves_live_membership_untouched() {
     let config_home = scratch_config_dir("restore-predates-keysets");
@@ -6346,10 +6516,11 @@ fn restore_from_a_snapshot_that_predates_keysets_leaves_live_membership_untouche
     lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
 
     // `restore`'s own writes: global travel, then 'w's value batch. No membership frame at all.
+    // The dead zones are the vendor's constants, not this snapshot's 0.2/0.1.
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um(2000),
         wh_proto::value::Um(200),
-        wh_proto::value::Um(100),
+        wh_proto::value::Um(200),
     );
     lines.push(out_line(&db_write));
     lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));

@@ -725,19 +725,21 @@ rather than as settings it recognises.
      catches it. That is the rewrite the whole suite survived before this round, and the second
      `run_wh` call is the only thing that catches it.
 
-- [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
-  VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
-  point is not in that record; it is what every key in no keyset holds in layout `0x04`.
+- [x] ~~**2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
+  VALUE`, the step size for its steppers, not the global actuation point.~~ Now `custom_value_mm`,
+  carrying `#[serde(alias = "travel_mm")]` so backups already on disk keep restoring. The real
+  global actuation point is still not in that record; it is what every key in no keyset holds in
+  layout `0x04`. `wh dump --table` names it "custom value" too.
 
   **`--mm` is reserved for this, and must not be spent elsewhere.** Ruled by the operator on
   2026-09-04 while naming 2.23's flag. `"MM" CUSTOM VALUE` is the one term the configurator uses for
   this setting, and it is the exact term this task exists to stop being confused with the actuation
   point. Any flag `wh` grows for it should be `--mm`; 2.23 uses `--base` for the actuation point so
-  the two cannot collide.
-- [ ] **2.11 Stop writing zero dead zones on restore.** The vendor's `cmd 0x29` write always carries
-  `press_dead=200` and `release_dead=200`, constants in its own SDK template. The board reports both
-  as `0` on read, so `wh restore` writes `0, 0` where the vendor has only ever written `200, 200`.
-  Send the vendor's constants instead of the zeros we read back.
+  the two cannot collide. No such flag exists yet: the field is recorded and restored, never set.
+- [x] ~~**2.11 Stop writing zero dead zones on restore.**~~ `wh restore` now sends the vendor's
+  constants, 200 and 200. Measured 2026-09-05 across every `cmd 0x29` frame in `captures/`: 14 read
+  requests in 7 files, every reply reporting both dead zones as `0`, and 3 vendor writes, all
+  carrying `200` and `200`. The snapshot still records what the board reported, informational only.
 - [x] ~~**2.5 `wh profile`, read and select.** `cmd 0x00` sub-order `0x70`, argument `0xFF` to read,
   a zero-based index to select.~~
 - [x] ~~**2.6 `wh backups list`, and what `--last` means.** Manual and automatic backups are now
@@ -803,9 +805,9 @@ rather than as settings it recognises.
   of a rapid trigger keyset delete as something other than "what the vendor wrote".
 - [ ] **Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
   remapping FN away and FN is how you reach the layer that would let you undo that.
-- [ ] **Widen what a snapshot captures.** It currently records global travel, four layouts per key,
-  and the profile. It does not record key mappings, the FN layer, SOCD, dynamic keystroke, mod tap,
-  gamepad configuration, RGB, or polling rate.
+- [ ] **Widen what a snapshot captures.** It currently records the `cmd 0x29` global record, four
+  layouts per key, and the profile. It does not record key mappings, the FN layer, SOCD, dynamic
+  keystroke, mod tap, gamepad configuration, RGB, or polling rate.
 
 ## Done
 

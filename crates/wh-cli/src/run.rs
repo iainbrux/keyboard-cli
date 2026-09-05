@@ -166,7 +166,7 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         // `auto_backup`); `dump` never assigns one, since it saves nothing to disk.
         origin: None,
         global: wh_config::snapshot::GlobalToml {
-            travel_mm: global.travel.to_mm(),
+            custom_value_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
             release_dead_mm: global.release_dead.to_mm(),
         },
@@ -233,10 +233,12 @@ fn dump(table: bool) -> Result<()> {
                 Some(profile) => writeln!(out, "profile {profile}")?,
                 None => writeln!(out, "profile unknown (unrecognised index reported)")?,
             }
+            // "custom value", not "travel": this is the configurator's `"MM" CUSTOM VALUE`, the
+            // step size for its controls, and the global actuation point is not in this record.
             writeln!(
                 out,
-                "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
-                snap.global.travel_mm, snap.global.press_dead_mm, snap.global.release_dead_mm
+                "global: custom value {:.2}mm, dead {:.2}/{:.2}mm",
+                snap.global.custom_value_mm, snap.global.press_dead_mm, snap.global.release_dead_mm
             )?;
             writeln!(
                 out,
@@ -1297,11 +1299,21 @@ fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
     records
 }
 
+/// The dead zones the vendor's own `cmd 0x29` write carries: constants in its SDK template, not
+/// user settings. Measured 2026-09-05 over every `cmd 0x29` frame in `captures/`: all three vendor
+/// writes carry 200 and 200, and all 14 reads report `0` for both. A snapshot therefore records
+/// zeros, and restoring what was read would write a pair the vendor has never written.
+const VENDOR_PRESS_DEAD: Um = Um(200);
+const VENDOR_RELEASE_DEAD: Um = Um(200);
+
+/// The record's first value comes from the snapshot's `custom_value_mm`; the dead zones do not,
+/// and are the vendor's constants above. The snapshot's own recorded dead zones stay a faithful
+/// record of what the board reported, read by nothing.
 fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTravel> {
     Ok(cmds::GlobalTravel {
-        travel: mm(snap.global.travel_mm).context("global travel")?,
-        press_dead: mm(snap.global.press_dead_mm).context("global press dead zone")?,
-        release_dead: mm(snap.global.release_dead_mm).context("global release dead zone")?,
+        travel: mm(snap.global.custom_value_mm).context("global custom value")?,
+        press_dead: VENDOR_PRESS_DEAD,
+        release_dead: VENDOR_RELEASE_DEAD,
     })
 }
 

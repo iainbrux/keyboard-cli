@@ -33,7 +33,15 @@ pub struct Snapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalToml {
-    pub travel_mm: f64,
+    /// The configurator's `"MM" CUSTOM VALUE`, the step size for its `< >` controls, not the
+    /// global actuation point (`docs/keysets.md`), which is what every key outside a keyset holds
+    /// in layout `0x04`. The alias is the name this field had before it was corrected: real
+    /// backups on disk spell it that way and must keep restoring.
+    #[serde(alias = "travel_mm")]
+    pub custom_value_mm: f64,
+    /// Informational only, the dead zones the board reported when the snapshot was taken, which
+    /// every measured read reports as `0`. `wh restore` sends the vendor's own constants instead,
+    /// so editing either of these changes nothing that reaches the wire.
     pub press_dead_mm: f64,
     pub release_dead_mm: f64,
 }
@@ -106,7 +114,7 @@ mod tests {
             profile: Some(ProfileNumber::from_wire_index(0).unwrap()),
             origin: None,
             global: GlobalToml {
-                travel_mm: 2.0,
+                custom_value_mm: 2.0,
                 press_dead_mm: 0.2,
                 release_dead_mm: 0.2,
             },
@@ -129,6 +137,29 @@ mod tests {
         let snap = sample();
         let back = Snapshot::from_json(&snap.to_json().unwrap()).unwrap();
         assert_eq!(back, snap);
+    }
+
+    /// The global record's first field is the configurator's `"MM" CUSTOM VALUE`, not the global
+    /// actuation point, so a new snapshot must spell it `custom_value_mm`.
+    #[test]
+    fn snapshot_json_spells_custom_value_mm() {
+        let text = sample().to_json().unwrap();
+        assert!(
+            text.contains("custom_value_mm") && !text.contains("travel_mm"),
+            "a new snapshot must spell custom_value_mm: {text}"
+        );
+    }
+
+    /// The ruling behind the alias: real backups on the operator's disk spell this field
+    /// `travel_mm`, one of which proved a destroy-and-restore hardware test, so a rename that
+    /// stopped them loading would be a real loss. Asserts the value that arrives, not just that
+    /// the parse succeeded, so the old name has to reach the field rather than merely be tolerated.
+    #[test]
+    fn snapshot_json_spelling_the_old_travel_mm_still_loads() {
+        let old = r#"{"firmware":"V1","serial":"S","taken_at":"t",
+            "global":{"travel_mm":2.0,"press_dead_mm":0.2,"release_dead_mm":0.2},"keys":[]}"#;
+        let snap = Snapshot::from_json(old).unwrap();
+        assert_eq!(snap.global.custom_value_mm, 2.0);
     }
 
     /// A `None` profile is omitted from the JSON rather than written as `null`, so a snapshot with
