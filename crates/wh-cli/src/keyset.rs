@@ -1308,9 +1308,12 @@ fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
 }
 
 /// The touch mode transition a record `plan` sent for `u` represents, when the touch nibble it
-/// carries actually differs from `prior`'s: "mode Global to Single". The only place in `wh` that
-/// names a touch mode to the operator; `dump` prints `on`/`off` and a raw `mode_raw` instead. An
-/// unknown nibble prints Rust tuple-variant syntax, `mode Unknown(7) to Rt`, matching `ops::rt_records`.
+/// carries actually differs from `prior`'s: "mode Global to Single". `dump` prints `on`/`off` and a
+/// raw `mode_raw` instead, so this is the keyset tree's own vocabulary. It is no longer the only
+/// place `wh` names a touch mode to the operator: `wh socd unpair` names them too, through
+/// `run::touch_mode_label`, which renders the measured meanings in words and an unmeasured nibble
+/// as "an unmeasured mode (5)". This site still prints Rust Debug names, so an unknown nibble here
+/// reads `mode Unknown(7) to Rt`. That is a gap, not a justification; `docs/tasks.md` owns it.
 fn mode_change(plan: &keyset::WritePlan, prior: &ops::KeySettings, u: u8) -> Option<String> {
     let sent_mode = plan
         .value_records()

@@ -1106,3 +1106,152 @@ fn socd_unpair_names_an_unmeasured_touch_mode_in_words() {
     assert!(!text.contains("Unknown("), "got: {text}");
     cleanup(script, &config_home);
 }
+
+/// The residual state `wh` can no longer create but the vendor UI can: a key on this board paired
+/// to a usage the board does not have. That partner is never swept, so its MODE is never read, and
+/// the refusal must say what was actually established (it is not a key on this device) rather than
+/// claim something about a mode nobody looked at.
+#[test]
+fn socd_list_refuses_a_partner_that_is_not_a_key_on_this_device() {
+    // 0xA0 is not in the six-key matrix below, so `w`'s row names a key the sweep never saw.
+    let board = [
+        paired(W, 0x0008, 0xA0, 2),
+        key(A, 0x0000),
+        key(S, 0x0000),
+        key(D, 0x0000),
+        key(Q, 0x0000),
+        key(E, 0x0000),
+    ];
+    let script = write_script("list-offboard-partner", &read_socd_lines(&board));
+    let config_home = scratch_config_dir("list-offboard-partner");
+    let out = run_wh(&["socd", "list"], &script, &config_home);
+    assert!(!out.status.success(), "expected a refusal");
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "error: the board's SOCD state is inconsistent: w is paired with 0xA0, which is not a \
+             key on this device"
+        ),
+        "stderr: {err}"
+    );
+    // The unmeasured claim must not be the one made here: 0xA0's mode was never read.
+    assert!(!err.contains("does not have SOCD set"), "stderr: {err}");
+    cleanup(script, &config_home);
+}
+
+/// `run_wh` for a command that touches only the config store, with no replay script at all. Used
+/// to define a stored key group the way an operator would, against this test's own scratch
+/// `XDG_CONFIG_HOME` and never the real user config.
+fn run_wh_no_device(args: &[&str], config_home: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_wh"))
+        .env("XDG_CONFIG_HOME", config_home)
+        .env_remove("WH_REPLAY")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// The README promises a stored group holding exactly one key works wherever `wh socd` takes a
+/// key. Nothing held that promise: emptying both `store.groups()?` call sites left the workspace
+/// green, because every other fixture names keys directly. This is the fixture that fails when the
+/// groups stop being passed through.
+#[test]
+fn socd_accepts_a_stored_group_holding_exactly_one_key() {
+    let config_home = scratch_config_dir("group-of-one");
+    let made = run_wh_no_device(&["keys", "group", "solo", "q"], &config_home);
+    assert!(
+        made.status.success(),
+        "defining the group failed: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+
+    let script = write_script("group-of-one", &read_socd_lines(&free_board()));
+    let out = run_wh(
+        &[
+            "socd",
+            "pair",
+            "solo",
+            "e",
+            "--priority",
+            "solo",
+            "--dry-run",
+        ],
+        &script,
+        &config_home,
+    );
+    assert_ok(&out);
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    // The group resolved to `q`, and the announcement and the frame both say so.
+    assert!(
+        text.contains("socd: pairing q + e, priority: q\n"),
+        "stdout: {text}"
+    );
+    let want = hex(&wh_proto::socd::write_pair(
+        wh_proto::socd::Pairing::new(Q, E, wh_proto::socd::Priority::Wins(Q)).unwrap(),
+    ));
+    assert_eq!(frame_lines(&text), vec![want]);
+    cleanup(script, &config_home);
+}
+
+/// Which argument a refusal blames, pinned one position at a time. The reviewer measured that
+/// three of the four labels could be swapped for each other and ship silently, since every
+/// existing fixture drove only the first. Each case here uses a multi-key selector so the arity
+/// branch fires, and asserts the label for that position and no other.
+#[test]
+fn socd_blames_the_argument_that_was_actually_wrong() {
+    for (tag, args, want) in [
+        (
+            "first",
+            vec!["socd", "pair", "wasd", "e"],
+            "error: wh socd pair's first key names exactly one key, but 'wasd' resolves to 4 keys",
+        ),
+        (
+            "second",
+            vec!["socd", "pair", "e", "wasd"],
+            "error: wh socd pair's second key names exactly one key, but 'wasd' resolves to 4 keys",
+        ),
+        (
+            "priority",
+            vec!["socd", "pair", "q", "e", "--priority", "wasd"],
+            "error: --priority names exactly one key, but 'wasd' resolves to 4 keys",
+        ),
+        (
+            "unpair",
+            vec!["socd", "unpair", "wasd"],
+            "error: wh socd unpair's key names exactly one key, but 'wasd' resolves to 4 keys",
+        ),
+    ] {
+        let script = write_script(
+            &format!("blame-{tag}"),
+            &read_socd_lines(&two_pairs_board()),
+        );
+        let config_home = scratch_config_dir(&format!("blame-{tag}"));
+        let out = run_wh(&args, &script, &config_home);
+        assert!(!out.status.success(), "{tag}: expected a refusal");
+
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(want), "{tag}: stderr: {err}");
+        cleanup(script, &config_home);
+    }
+}
+
+/// The `0` branch of the arity check, which no fixture reached: a selector that parses and
+/// resolves cleanly to nothing at all. `all,!all` includes every key then excludes every key,
+/// so it is well-formed and empty rather than an error the grammar raises itself.
+#[test]
+fn socd_refuses_a_selector_that_matches_no_keys() {
+    let script = write_script("pair-nomatch", &read_socd_lines(&free_board()));
+    let config_home = scratch_config_dir("pair-nomatch");
+    let out = run_wh(&["socd", "pair", "all,!all", "e"], &script, &config_home);
+    assert!(!out.status.success(), "expected a refusal");
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("error: wh socd pair's first key matches no keys on this board: 'all,!all'"),
+        "stderr: {err}"
+    );
+    cleanup(script, &config_home);
+}

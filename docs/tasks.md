@@ -773,6 +773,26 @@ rather than as settings it recognises.
   guarded against, a wrong `kind` beside a right `Target`, is no longer representable, so there is
   nothing left at that call site to mutate.
 
+- [ ] **2.32 `keyset::mode_change` still prints a `TouchMode` through `{:?}`.** Opened 2026-09-06
+  by 3.3's review, which measured the case as live rather than theoretical: `wh keyset create rt`
+  over a key sitting at an unmeasured touch nibble reaches `describe_member`, and the operator
+  reads `mode Unknown(5) to Rt`, Rust tuple-variant syntax in a sentence meant for a person.
+
+  The renderer to adopt already exists and is shipped: `crate::run::touch_mode_label`, written for
+  3.3, which gives the five measured nibbles their measured meanings and anything else "an
+  unmeasured mode (5)". So this is not a design question, only a change nobody has made yet.
+
+  Why 3.3 did not do it: `mode_change` feeds `describe_member`, `moved_mode_count`,
+  `ap_mode_clause` and `rt_on_mode_clause`, so changing its wording moves announcement text pinned
+  across `crates/wh-cli/tests/keyset.rs`, the largest suite in the repo. That is a keyset-tree
+  change with a keyset-tree blast radius, and folding it into a SOCD diff would have hidden it
+  inside a feature it has nothing to do with. Until it is picked up, `mode_change`'s own comment
+  says plainly that this site prints Debug names and that the gap is owned here.
+
+  Second one-liner while someone is in the area, pre-existing and unrelated to 3.3:
+  `wh keys group solo "q"` prints "1 keys". `run::key_or_keys` is the fix, already shared by three
+  other call sites.
+
 - [ ] **2.29 Two stale corpus counts in `ops::ap_records`'s doc.**
   `crates/wh-device/src/ops.rs:264-267` says "across all 27 keyset-era captures" and "469 measured
   echoes". The corpus has grown twice since (39 files when this was opened, 55 as of 2026-09-05).
@@ -890,6 +910,12 @@ rather than as settings it recognises.
     the operator, and that an unknown nibble prints rough Rust tuple-variant syntax matching
     `ops::rt_records`, meaning the behaviour, since that function builds records and prints
     nothing. The behaviour itself was already right and is unchanged.
+
+    Addendum 2026-09-06: the "only place in `wh`" half of that comment stopped being true when 3.3
+    landed `wh socd unpair`, which names touch modes through `run::touch_mode_label`. The comment
+    has been corrected, and it no longer offers exclusivity as a reason to keep `{:?}` here. What
+    remains is a real gap rather than a settled choice, so it is now owned by its own entry below
+    rather than by this closure note.
   - ~~`announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s.~~ Closed
     by removing the parameter: `Target::kind()` derives it from the value the announcement is
     already printing, so what is compared and what is named can no longer disagree.

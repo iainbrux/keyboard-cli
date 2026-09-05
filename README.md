@@ -445,8 +445,8 @@ stderr, rather than asserting the `0` the missing fields would otherwise default
 - SOCD pairings and their priorities, which `wh socd` reads and writes but a snapshot does not
   carry. This one can diverge rather than simply be missing: the raw mode value a snapshot does
   store carries the SOCD participation flag in its advanced nibble, so restoring an old snapshot
-  can set that flag on a key whose pairing is gone. `wh socd list` refuses on such a board and
-  names the key, rather than showing half a pair. Take a fresh snapshot after changing pairs.
+  can set that flag on a key whose pairing is gone. `wh socd list` refuses on such a board, naming
+  what it found, rather than showing half a pair. Take a fresh snapshot after changing pairs.
 - Dynamic keystroke, mod tap, or any other advanced-key behaviour beyond the raw mode value.
 - Gamepad configuration.
 - RGB lighting.

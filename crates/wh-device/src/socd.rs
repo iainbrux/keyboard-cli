@@ -83,6 +83,16 @@ pub fn read_socd<T: Transport>(s: &mut Session<T>) -> Result<Board, DeviceError>
         let partner = p
             .partner(u)
             .expect("query_pairing checked the row's own key");
+        // Two different faults, and only the second one has a MODE behind it. A partner outside
+        // the matrix was never swept, so claiming anything about its mode would be inventing a
+        // measurement; `wh` can no longer create this state but the vendor UI can.
+        if !matrix.contains(&partner) {
+            return Err(DeviceError::SocdInconsistent(format!(
+                "{} is paired with {}, which is not a key on this device",
+                label(u),
+                label(partner)
+            )));
+        }
         if !flagged.contains(&partner) {
             return Err(DeviceError::SocdInconsistent(format!(
                 "{} is paired with {}, but {}'s mode does not have SOCD set",
