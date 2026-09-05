@@ -261,13 +261,14 @@ POINT field, which writes exactly this shape; see `docs/keysets.md` for the fram
 wh set ap --base 1.95
 ```
 
-**`wh set mm --value <mm>` is a different setting again, and the pair operators most often**
-**confuse.** It writes the configurator's `"MM" CUSTOM VALUE`, the step size for its `< >` stepper
-controls, held in the `cmd 0x29` global record alongside the dead zones; it is not an actuation
-point at all, base or otherwise, and takes no `--keys` or `--pick` since the board holds one value
-for the whole board. It reads the current value first so the announcement names both the old and
-new value, then writes the new one with the vendor's own dead-zone constants (`200`/`200`), the
-same ones `wh restore` sends.
+**`wh set mm --value <mm>` is a different setting again, and together with `--base` above it is the
+pair operators most often confuse.** It writes the configurator's `"MM" CUSTOM VALUE`, the step size
+for its `< >` stepper controls, held in the `cmd 0x29` global record alongside the dead zones; it is
+not an actuation point at all, base or otherwise, and takes no `--keys` or `--pick` since the board
+holds one value for the whole board. It reads the current value first so the announcement names
+both the old and new value, or that the board already holds it and nothing was written; when it does
+write, it sends the new value with the vendor's own dead-zone constants (`200`/`200`), the same ones
+`wh restore` sends.
 
 ```
 wh set mm --value 1.5
@@ -441,9 +442,11 @@ Two things look like exceptions and are not:
   the zeros it reports for them, which is unestablished (`docs/backlog.md`): `selftest` is the one
   place `wh` still writes a zero dead zone. Between a read and its write, the board could in
   principle be changed by hand (or by another tool); that is a real read-modify-write window, not
-  `wh` caching anything. `set mm` reads the same global record, but not to no-op it: the read is
-  only what makes its announcement honest about the value it is about to replace, and it always
-  writes the vendor's own dead-zone constants rather than whatever it just read.
+  `wh` caching anything. `set mm` reads the same global record too, both to make its announcement
+  honest about the value it is about to replace and to tell whether it needs to replace anything at
+  all: when the board already holds the target value, it announces that and skips the write
+  outright, unlike `selftest`, which always writes back what it read. When it does write, it sends
+  the vendor's own dead-zone constants rather than whatever it just read.
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
 

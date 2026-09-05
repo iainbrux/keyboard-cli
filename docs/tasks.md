@@ -37,6 +37,13 @@ Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land bef
   `set_mm_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs`, unlike the
   six untied variants 2.30 still lists.
 
+  Review ruling: when the pre-read shows the board already at the target, `wh set mm` skips the
+  write entirely (no backup, no frame), announcing `already matches ... nothing written` in
+  `--base`'s own vocabulary rather than reporting a no-op after taking one. `--base`'s own skip was
+  the precedent; whether the vendor itself writes on a no-op set is unmeasured, so this is `wh`'s
+  own choice, made to avoid an avoidable 200/200 dead-zone write while `docs/backlog.md`'s question
+  stays open.
+
 - [ ] **3.2 One capture session: SOCD, RGB/LED, dead zones.** All three need the operator at the
   vendor UI with a capture running, so they are one sitting. Toggle SOCD pairs on and off and
   remap which keys pair; change LED or RGB settings if the UI exposes them (suspected `cmd 0x18`,
@@ -978,7 +985,9 @@ rather than as settings it recognises.
   `pack.ts` defaults them to `0` while a sibling app exposes them as sliders initialised at `0.2`mm.
   Unsettleable by readback: the board reports `0` for both whatever was written. If they are a user
   setting, `wh restore` overwrites the operator's choice invisibly, and `wh selftest`, the one place
-  `wh` still writes a zero dead zone, zeroes it. See `docs/backlog.md`.
+  `wh` still writes a zero dead zone, zeroes it. `wh set mm` writes the same 200/200 on every value
+  change too, and is the routine, operator-initiated case rather than restore's occasional one. See
+  `docs/backlog.md`.
 - [ ] **Widen what a snapshot captures.** It currently records the `cmd 0x29` global record, four
   layouts per key, and the profile. It does not record key mappings, the FN layer, SOCD, dynamic
   keystroke, mod tap, gamepad configuration, RGB, or polling rate.

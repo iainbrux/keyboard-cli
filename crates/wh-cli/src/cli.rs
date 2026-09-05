@@ -22,7 +22,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: GetWhat,
     },
-    /// Write a setting for selected keys
+    /// Write a setting
     Set {
         #[command(subcommand)]
         what: SetWhat,

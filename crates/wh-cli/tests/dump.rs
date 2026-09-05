@@ -5383,20 +5383,16 @@ fn set_mm_end_to_end_records_its_own_command_as_the_backup_origin() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The announcement's old value really is read from the board, not fabricated equal to the
-/// target: the scripted board holds 0.90mm and the command asks for 1.50mm, a different number,
-/// so a mutant that prints the target on both sides of the arrow (`1.50mm -> 1.50mm`) fails this
-/// assertion where a correct build prints `0.90mm -> 1.50mm`.
+/// A no-op `set mm`, the board already at the target value, skips the write entirely: no backup,
+/// no write frame, no readback, only the pre-write read the announcement needs. The script carries
+/// nothing past that read, so a build that still takes a backup or sends the write would hit
+/// `ReplayTransport`'s own send mismatch, not merely a wrong message.
 #[test]
-fn set_mm_announcement_names_the_boards_own_current_value() {
-    let path = write_script("set-mm-old-value", &global_travel_lines(900, 0, 0));
-    let config_home = scratch_config_dir("set-mm-old-value");
+fn set_mm_skips_the_write_when_the_board_already_holds_the_target() {
+    let path = write_script("set-mm-noop", &global_travel_lines(1500, 0, 0));
+    let config_home = scratch_config_dir("set-mm-noop");
 
-    let out = run_wh(
-        &["set", "mm", "--value", "1.5", "--dry-run"],
-        &path,
-        &config_home,
-    );
+    let out = run_wh(&["set", "mm", "--value", "1.5"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -5407,8 +5403,14 @@ fn set_mm_announcement_names_the_boards_own_current_value() {
     assert!(
         stdout
             .lines()
-            .any(|l| l == "mm custom value: 0.90mm -> 1.50mm"),
+            .any(|l| l == "mm custom value already matches 1.50mm, nothing written"),
         "unexpected stdout: {stdout}"
+    );
+
+    let backups_dir = config_home.join("wh").join("backups");
+    assert!(
+        !backups_dir.exists() || std::fs::read_dir(&backups_dir).unwrap().count() == 0,
+        "a no-op set mm must not take a backup"
     );
 
     std::fs::remove_file(path).unwrap();

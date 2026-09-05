@@ -547,7 +547,10 @@ reports `0` for both on every measured read, so `wh` cannot tell what it just re
 `verify_restore` never re-reads the `0x29` record at all. `wh selftest` has the mirror-image
 exposure. It rewrites the record with what it read, which is `0, 0`, so if the board does hold a
 dead zone it does not report, selftest zeroes it. That is the one place `wh` still writes a zero
-dead zone, and the reason its output no longer calls itself a no-op.
+dead zone, and the reason its output no longer calls itself a no-op. `wh set mm` writes the same
+`200, 200` on every value it actually changes too (a no-op set skips the write outright), and
+unlike `restore` it is a routine, operator-initiated command with no whole-board framing to signal
+the exposure, so it is the largest instance of this risk.
 
 **What would settle it, and why it is awkward.** Not a readback: the board answers `0` whatever was
 written, so nothing on the read path can distinguish the two. It needs either the vendor

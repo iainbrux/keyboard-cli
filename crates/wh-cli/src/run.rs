@@ -935,14 +935,29 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             }
         }
         SetWhat::Mm { value, dry_run } => {
-            // Validated before a session opens, like `Ap`'s `mm(set)?` above: a malformed value
-            // is refused before a single frame is sent.
+            // Validated before a session opens: a malformed value is refused before a single
+            // frame is sent. The 0 to 4mm bound is `mm()`'s actuation-point range, borrowed rather
+            // than measured for this setting: every measured vendor write to this record carries
+            // 0.10 to 0.65mm, so 4mm is a reused bound here, not a defended one.
             let target = mm(value)?;
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
                 // The read is what makes the announcement below honest, and costs one roundtrip.
                 let old = ops::global_travel(s)?;
+                if old.travel == target {
+                    // Skips the write outright rather than taking one and reporting it a no-op,
+                    // matching `--base`'s own "already matches" vocabulary. Whether the vendor
+                    // itself writes on a no-op set is unmeasured; this is `wh`'s own choice, made
+                    // to avoid an avoidable 200/200 dead-zone write while that question stays open
+                    // (`docs/backlog.md`).
+                    writeln!(
+                        out,
+                        "mm custom value already matches {:.2}mm, nothing written",
+                        target.to_mm()
+                    )?;
+                    return Ok(());
+                }
                 writeln!(
                     out,
                     "mm custom value: {:.2}mm -> {:.2}mm",
