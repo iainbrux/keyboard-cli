@@ -11,6 +11,10 @@ Third-party source vendored for reference while porting the keyboard protocol to
 
 Files derived from the Wallhack Terminal web bundle (decoded command tables,
 deobfuscated bundle copies) are intentionally **not** committed: see `.gitignore`.
+`vendor-bundle/` keeps the first snapshot (2026-08-28) at its root and later ones in dated
+subdirectories (`vendor-bundle/YYYY-MM-DD/`), taken when the site visibly updates, so a decode can
+always be checked against the bundle version it was derived from. The 2026-09-05 snapshot confirmed
+the profile-export literals (`WHKB1.`, `wallhack-keyboard-profile`, `deflate-raw`) unchanged.
 All Sparklink Playjoy packages are the upstream of the SDK embedded in
 https://terminal.wallhack.com/ and are the primary porting reference.
 
