@@ -234,9 +234,8 @@ impl Change {
 
     /// A rapid trigger operation: turn it on at `press`/`release`. Touch becomes `Rt`, unless
     /// the key is already `RtContinuous`, which is preserved. `wh set rt --set` still reaches
-    /// the board through `ops::rt_records` instead of this constructor, so the two produce
-    /// different frames for one intent; unlike the actuation point and rt-off routes, this
-    /// split is not yet closed in `plan`'s favour.
+    /// the board through `ops::rt_records` instead of this constructor, the one intent/route
+    /// split among three (see `ap`/`rt_off`) not yet closed in `plan`'s favour.
     pub fn rt_on(press: Um, release: Um) -> Self {
         Change {
             kind: Kind::Rt,
@@ -304,14 +303,16 @@ impl WritePlan {
     /// Frames in send order: the value batches, then one frame per membership record.
     ///
     /// Value records are packed key by key, taking whole groups until the next would not fit.
-    /// A group stays under the 14-record cap only because `plan` deduplicates `usages`, capping
-    /// each key's group at 4 records (3 at the nibble-0 omission); a repeated usage would split
-    /// here, a case `Selector::resolve` and `read_matrix` both make unreachable through the CLI.
+    /// This never splits a group in practice because `plan` is only ever called with
+    /// deduplicated `usages` (`Selector::resolve`, `read_matrix`), keeping each key's own group
+    /// at 4 records (3 at the nibble-0 omission); `plan` itself has no dedup, so a caller passing
+    /// a repeated usage gets a larger group, and this function does split it.
     ///
     /// Packs whole per-key groups up to 14 records, rather than the vendor's own layout-major
     /// batching: a further measured divergence, since a MODE-only write frame there caps at two
-    /// records (300 in the corpus, 275 carry two and 25 carry one, none more). Ours strictly
-    /// improves partial-failure behaviour, since a failure between frames lands on a key boundary.
+    /// records (300 in the corpus, 275 carry two and 25 carry one, none more). For a deduplicated
+    /// selection, this strictly improves partial-failure behaviour: a failure between frames
+    /// lands on a key boundary rather than inside one key's own records.
     pub fn frames(&self) -> Vec<[u8; 64]> {
         let mut frames = Vec::new();
         let mut batch: Vec<KeyRecord> = Vec::new();
@@ -363,9 +364,9 @@ impl WritePlan {
 /// emitted key-major rather than the vendor's layout-major order, the same divergence
 /// `ops::ap_records` documents, so a mid-batch failure stops at a few keys rather than every key
 /// selected; `frames()` packs whole per-key groups rather than the vendor's own layout-major
-/// batching, so a failure can only ever land on a key boundary, never inside one key's own
-/// records; and the vendor writes MODE twice per key per operation (write template steps 1 and
-/// 3), where this writes it once.
+/// batching, so for a deduplicated selection a failure lands on a key boundary rather than
+/// inside one key's own records; and the vendor writes MODE twice per key per operation (write
+/// template steps 1 and 3), where this writes it once.
 pub fn plan<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -510,12 +511,11 @@ fn summarize<T: PartialEq>(values: Vec<T>) -> Global<T> {
 /// The board's actuation point outside any keyset: layout `0x04` read from every key `m` holds
 /// no membership for. Errors if `m` isn't `Kind::Ap` membership.
 ///
-/// The vendor's own method for finding this is unmeasured: where it reads `0x04` at all, it
-/// reads five fixed keys (`0x29`, `0xfa`, `0x31`, `0x28`, `0x52`) at the head of the capture, one
-/// of which was in a keyset and read a different value, and what it does with the disagreement
-/// could not be determined; 5 of the 39 captures contain no `0x04` read request at all. Reading
-/// every unkeyset key and reporting agreement or its absence is the honest alternative rather
-/// than guessing which of the five the vendor trusts.
+/// The vendor's own method for finding this is unmeasured: in `ks-value-ap` it reads `0x04` from
+/// every key across five 14-record frames, not five keys singled out (`0x29`, `0xfa`, `0x31`,
+/// `0x28`, `0x52` are each frame's first key); one read key was in a keyset and disagreed, outcome
+/// undetermined. 5 of the 39 captures read no `0x04` at all. Reading only unkeyset keys is
+/// narrower than that whole-board read, not an alternative to a heuristic that does not exist.
 pub fn global_ap<T: Transport>(
     s: &mut Session<T>,
     m: &Membership,

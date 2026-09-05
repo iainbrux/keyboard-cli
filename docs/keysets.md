@@ -122,8 +122,8 @@ target values differ.
 5. membership (0xFF or 0xFE)     ONE RECORD PER FRAME, always last
 ```
 
-**Step 1 is a two-record cap, not one frame per distinct value.** Of the 270 MODE-only write frames
-in the corpus, 246 carry exactly two records and 24 carry one. None carries more. The vendor splits
+**Step 1 is a two-record cap, not one frame per distinct value.** Of the 300 MODE-only write frames
+in the corpus, 275 carry exactly two records and 25 carry one. None carries more. The vendor splits
 one value across two frames (`ks-create-ap-1` frames 8 and 10, both `0x10`) and puts two different
 values in one frame (`ks-global-rt-on` frame 108, `0x20` and `0x28`), so the grouping is not by
 value. An earlier draft read this backwards.

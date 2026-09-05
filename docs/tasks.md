@@ -475,9 +475,9 @@ rather than as settings it recognises.
   "unwrap or default" lands on `Um(0)`, which would write `0x14 = 0, 0x15 = 0`, a value the vendor
   has never been observed writing. Settled by 2.15: both refuse and both name `--press`/`--release`.
   Second: `keyset::plan` used to send a MODE record at an unchanged nibble-0 value, which
-  `ops::rt_off_records` refuses to do. `plan` no longer emits one at all, measured against 618 MODE
-  write records in the corpus of which none is at nibble 0, so routing this task through `plan` no
-  longer introduces that write.
+  `ops::rt_off_records` refuses to do. `plan` no longer emits one at all, measured against 1150
+  MODE write records in the corpus of which none is at nibble 0, so routing this task through
+  `plan` no longer introduces that write.
 
   Measured in the same review, and settling an earlier doubt: the vendor **does** reset the
   sensitivities on a per-key rapid trigger off. `rt-off-w.jsonl` shows W going from 500/500 to the
@@ -551,10 +551,11 @@ rather than as settings it recognises.
     keys hold each, descending, which is the order `Global::Split` already carries. A majority vote
     would write a value the operator never typed over every member's actuation point.
   - `NoneOutsideAKeyset`: refuse, and say why, that no key sits outside a keyset so the board holds
-    no global to read. Rejected alternatives: the whole board's majority, which returns some
-    keyset's value wearing the global's name, and the vendor's five fixed keys (`0x29`, `0xfa`,
-    `0x31`, `0x28`, `0x52`), whose disagreement behaviour is unmeasured and one of which was itself
-    in a keyset.
+    no global to read. Rejected alternative: the whole board's majority, which returns some
+    keyset's value wearing the global's name. (The vendor's own read, in `ks-value-ap`, covers the
+    whole board too, five 14-record frames of all 68 keys, not five keys singled out as an earlier
+    draft of this bullet said; its disagreement behaviour is unmeasured, and one read key was
+    itself in a keyset.)
 
   This gives `wh keyset create ap`, `wh keyset delete ap` and `wh set rt --off` a `--value` (or
   `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
@@ -580,7 +581,10 @@ rather than as settings it recognises.
   command's noun to another command's and watching only that test fail.
 
 - [x] ~~**2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.**~~ All
-  non-blocking, all in code files, corrected against the 39-file corpus current at close:
+  non-blocking, all in code files. The five-fixed-keys, nibble-0 and template-step-1 counts below
+  are re-measured against the 39-file corpus current at this close; the already-closed `0x18`
+  distribution and hypothesis bullets predate this round and still cite the 27-file corpus they
+  were measured against, untouched here:
   - ~~`keyset.rs` `Change::ap` calls the vendor's promotion unmeasured.~~ Closed: the comment now
     says plainly that the promotion itself is measured (`ks-value-ap`, key `x`: MODE `0x0000` to
     `0x0010`) and that only its dependence on keyset membership is not.

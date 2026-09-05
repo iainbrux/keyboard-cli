@@ -151,9 +151,12 @@ Ported from `research/proto/package/src/utils/pack.ts` and `recdata.ts`
 
 Counted from `cmd 0x23` records only (`0x2b` DEFKEY replies use a different record shape entirely;
 parsing them as layout records produces nonsense). **Record counts exclude padding slots**, the
-unused 4-byte slots at the end of a frame, which carry usage `0` and layout `0`. An earlier version
-of this table counted them for every layout except `0x00`, where including them would have added
-every padding slot in the session to that one row.
+unused 4-byte slots at the end of a frame, usage `0` in both directions. A write frame's padding
+also carries layout `0`, but a read request's padding carries the layout being read, not `0`
+(measured: layouts `0x04`, `0x14`, `0x15`, `0x16`, `0x17` and others all appear in read padding). A
+decoder trimming on usage `0` alone, not layout, avoids counting these as phantom records. An
+earlier version of this table counted padding for every layout except `0x00`, where including it
+would have added every padding slot in the session to that one row.
 
 | layout | records | Distinct values | Meaning |
 |---|---|---|---|

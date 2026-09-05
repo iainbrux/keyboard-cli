@@ -1490,7 +1490,8 @@ pub(crate) fn verify_write_as<T: Transport>(
 
         // Each fallback assumes the other layout is untouched by this operation: an ap change
         // never moves 0xFE and an rt change never moves 0xFF. A hardware assumption, made right
-        // by the separate-counters finding in docs/keysets.md.
+        // by the separate-counters finding in docs/keysets.md, and the only one of the six checks
+        // here that rests on the firmware not coupling two layouts.
         let want_ap_keyset = sent_membership(layout::KEYSET_AP).unwrap_or(before.ap_keyset);
         if ks.ap_keyset != want_ap_keyset {
             faults.push(format!(
