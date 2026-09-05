@@ -683,12 +683,13 @@ rather than as settings it recognises.
   confirmed", naming a command they had not run.
 
   Closed 2026-09-05: all four now assert `ap set over the whole board was not confirmed` in full.
-  Proved by mutating the refusal to `wh keyset create`'s noun and watching exactly those four fail
-  and nothing else. Two corrections to this entry, both measured while closing it. All four guard
-  `confirm_whole_board_ap_set` alone, not `confirm_whole_board_create` as well: every create
-  refusal already asserted its own subject. And a fifth site carried the same weak assertion, the
-  unit test `confirm_whole_board_ap_set_refuses_on_no` in `crates/wh-cli/src/keyset.rs`, now
-  tightened with the other four; it failed under the same mutation.
+  Proved by mutating the refusal to `wh keyset create`'s noun: exactly five tests fail, these four
+  and the unit test named below, and nothing else in the workspace. Two corrections to this entry,
+  both measured while closing it. All four guard `confirm_whole_board_ap_set` alone, not
+  `confirm_whole_board_create` as well: every create refusal already asserted its own subject. And
+  a fifth site carried the same weak assertion, the unit test
+  `confirm_whole_board_ap_set_refuses_on_no` in `crates/wh-cli/src/keyset.rs`, now tightened with
+  the other four; it is the fifth failure under that mutation.
 
 - [x] ~~**2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.**~~ All
   non-blocking, all in code files. The five-fixed-keys, nibble-0 and template-step-1 counts below
@@ -759,10 +760,13 @@ rather than as settings it recognises.
     unreachable.~~ Closed: the branch and its doc bullet are deleted. Established from `Change`'s
     own closed set of constructors, whose fields are private: each carries at most one kind's
     value, so a bundle whose described kind's value did not move can only have come from a moved
-    MODE. `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins what that rests on,
-    for both kinds, and fails the moment a `Change` carries both kinds' values at once, which is
-    exactly what would have to change for the line to be needed again. Measured, not reasoned: the
-    one thing that did reach it was a forged `Target`, and that is now what picks the kind.
+    MODE. `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins that for the three
+    constructors that reach `describe_member`, `ap`, `rt_on` and `rt_off`, each over a board
+    holding none of the tree's own constants, since an injected second value escapes only by
+    coinciding with what is already there. `ap_keeping_touch` (no production caller today) and
+    `membership_only` (carries no value) are outside it, and `ReplayTransport`'s byte-for-byte
+    matching is their guard. Measured, not reasoned: the one thing that did reach the branch was a
+    forged `Target`, and that is now what picks the kind.
   - ~~`mode_change`'s comment justified printing a `TouchMode` through `{:?}` by a precedent in
     `dump` that does not exist.~~ Closed: the comment now says `dump` prints `on`/`off` and a raw
     `mode_raw` instead, that this announcement is the only place in `wh` that names a touch mode to

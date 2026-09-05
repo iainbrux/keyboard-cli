@@ -1263,9 +1263,14 @@ pub(crate) fn announce_steal(
 /// carried defensively here until it was established that no board reaches it. `plan` emits a
 /// bundle only when the mode, the actuation point or a sensitivity moves, and every `Change`
 /// carries at most one kind's value, so for the kind being described a bundle with the mode
-/// unchanged always means that kind's own value moved. That is what
-/// `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins; the line would have to
-/// come back if a `Change` ever carried both kinds' values at once.
+/// unchanged always means that kind's own value moved. The line would have to come back if a
+/// `Change` ever carried both kinds' values at once.
+///
+/// `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins that for the three
+/// constructors that reach here, `ap`, `rt_on` and `rt_off`, and its own doc says what it does
+/// not cover. It is not the only guard: a `Change` that starts sending records it did not send
+/// before moves the frames of every fixture over it, which is what `ReplayTransport`'s
+/// byte-for-byte matching exists to refuse.
 fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let prior = plan
         .before()
@@ -1746,21 +1751,37 @@ mod tests {
     /// What `describe_member`'s deleted fourth line rested on, measured rather than reasoned: a
     /// key whose own value and touch mode both already sit where the change wants them gets no
     /// value bundle at all, so "index only" is the truth about the wire and not an assumption.
-    /// Both kinds, since each has its own half of the claim: `Change::ap` carries no
-    /// sensitivities and `Change::rt_on` no actuation point, so neither can move the other kind's
-    /// fields and produce a bundle whose own value stayed put. A `Change` carrying both at once
-    /// would fail here first, which is the warning that the deleted line has to come back.
+    /// Each kind has its own half of the claim and one constructor cannot stand for another:
+    /// `Change::ap` carries no sensitivities, `Change::rt_on` and `Change::rt_off` no actuation
+    /// point, so none of them can move the other kind's fields and leave a bundle whose own value
+    /// stayed put. Giving any of the three a second kind's value fails here, which is the warning
+    /// that the deleted line has to come back.
+    ///
+    /// The board's values are deliberately none of the constants this tree reaches for (2000,
+    /// which is both `NO_SIGNAL_BASE` and the commonest fixture actuation point, and 100, 150 and
+    /// 500 for the sensitivities), because that is what the guard rests on: an injected second
+    /// value escapes only by coinciding with what the board already holds. An earlier draft used
+    /// 2000 and let exactly that happen. It is not the
+    /// whole net either. `ap_keeping_touch`, which has no production caller today, and
+    /// `membership_only`, which carries no value at all, are outside it, and for those the guard
+    /// is `ReplayTransport`'s byte-for-byte matching, which fails every fixture whose frames move.
+    ///
+    /// Only the rapid trigger halves are new cover. The actuation point half repeats what
+    /// `keyset_create_announces_a_kept_value_differently_from_a_lost_one` already pins end to end,
+    /// and is kept so the three constructors are checked in one place against one board.
     #[test]
     fn plan_writes_no_bundle_when_nothing_the_change_carries_moves() {
         let usage = 0x1Au8;
-        // MODE 0x10 is touch nibble 1 (`Single`), which `Change::ap` leaves alone, and 0x38 is
-        // nibble 3 (`Rt`), which `Change::rt_on` leaves alone. 0x10 rather than this file's usual
-        // 0x18: it is the value a real board was measured holding on all 68 keys.
-        let mut lines = settings_script(usage, 2000, 0x10, 100, 150, 0, 0);
-        lines.extend(settings_script(usage, 2000, 0x38, 100, 150, 0, 0));
+        // MODE 0x10 is touch nibble 1 (`Single`), which `Change::ap` and `Change::rt_off` both
+        // leave alone, and 0x38 is nibble 3 (`Rt`), which `Change::rt_on` leaves alone. 0x10
+        // rather than this file's usual 0x18: it is the value a real board was measured holding
+        // on all 68 keys.
+        let mut lines = settings_script(usage, 1230, 0x10, 140, 210, 0, 0);
+        lines.extend(settings_script(usage, 1230, 0x38, 140, 210, 0, 0));
+        lines.extend(settings_script(usage, 1230, 0x10, 140, 210, 0, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
 
-        let ap_plan = keyset::plan(&mut s, &[usage], &keyset::Change::ap(Um(2000)), None).unwrap();
+        let ap_plan = keyset::plan(&mut s, &[usage], &keyset::Change::ap(Um(1230)), None).unwrap();
         assert!(
             ap_plan.value_records().is_empty(),
             "got: {:?}",
@@ -1768,13 +1789,13 @@ mod tests {
         );
         assert_eq!(
             describe_member(Kind::Ap, &ap_plan, usage),
-            "w (keeps 2.00mm, index only)"
+            "w (keeps 1.23mm, index only)"
         );
 
         let rt_plan = keyset::plan(
             &mut s,
             &[usage],
-            &keyset::Change::rt_on(Um(100), Um(150)),
+            &keyset::Change::rt_on(Um(140), Um(210)),
             None,
         )
         .unwrap();
@@ -1785,7 +1806,27 @@ mod tests {
         );
         assert_eq!(
             describe_member(Kind::Rt, &rt_plan, usage),
-            "w (keeps 0.10/0.15mm, index only)"
+            "w (keeps 0.14/0.21mm, index only)"
+        );
+
+        // `wh keyset delete rt` reaches `describe_member` through this constructor, so it is a
+        // live path and not a spare one. Touch nibble 1 is already off, which is what leaves the
+        // mode still and lets the no-bundle case exist for it at all.
+        let off_plan = keyset::plan(
+            &mut s,
+            &[usage],
+            &keyset::Change::rt_off(Um(140), Um(210)),
+            None,
+        )
+        .unwrap();
+        assert!(
+            off_plan.value_records().is_empty(),
+            "got: {:?}",
+            off_plan.value_records()
+        );
+        assert_eq!(
+            describe_member(Kind::Rt, &off_plan, usage),
+            "w (keeps 0.14/0.21mm, index only)"
         );
     }
 
