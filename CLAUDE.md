@@ -111,6 +111,12 @@ captured traffic; `wh-cli/tests/dump.rs`, which drives the real binary over scri
 `wh-cli/tests/keyset.rs`, the largest of the three and the only end-to-end cover of the `wh keyset`
 command tree.
 
+**A `--test <name>` run is not evidence the crate compiles.** It does not build the bin target's
+unit tests, so a change breaking one of those leaves `cargo test -p wh-cli --test dump` green while
+`cargo test --workspace` fails with a compile error. Measured 2026-09-05, when a function signature
+changed under two unit tests in `crates/wh-cli/src/keyset.rs` and the scoped run passed. Scoped runs
+are for iterating; run the workspace before you believe a result.
+
 ## Safety rules, each one learned the hard way
 
 **Never trust `WH_REPLAY` without checking it arrived.** `bin/wh` execs a Windows binary, and WSL
