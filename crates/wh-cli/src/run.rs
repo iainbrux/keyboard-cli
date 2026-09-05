@@ -1299,16 +1299,17 @@ fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
     records
 }
 
-/// The dead zones the vendor's own `cmd 0x29` write carries: constants in its SDK template, not
-/// user settings. Measured 2026-09-05 over every `cmd 0x29` frame in `captures/`: all three vendor
-/// writes carry 200 and 200, and all 14 reads report `0` for both. A snapshot therefore records
-/// zeros, and restoring what was read would write a pair the vendor has never written.
+/// The dead zones every measured vendor `cmd 0x29` write carries. Measured 2026-09-05 over every
+/// `cmd 0x29` frame in `captures/`: three vendor writes, at three different travel values, all
+/// carrying 200 and 200, against 14 read requests whose replies all report `0` for both. Whether
+/// 200 is a fixed constant or a user setting sitting at its default is **not** established, see
+/// `docs/backlog.md`. We send it because it is the only value the vendor has been seen to write.
 const VENDOR_PRESS_DEAD: Um = Um(200);
 const VENDOR_RELEASE_DEAD: Um = Um(200);
 
-/// The record's first value comes from the snapshot's `custom_value_mm`; the dead zones do not,
-/// and are the vendor's constants above. The snapshot's own recorded dead zones stay a faithful
-/// record of what the board reported, read by nothing.
+/// The record's first value comes from the snapshot's `custom_value_mm`; the dead zones do not, and
+/// are the two values above. The snapshot's own recorded dead zones stay a faithful record of what
+/// the board reported, read by nothing.
 fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTravel> {
     Ok(cmds::GlobalTravel {
         travel: mm(snap.global.custom_value_mm).context("global custom value")?,
@@ -1507,12 +1508,13 @@ fn selftest() -> Result<()> {
         let g = ops::global_travel(s)?;
         writeln!(
             out,
-            "global travel: {:.2}mm, rewriting identical value",
+            "global custom value: {:.2}mm, rewriting the record with the values just read",
             g.travel.to_mm()
         )?;
-        // Deliberately no SAVE: this must be a true no-op on flash, proving only that a
-        // write reaches the device and reads back, not that a save cycle works. Adding one
-        // here would turn every selftest run into an unwanted flash-wear cycle.
+        // Deliberately no SAVE: it would turn every selftest run into a flash-wear cycle, and
+        // this proves only that a write reaches the device and reads back. The two dead zones
+        // go back out as they were read, `0` on every measured read: if they are a user setting
+        // the board does not report (`docs/backlog.md`), that is not the no-op it looks like.
         s.roundtrip(&cmds::write_global_travel(
             g.travel,
             g.press_dead,
@@ -1522,7 +1524,10 @@ fn selftest() -> Result<()> {
         if g2 != g {
             bail!("selftest FAILED: readback {:?} != {:?}", g2, g);
         }
-        writeln!(out, "selftest OK: write path verified with a no-op write")?;
+        writeln!(
+            out,
+            "selftest OK: write path verified by rewriting the values just read"
+        )?;
         Ok(())
     })
 }

@@ -736,10 +736,12 @@ rather than as settings it recognises.
   this setting, and it is the exact term this task exists to stop being confused with the actuation
   point. Any flag `wh` grows for it should be `--mm`; 2.23 uses `--base` for the actuation point so
   the two cannot collide. No such flag exists yet: the field is recorded and restored, never set.
-- [x] ~~**2.11 Stop writing zero dead zones on restore.**~~ `wh restore` now sends the vendor's
-  constants, 200 and 200. Measured 2026-09-05 across every `cmd 0x29` frame in `captures/`: 14 read
-  requests in 7 files, every reply reporting both dead zones as `0`, and 3 vendor writes, all
-  carrying `200` and `200`. The snapshot still records what the board reported, informational only.
+- [x] ~~**2.11 Stop writing zero dead zones on restore.**~~ `wh restore` now sends the 200 and 200
+  every measured vendor write carries. Measured 2026-09-05 across every `cmd 0x29` frame in
+  `captures/`: 14 read requests in 7 files, every reply reporting both dead zones as `0`, and 3
+  vendor writes at three different travel values, all carrying `200` and `200`. The snapshot still
+  records what the board reported, informational only. Whether 200 is a fixed constant or a user
+  setting at its default is not established, and is open below.
 - [x] ~~**2.5 `wh profile`, read and select.** `cmd 0x00` sub-order `0x70`, argument `0xFF` to read,
   a zero-based index to select.~~
 - [x] ~~**2.6 `wh backups list`, and what `--last` means.** Manual and automatic backups are now
@@ -805,6 +807,12 @@ rather than as settings it recognises.
   of a rapid trigger keyset delete as something other than "what the vendor wrote".
 - [ ] **Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
   remapping FN away and FN is how you reach the layer that would let you undo that.
+- [ ] **Are the `cmd 0x29` dead zones fixed constants or a user setting at its default?** Every
+  measured vendor write carries 200 for both, which `wh restore` now writes too, but the vendored
+  `pack.ts` defaults them to `0` while a sibling app exposes them as sliders initialised at `0.2`mm.
+  Unsettleable by readback: the board reports `0` for both whatever was written. If they are a user
+  setting, `wh restore` overwrites the operator's choice invisibly, and `wh selftest`, the one place
+  `wh` still writes a zero dead zone, zeroes it. See `docs/backlog.md`.
 - [ ] **Widen what a snapshot captures.** It currently records the `cmd 0x29` global record, four
   layouts per key, and the profile. It does not record key mappings, the FN layer, SOCD, dynamic
   keystroke, mod tap, gamepad configuration, RGB, or polling rate.

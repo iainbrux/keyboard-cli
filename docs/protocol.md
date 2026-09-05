@@ -414,11 +414,16 @@ Honestly, what this corpus does not resolve:
   counts. The measured value (`0x0064`, decimal 100, i.e. 0.1mm if it is a `Um`) is not a plausible
   switch travel for a board whose printed actuation scale runs to 3.5mm.
 - The `0x29` record's two dead zones. Measured 2026-09-05 across every `cmd 0x29` frame in
-  `captures/`: 14 read requests in 7 files, every reply reporting both as `0`, and 3 vendor writes,
-  all carrying `press_dead=200` and `release_dead=200`. A reply to a write echoes the write, so
-  those three replies are acknowledgements rather than reads. What the board does with either value
-  is unmeasured and unobservable through the read path, which is why `wh restore` sends the vendor's
-  constants rather than the zeros a snapshot records (`docs/keysets.md`).
+  `captures/`: 14 read requests in 7 files, every reply reporting both as `0`, and 3 vendor writes
+  at three different travel values, all carrying `press_dead=200` and `release_dead=200`. A reply to
+  a write echoes the write, so those three replies are acknowledgements rather than reads. (An
+  eighth file, `ks-create-rt-2`, holds one read-shaped reply with no request in it, `0` for both,
+  an orphan of a capture that started mid-exchange; it is counted in neither figure.) Whether 200 is
+  a fixed constant or a user setting at its default is **not** established: this repo's vendored
+  `pack.ts` defaults the field to `0`, while a sibling app's UI exposes both as sliders initialised
+  at `0.2`mm. What the board does with either value is unmeasured and unobservable through the read
+  path, which reports `0` whatever was written. `wh restore` writes the 200 the vendor writes; see
+  `docs/keysets.md` and `docs/backlog.md`.
 - Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. They read
   `0` in every Phase 1 capture, then `100` on profile 1 from 2026-08-29 onward, including through
   two global sensitivity changes, and `0` in every 2026-09-04 keyset capture. They have never been

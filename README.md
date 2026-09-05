@@ -298,7 +298,9 @@ wh profile
 wh profile 2
 ```
 
-A self-test that exercises a real write/read round trip without changing anything on the board:
+A self-test that exercises a real write/read round trip, rewriting the board's global record with
+the values it just read (see the read-modify-write note below for the one part of that which is not
+provably a no-op):
 
 ```
 wh selftest
@@ -356,9 +358,11 @@ outside a keyset holds, which is what `wh set ap --base` reads and writes.
 
 The two dead zone fields are informational only, a record of what the board reported when the
 snapshot was taken, which is `0` for both on every read measured. `wh restore` does not send them:
-it writes the constants the vendor's own configurator writes (200um each, measured across every
-`cmd 0x29` write in the capture corpus), so hand-editing either field changes nothing that reaches
-the board.
+it writes 200um for each, the value every measured vendor write carries, so hand-editing either
+field changes nothing that reaches the board. Whether that 200 is a fixed constant or a user setting
+sitting at its default is **not** established, and if it is the latter then a restore overwrites
+your choice with no way to tell, since the board reports zero for both however they were set.
+`docs/backlog.md` records the open question and what would settle it.
 
 Each key's `rt` field in the snapshot file is informational only, a human-readable summary of the
 raw mode value at the moment the snapshot was taken. `wh restore` never reads it; it writes the raw
@@ -415,10 +419,13 @@ Two things look like exceptions and are not:
 - `set rt`, `set ap`, and `keyset create`/`set`/`delete`/`remove` each read a key's current
   settings, then write back a change built from that read (all but `set rt --set` through the same
   `keyset::plan`).
-  `selftest` does the same at the board level, not a key's: it reads the global travel and dead
-  zones and writes back the identical values, a no-op write that proves the path rather than
-  changing anything. Between a read and its write, the board could in principle be changed by hand
-  (or by another tool); that is a real read-modify-write window, not `wh` caching anything.
+  `selftest` does the same at the board level, not a key's: it reads the global custom value and
+  both dead zones and writes back exactly what it read, to prove the write path works. That is a
+  no-op for the custom value. For the dead zones it is only a no-op if the board really does hold
+  the zeros it reports for them, which is unestablished (`docs/backlog.md`): `selftest` is the one
+  place `wh` still writes a zero dead zone. Between a read and its write, the board could in
+  principle be changed by hand (or by another tool); that is a real read-modify-write window, not
+  `wh` caching anything.
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
 

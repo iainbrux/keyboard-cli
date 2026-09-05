@@ -523,21 +523,28 @@ backups spelling it the old way still load, through a serde alias.
 
 ## The global record's dead zones
 
-The vendor's `cmd 0x29` write always carries `press_dead=200` and `release_dead=200`. Those are
-constants in the vendor's own SDK template, not user settings. **The board reports both as `0` on
-read**, so the values cannot be preserved across a read-modify-write.
-
 Measured 2026-09-05, by parsing every `cmd 0x29` frame in `captures/`: 14 read requests across 7
 files, and every reply reports `press_dead = 0` and `release_dead = 0`; 3 vendor writes, in
 `custom-value-change` (travel 400 and 650) and `custom-value-nudge-after-restore` (travel 150), all
 three carrying `200` and `200`. A reply to a write echoes the write, so the three replies showing
-`200/200` are acknowledgements, not independent reads.
+`200/200` are acknowledgements, not independent reads. (A fifteenth read-shaped reply, `100/0/0`,
+sits in `ks-create-rt-2` with no request in that file, an eighth file and an orphan of a capture
+that started mid-exchange. It agrees with the other fourteen and is counted nowhere above.)
+
+**Whether 200 is a fixed constant or a user setting at its default is not established**, and this
+repo's vendored sources disagree. `research/proto/package/src/utils/pack.ts` defaults `DBDataPack`
+to `pressDead: 0, releaseDead: 0`, so an SDK template value would be zero, not 200; while
+`research/aure/src/components/performance/GlobalTravel.vue`, a different app on the same Sparklink
+SDK, exposes both as user sliders over `0.0` to `1.0` initialised at `0.2`, which is 200
+micrometres. Three writes at three different travel values all carrying `200/200` fit either
+reading. `docs/backlog.md` carries the open question and what would settle it.
 
 `wh restore` used to pass the snapshot's own recorded values into those fields, which meant it wrote
-`0, 0` where the vendor has only ever written `200, 200`. It now sends the vendor's constants
-(`run::VENDOR_PRESS_DEAD` and `run::VENDOR_RELEASE_DEAD`) and the snapshot's dead zones are
-informational only. Whether the board cares is still unmeasured, and unobservable through the read
-path.
+`0, 0` where the vendor has only ever been seen to write `200, 200`. It now sends 200 and 200
+(`run::VENDOR_PRESS_DEAD` and `run::VENDOR_RELEASE_DEAD`), for 1:1 interoperability with the value
+the vendor writes, and the snapshot's dead zones are informational only. **If they turn out to be a
+user setting, that overwrites the operator's choice unverifiably**: the board reports both as `0` on
+read, so no readback can tell what was replaced, and `verify_restore` never re-reads this record.
 
 `custom-value-nudge-after-restore` writes travel 150 with `200/200`, and `layout-16-by-profile`
 later reads travel 150 back with `0/0`, which would say the board keeps the travel and not the dead

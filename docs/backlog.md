@@ -523,6 +523,39 @@ operator's report of which key they remapped, corroborated by the four codes sit
 column across four consecutive matrix rows. Good enough to name them; not the same standard as the
 byte-level facts elsewhere in this document.
 
+### The `cmd 0x29` dead zones: fixed constants, or a user setting at its default?
+
+**Measured 2026-09-05**, by parsing every `cmd 0x29` frame in `captures/`: 14 read requests across 7
+files, every reply reporting `press_dead = 0` and `release_dead = 0`, and 3 vendor writes, at three
+different travel values, all carrying `200` and `200`. A reply to a write echoes the write, so the
+three replies showing `200/200` are acknowledgements, not reads.
+
+**Not established: why 200.** Two readings fit the same frames, and the repo's own vendored sources
+pull in opposite directions.
+
+- A fixed constant. `research/proto/package/src/utils/pack.ts` builds `DBDataPack`, but its default
+  argument is `pressDead: 0, releaseDead: 0`, so if there is an SDK template value it is zero, not
+  200. The 200 has to come from the caller.
+- A user setting sitting at its default. `research/aure/src/components/performance/GlobalTravel.vue`
+  is a different app on the same Sparklink SDK, and it exposes both dead zones as sliders over
+  `0.0` to `1.0` with `ref(0.2)` as their initial value. In millimetres that is exactly the 200
+  micrometres every observed write carries.
+
+**What it costs if we have it wrong.** `wh restore` now writes `200, 200` on every restore. If they
+are a user setting, that silently overwrites the operator's choice, and unverifiably: the read path
+reports `0` for both on every measured read, so `wh` cannot tell what it just replaced, and
+`verify_restore` never re-reads the `0x29` record at all. `wh selftest` has the mirror-image
+exposure. It rewrites the record with what it read, which is `0, 0`, so if the board does hold a
+dead zone it does not report, selftest zeroes it. That is the one place `wh` still writes a zero
+dead zone, and the reason its output no longer calls itself a no-op.
+
+**What would settle it, and why it is awkward.** Not a readback: the board answers `0` whatever was
+written, so nothing on the read path can distinguish the two. It needs either the vendor
+configurator observed writing a value other than 200 (move whatever control the configurator
+exposes for these, if it exposes one, and capture the write), or a felt behavioural difference on
+the board between a written `0` and a written `200` at the same travel. Until one of those exists,
+`wh` should keep writing the only value the vendor has been seen to write.
+
 ### Settings a snapshot does not capture
 
 `wh backup` stores the global record plus four layouts per key, and, as of Phase 1, the profile the

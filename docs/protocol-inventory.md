@@ -109,5 +109,6 @@ Reply payload is `000000640000000000000000000000` in all three captures that rea
 not measured**: the vendor only reads this record in these ten captures, and 0.1mm is not a
 plausible switch travel for a board whose printed scale runs to 3.5mm. A later session measures the
 configurator's `"MM" CUSTOM VALUE` control writing that field, and every write carrying
-`press_dead=200` and `release_dead=200` against a read that reports both as `0`, see
-`docs/keysets.md`.
+`press_dead=200` and `release_dead=200` against a read that reports both as `0`. Whether that 200 is
+a constant or a user setting at its default is not established, see `docs/keysets.md` and
+`docs/backlog.md`.

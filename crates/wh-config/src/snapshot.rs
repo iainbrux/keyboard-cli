@@ -40,8 +40,8 @@ pub struct GlobalToml {
     #[serde(alias = "travel_mm")]
     pub custom_value_mm: f64,
     /// Informational only, the dead zones the board reported when the snapshot was taken, which
-    /// every measured read reports as `0`. `wh restore` sends the vendor's own constants instead,
-    /// so editing either of these changes nothing that reaches the wire.
+    /// every measured read reports as `0`. `wh restore` sends the 200 every measured vendor write
+    /// carries instead, so editing either of these changes nothing that reaches the wire.
     pub press_dead_mm: f64,
     pub release_dead_mm: f64,
 }

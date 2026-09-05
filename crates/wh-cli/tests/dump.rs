@@ -5141,14 +5141,16 @@ fn set_ap_base_does_not_prompt() {
 /// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
 fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
-    restore_snapshot_json_with_dead_zones(ap_mm, profile, 0.2, 0.1)
+    restore_snapshot_json_with_globals(ap_mm, profile, 2.0, 0.2, 0.1)
 }
 
-/// `restore_snapshot_json` with the recorded dead zones chosen too, for the two tests that prove
-/// `restore` sends the vendor's constants rather than whatever the file holds.
-fn restore_snapshot_json_with_dead_zones(
+/// `restore_snapshot_json` with the whole global record chosen too: the custom value, for the test
+/// that proves it reaches the wire from the file, and the dead zones, for the two that prove they
+/// do not.
+fn restore_snapshot_json_with_globals(
     ap_mm: f64,
     profile: Option<u8>,
+    custom_value_mm: f64,
     press_dead_mm: f64,
     release_dead_mm: f64,
 ) -> String {
@@ -5162,7 +5164,7 @@ fn restore_snapshot_json_with_dead_zones(
         profile,
         origin: None,
         global: wh_config::snapshot::GlobalToml {
-            custom_value_mm: 2.0,
+            custom_value_mm,
             press_dead_mm,
             release_dead_mm,
         },
@@ -5234,11 +5236,18 @@ fn restore_refuses_an_out_of_range_value_before_any_frame_is_sent() {
 /// what `restore` knows about 'w's membership, not in what it reads back, so both call sites can
 /// still share the same value batch and readback.
 fn restore_write_and_verify_lines(membership: bool) -> Vec<String> {
+    restore_write_and_verify_lines_at(membership, 2000)
+}
+
+/// `restore_write_and_verify_lines` with the custom value on the wire chosen too, in micrometres,
+/// for the test that restores a snapshot recording something other than the 2.00mm every other
+/// snapshot fixture in this file holds.
+fn restore_write_and_verify_lines_at(membership: bool, custom_value_um: u16) -> Vec<String> {
     let mut lines = Vec::new();
-    // The dead zones on the wire are the vendor's constants (200um each), not the 0.2/0.1 the
-    // shared snapshot recorded: `restore` sends what the vendor sends, whatever the file holds.
+    // The custom value is the snapshot's own; the dead zones are not, they are the 200um each
+    // every measured vendor write carries, not the 0.2/0.1 the shared snapshot records.
     let db_write = cmds::write_global_travel(
-        wh_proto::value::Um::from_mm(2.0, 0.0, 4.0).unwrap(),
+        wh_proto::value::Um(custom_value_um),
         wh_proto::value::Um(200),
         wh_proto::value::Um(200),
     );
@@ -5349,7 +5358,7 @@ fn restore_happy_path_backs_up_and_verifies() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `wh restore` must put the vendor's dead zone constants on the wire, 200um each, whatever the
+/// `wh restore` must put the dead zones the vendor writes on the wire, 200um each, whatever the
 /// snapshot recorded. Measured 2026-09-05 across every `cmd 0x29` frame in `captures/`: all three
 /// vendor writes carry `press_dead=200` and `release_dead=200`, while all 14 reads report `0` for
 /// both, so a restore built from what was read writes a pair the vendor never writes.
@@ -5360,7 +5369,7 @@ fn assert_restore_sends_the_vendor_dead_zones(tag: &str, press_dead_mm: f64, rel
     let snap_path = std::env::temp_dir().join(format!("wh-{tag}-{}.json", std::process::id()));
     std::fs::write(
         &snap_path,
-        restore_snapshot_json_with_dead_zones(1.2, Some(1), press_dead_mm, release_dead_mm),
+        restore_snapshot_json_with_globals(1.2, Some(1), 2.0, press_dead_mm, release_dead_mm),
     )
     .unwrap();
 
@@ -5398,11 +5407,59 @@ fn restore_sends_the_vendor_dead_zones_from_a_snapshot_recording_zeros() {
     assert_restore_sends_the_vendor_dead_zones("restore-dead-zones-zero", 0.0, 0.0);
 }
 
-/// Dead zones that are neither zero nor the constant, so the constants cannot be passing here by
+/// Dead zones that are neither zero nor 200, so the values on the wire cannot be passing here by
 /// happening to agree with the file: they do not come from the snapshot at all.
 #[test]
 fn restore_sends_the_vendor_dead_zones_from_a_snapshot_recording_other_values() {
     assert_restore_sends_the_vendor_dead_zones("restore-dead-zones-other", 0.35, 0.45);
+}
+
+/// The custom value on the wire is the one the snapshot recorded. Every other snapshot fixture in
+/// this file records 2.00mm for it, so nothing else here can tell "the value flows from the file"
+/// apart from "the value happens to be 2.00mm": measured, replacing the field read in
+/// `snap_to_global` with `snap.global.custom_value_mm.max(2.0)` leaves the whole workspace green.
+/// This snapshot records 0.10mm, which is what 13 of the 15 read replies in `captures/` report, so
+/// the write must carry 100um. The defect it guards against is real and silent: a board on 0.10mm
+/// backed up and restored as 2000um, with `wh` still printing a verified restore, since
+/// `verify_restore` re-reads keys and never the `0x29` record.
+#[test]
+fn restore_sends_the_custom_value_the_snapshot_recorded() {
+    let config_home = scratch_config_dir("restore-custom-value");
+    let snap_path = std::env::temp_dir().join(format!(
+        "wh-restore-custom-value-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &snap_path,
+        restore_snapshot_json_with_globals(1.2, Some(1), 0.1, 0.0, 0.0),
+    )
+    .unwrap();
+
+    let mut lines = profile_lines(0);
+    lines.extend(auto_backup_lines(0));
+    lines.extend(restore_write_and_verify_lines_at(true, 100));
+    let path = write_script("restore-custom-value", &lines);
+
+    let out = run_wh(
+        &["restore", snap_path.to_str().unwrap()],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("restored 1 key from snapshot") && stdout.contains("verified"),
+        "unexpected stdout: {stdout}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
 }
 
 /// A stored JSON snapshot spelling the global field `travel_mm`, the name it had before it was
@@ -5878,6 +5935,56 @@ fn selftest_sends_no_save_frame() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `selftest` against the dead zones a real board reports. All 15 read replies in `captures/`
+/// report `press_dead = 0` and `release_dead = 0`, a board state no other fixture in this file
+/// scripts, and `selftest` rewrites the record with exactly what it read, so this is the one place
+/// `wh` still puts a zero dead zone on the wire. Pinned by exact frame equality. The printed line
+/// must name the custom value rather than calling it travel, and must not claim the write changes
+/// nothing: whether the board holds a dead zone it never reports is unestablished, see
+/// `docs/backlog.md`.
+#[test]
+fn selftest_on_a_board_reporting_zero_dead_zones_rewrites_them_as_read() {
+    let mut lines = Vec::new();
+    lines.extend(sync_lines("SNSELFTEST0000002", "V1.0.0.001"));
+    lines.extend(global_travel_lines(100, 0, 0));
+    let rewrite = cmds::write_global_travel(
+        wh_proto::value::Um(100),
+        wh_proto::value::Um(0),
+        wh_proto::value::Um(0),
+    );
+    lines.push(out_line(&rewrite));
+    lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
+    lines.extend(global_travel_lines(100, 0, 0));
+
+    let path = write_script("selftest-zero-dead", &lines);
+    let config_home = scratch_config_dir("selftest-zero-dead");
+    let out = run_wh(&["selftest"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "global custom value: 0.10mm, rewriting the record with the values just read"
+        ),
+        "the selftest line must name the custom value and what it rewrites: {stdout}"
+    );
+    assert!(
+        stdout.contains("selftest OK: write path verified by rewriting the values just read"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("no-op"),
+        "selftest must not claim the write changes nothing while the dead zones are unestablished: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// WSL only forwards an environment variable across the WSL/Windows boundary `bin/wh` execs
 /// through when it is named in `WSLENV`; a `bin/wh` that forgot to set it once let `wh restore
 /// --force` silently fall back to a real device while the operator believed `WH_REPLAY` made it
@@ -6189,7 +6296,8 @@ fn restore_script_with_keyset_readback(w: KeyReadback, a: KeyReadback) -> Vec<St
     let mut lines = profile_lines(0);
     lines.extend(auto_backup_lines(0));
 
-    // Dead zones: the vendor's constants, not the 0.2/0.1 `snapshot_json_with_keysets` records.
+    // Dead zones: the 200 each the vendor writes, not the 0.2/0.1 `snapshot_json_with_keysets`
+    // records.
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um(2000),
         wh_proto::value::Um(200),
@@ -6516,7 +6624,7 @@ fn restore_from_a_snapshot_that_predates_keysets_leaves_live_membership_untouche
     lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
 
     // `restore`'s own writes: global travel, then 'w's value batch. No membership frame at all.
-    // The dead zones are the vendor's constants, not this snapshot's 0.2/0.1.
+    // The dead zones are the 200 each the vendor writes, not this snapshot's 0.2/0.1.
     let db_write = cmds::write_global_travel(
         wh_proto::value::Um(2000),
         wh_proto::value::Um(200),
