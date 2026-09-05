@@ -453,7 +453,7 @@ rather than as settings it recognises.
   in stderr *and* absent from stdout, so a future change routing it to both streams fails there even
   though every other assertion on the prompt's wording would still pass.
 
-- [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
+- [x] ~~**2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**~~
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
   the MODE record and stops, so a key turned off through `wh` keeps whatever membership it held and
@@ -484,6 +484,20 @@ rather than as settings it recognises.
   global 100/100. `ops::rt_off_records` writes MODE alone and leaves the private value in place, so
   it is the one that diverges; routing through `Change::rt_off` removes a divergence rather than
   creating one.
+
+  **Done 2026-09-05.** `wh set rt --off` routes through `crate::keyset::rt_off`, which builds
+  `Change::rt_off` over `keyset::plan` with `Some(KeysetIndex::clear(Kind::Rt))`, and reuses
+  `announce_remove` and `verify_write_as`: this command now reaches the same destination
+  `wh keyset remove rt` does, so a key leaving a keyset, a keyset emptied by that, and a key that
+  only has its membership rewritten are said the same way in both. `ops::rt_off_records` and
+  `ops::set_rt_off` are left in place and are no longer on the path, exactly as 2.14 left
+  `ops::ap_records`; `run.rs`'s `verify_rt_off`, which checked MODE alone and so could not see the
+  sensitivities or the membership this write now sends, was deleted rather than left checking too
+  little. `--press`/`--release` lost `conflicts_with = "off"`, per this entry's own ruling: a
+  refusal naming a flag the operator cannot pass is the defect, not the fix. They must be passed
+  together or not at all, since `--off` resets both sensitivities and a half-given override would
+  have to read the other half from the very global whose disagreement was the reason to reach for
+  them.
 - [x] ~~**2.14 Decide what `wh set ap` emits, before the CLI is written.**~~ Settled by
   measurement, 2026-09-03: **one shape, always.** `wh set ap` routes through `keyset::plan` with
   `Change::ap`, whether the key is in an actuation point keyset or not, and `ops::ap_records`
@@ -555,7 +569,8 @@ rather than as settings it recognises.
   - `keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped the
     measurement. Both should stand: 618 MODE write records across the corpus, none at nibble 0.
   - `wh set rt --set` is a third pair of routes to one intent with different frames, alongside the
-    two recorded in 2.13 and 2.14. `plan` matches the vendor here and `ops::rt_records` diverges.
+    two recorded in 2.13 and 2.14, both now closed in `plan`'s favour so that this is the last one
+    left. `plan` matches the vendor here and `ops::rt_records` diverges.
 
 - [ ] **2.17 What the `docs/keysets.md` verification pass found that touches code. Read before
   writing 2.4b.** An adversarial pass on 2026-09-03 checked every measured claim in that document

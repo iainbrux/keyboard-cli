@@ -235,10 +235,12 @@ Rapid trigger is the nibble this document's earlier draft got backwards, worth s
 since the wrong answer looks plausible and fails silently. `wh` writes `3` to turn rapid trigger on
 (the CLI never turns on the `4`, continuous, variant, though it preserves one on a read-modify-write
 if it finds the board already in it, see `ops::rt_records`) and `1` to turn rapid trigger off, via
-`ops::rt_off_records`. **Nibble `1` is rapid-trigger-off, not "write an actuation point"**: it is
-what `wh` writes on a key that already has its own actuation point recorded in layout `0x04`, to
-turn rapid trigger off while leaving that actuation point in place, which is why `rt_off_records`
-writes `Single` (`1`) rather than `Global` (`0`). Following the wrong nibble by treating `1` as an
+`keyset::plan` with `Change::rt_off`. **Nibble `1` is rapid-trigger-off, not "write an actuation
+point"**: it is what `wh` writes on a key that already has its own actuation point recorded in
+layout `0x04`, to turn rapid trigger off while leaving that actuation point in place, which is why
+`Change::rt_off` writes `Single` (`1`) rather than `Global` (`0`). `ops::rt_off_records`, which
+writes the MODE record alone and leaves both sensitivities and the key's `0xFE` membership in
+place, still exists but is no longer on the `wh set rt --off` path. Following the wrong nibble by treating `1` as an
 actuation-point-write instruction, on a key that currently has rapid trigger on, silently turns
 rapid trigger off as a side effect: nothing errors, and both `dump` and the vendor UI report the key
 as rapid-trigger-off afterward, with no indication that anything other than the actuation point was
@@ -254,7 +256,7 @@ default `2.00mm` using the board's own actuation LEDs. A key at nibble `0` honou
 `0x04` value in that one test, which is the opposite of what the "discards the actuation point"
 belief predicted.
 
-`wh` still declines to write nibble `0` when turning rapid trigger off, via `ops::rt_off_records`
+`wh` still declines to write nibble `0` when turning rapid trigger off, via `Change::rt_off`
 writing `Single` (`1`) instead of `Global` (`0`), but the honest reason is caution, not a known
 destructive effect: the vendor's own web app was observed writing nibble `1`, not `0`, when its UI
 turns rapid trigger off (removing a keyset), so matching that observed behaviour costs nothing and

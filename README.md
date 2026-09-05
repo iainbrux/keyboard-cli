@@ -78,12 +78,26 @@ wh get rt --keys "w,a,s,d"
 wh set rt --keys "w,a,s,d" --set 0.5
 wh set rt --keys "w,a,s,d" --set 0.5 --press 0.4 --release 0.6
 wh set rt --keys "w,a,s,d" --off
+wh set rt --keys "w,a,s,d" --off --press 0.1 --release 0.1
 wh get ap --keys wasd
 wh set ap --keys wasd --set 1.2
 ```
 
 `wh get rt`/`wh get ap` also print the key's raw keyset value as a suffix, `keyset N` or
 `keyset none`.
+
+**`wh set rt --off` does the whole of what the vendor's own per-key rapid trigger off does**, not
+just the mode nibble: it turns rapid trigger off, resets both sensitivities to the board's global,
+and clears the key's rapid trigger keyset membership, which is the order and the content measured in
+`captures/rt-off-w.jsonl`. So a key turned off this way stops being listed in an rt keyset by
+`wh keyset list` and by the vendor configurator, and a keyset whose last member is turned off ceases
+to exist, which the announcement says. The global comes from every key outside an rt keyset: when
+those keys disagree, or when no key sits outside one at all, `--off` refuses and names each value
+with how many keys hold it rather than picking a winner, and `--press`/`--release` are the way past
+it (`wh set rt --keys w --off --press 0.1 --release 0.1`). Pass both or neither: `--off` resets both
+sensitivities together. A key already off and already at the global still has its membership
+rewritten, and the announcement says so rather than claiming nothing was written, since a frame
+really is sent.
 
 Key selectors accept comma-separated names, contiguous runs typed as one word (`wasd`), ranges
 (`a-f`), negation (`all,!space`), user-defined groups (`wh keys group fps "w,a,s,d,space"`, then
@@ -109,11 +123,12 @@ wh keyset remove ap --keys w
 `wh keyset list` with no kind lists both `ap` and `rt`; naming one lists that kind. Each keyset is
 shown with its index, value, and member keys: one shared value when the members agree
 (`1 1.50mm  u,i,o,p`), or each distinct value with the keys holding it when they do not
-(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt` does not write `0xFE`; running it on part of
-an rt keyset's members can leave that keyset's members holding different values, which
-`wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
-keyset's value in place. `create`, `delete`, `remove`, `wh set ap` below, and `wh restore` (for keys
-whose snapshot recorded it, see below) each write keyset membership. `create` and `delete` take
+(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt --set` does not write `0xFE`; running it on
+part of an rt keyset's members can leave that keyset's members holding different values, which
+`wh keyset list` then shows as this kind of disagreement. `wh set rt --off` does write it, clearing
+membership, so it never leaves a keyset in that state. `wh keyset set` changes an existing keyset's
+value in place. `create`, `delete`, `remove`, `wh set ap` and `wh set rt --off` above, and
+`wh restore` (for keys whose snapshot recorded it, see below) each write keyset membership. `create` and `delete` take
 `--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value, and
 passing it is required when the keys outside every keyset disagree, or when none are left outside
 one.
@@ -375,7 +390,7 @@ cached to go stale.
 Two things look like exceptions and are not:
 
 - `set rt`, `set ap`, and `keyset create`/`set`/`delete`/`remove` each read a key's current
-  settings, then write back a change built from that read (the last four through the same
+  settings, then write back a change built from that read (all but `set rt --set` through the same
   `keyset::plan`).
   `selftest` does the same at the board level, not a key's: it reads the global travel and dead
   zones and writes back the identical values, a no-op write that proves the path rather than

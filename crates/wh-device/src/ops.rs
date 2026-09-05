@@ -156,6 +156,12 @@ pub fn rt_records<T: Transport>(
 /// Builds the [mode] records to turn rapid trigger off on `usages`, preserving each key's
 /// advanced-mode nibble. Reads current MODE per key but sends nothing else.
 ///
+/// No longer on the `wh set rt --off` path, the same way `ap_records` is no longer on `wh set
+/// ap`'s: the vendor's own per-key rapid trigger off also resets both sensitivities and clears
+/// the key's `0xFE` membership (`captures/rt-off-w.jsonl`), which this cannot express, so the CLI
+/// routes through `keyset::plan` with `Change::rt_off` instead. The nibble mapping below is still
+/// the shipped one; `TouchChange::Off` carries the identical rule.
+///
 /// Only rewrites keys with rapid trigger on, to `Single` (nibble 1), never to `Global`
 /// (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key with
 /// nothing to change gets no record (see the skip below), so `wh set rt --keys all --off` on a
@@ -217,6 +223,8 @@ pub fn set_rt<T: Transport>(
 /// Disables RT (touch mode to `Single`, per-key actuation point), preserving the advanced
 /// nibble. Returns the records actually written, in `usages` order; not necessarily one per
 /// key, since a key with nothing to change (see `rt_off_records`) contributes none.
+///
+/// Off the `wh set rt --off` path along with `rt_off_records`, for the reason recorded there.
 pub fn set_rt_off<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],

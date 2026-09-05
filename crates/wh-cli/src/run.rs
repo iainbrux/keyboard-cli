@@ -659,43 +659,19 @@ fn verify_rt<T: Transport>(
     )
 }
 
-/// Sibling of `verify_rt`: `records` (from `ops::rt_off_records`) is the sole source of the
-/// key list and wanted MODE value. `rt_off_records` skips a key with nothing to change, so the
-/// reported count reflects keys actually changed, not how many `--keys` selected.
-fn verify_rt_off<T: Transport>(
-    out: &mut impl Write,
-    s: &mut Session<T>,
-    records: &[KeyRecord],
-) -> Result<()> {
-    let mut bad = Vec::new();
-    let mut usages = Vec::new();
-    for r in records {
-        let u = r.key;
-        let want_mode = r.value;
-        usages.push(u);
-        let ks = ops::read_key_settings(s, u)?;
-        // The exact MODE value, advanced nibble and high byte included, mirroring the check
-        // `verify_rt` does on the enable path.
-        if ks.mode.value() != want_mode {
-            bad.push(format!(
-                "{}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt off, \
-                 advanced nibble and high byte preserved)",
-                key_label(u),
-                ks.mode.value(),
-                if ks.rt_enabled() { "on" } else { "off" },
-                want_mode,
-            ));
-        }
-    }
-    report_verification(out, "rt off", &usages, &bad)
-}
-
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
 /// cannot disagree with themselves, unlike a bare `off: bool` plus a separate
 /// `Option<(Um, Um)>` could.
 enum RtAction {
-    Off,
-    On { press: Um, release: Um },
+    /// `--off`, carrying the `--press`/`--release` the keys are reset to. `None` means read the
+    /// board's global instead, which `crate::keyset::rt_off` does and refuses over.
+    Off {
+        rt: Option<(Um, Um)>,
+    },
+    On {
+        press: Um,
+        release: Um,
+    },
 }
 
 fn set(what: SetWhat, store: &Store) -> Result<()> {
@@ -711,12 +687,23 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             // Validated before a session opens, like `Ap`'s `mm(set)?` below: a malformed
             // value is refused before `resolve_keys` sends any DEFKEY roundtrips.
             let action = if off {
-                RtAction::Off
+                // Both or neither, never one: `--off` resets both sensitivities together, and a
+                // half-given override would have to read the other half from the very global
+                // whose disagreement is the reason these flags were reached for.
+                let rt = match (press, release) {
+                    (None, None) => None,
+                    (Some(p), Some(r)) => Some((mm(p)?, mm(r)?)),
+                    _ => bail!(
+                        "--off resets both sensitivities, so pass --press and --release together \
+                         or neither; with neither, the value comes from the board's own global"
+                    ),
+                };
+                RtAction::Off { rt }
             } else {
                 let base = set.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "--set is required unless --off is given; --press and --release only \
-                         override a --set base and cannot be used alone"
+                        "--set is required unless --off is given; --press and --release override \
+                         a --set base, or name the value --off resets to, and cannot be used alone"
                     )
                 })?;
                 RtAction::On {
@@ -732,16 +719,19 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                 // live board regardless. Only writes are skipped below.
                 let usages = resolve_keys(s, &keys, store)?;
                 match action {
-                    RtAction::Off => {
+                    RtAction::Off { rt } => {
+                        // Routed through `keyset::plan`, like every other write but `set rt`'s
+                        // own enable path: the vendor's per-key rapid trigger off resets the
+                        // sensitivities and clears `0xFE` as well as moving the touch nibble, and
+                        // `ops::rt_off_records`, which sends MODE alone, is the divergent one.
+                        // `rt_off` only reads, so a dry run can build the same plan and stop.
+                        let plan = crate::keyset::rt_off(&mut out, s, &usages, rt)?;
                         if dry_run {
-                            // rt_off_records reads each key's current MODE to preserve the
-                            // advanced nibble; a read, so it's fine for a dry run to send.
-                            let records = ops::rt_off_records(s, &usages)?;
-                            return print_frames(&mut out, &cmds::write_key_records(&records));
+                            return print_frames(&mut out, &plan.frames());
                         }
                         auto_backup(s, store, "set rt")?;
-                        let records = ops::set_rt_off(s, &usages)?;
-                        verify_rt_off(&mut out, s, &records)
+                        wh_device::keyset::apply(s, &plan)?;
+                        crate::keyset::verify_write_as(&mut out, s, "rt off", &plan)
                     }
                     RtAction::On { press, release } => {
                         if dry_run {

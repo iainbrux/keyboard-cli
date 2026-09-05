@@ -33,7 +33,10 @@ runs against the second one, which is why the matching must never be loosened.
 changing one thing cannot silently clear another. `wh set ap`'s live path is `keyset::plan` with
 `Change::ap`, whose `apply_touch` promotes touch nibble 0 to 1 and deliberately leaves 1, 2, 3, 4 and
 unknown nibbles alone; `ops::ap_records` still does the same but is no longer on that path.
-`rt_records` preserves `RtContinuous`. This is the single most important invariant in the codebase
+`rt_records` preserves `RtContinuous`. `wh set rt --off` goes the same way, through `keyset::plan`
+with `Change::rt_off` and a `0xFE` clear, so it resets the sensitivities and the keyset membership
+the vendor resets; `ops::rt_off_records` and `ops::set_rt_off` are off that path too. This is the
+single most important invariant in the codebase
 and it exists because clobbering a nibble silently disables a feature the user set from the vendor
 UI.
 

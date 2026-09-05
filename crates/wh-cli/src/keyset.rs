@@ -213,16 +213,17 @@ impl Target {
     }
 }
 
-/// The `Change` a reset writes, over a value the caller has already resolved. `delete` and
-/// `remove` send the same per-key template, measured in `ks-delete-rt` and `ks-remove-one-rt`, so
-/// a correction to that template has to land on both at once and this is what makes it land.
-/// `create` is not a caller: its rapid trigger arm builds `Change::rt_on`, the opposite template.
+/// The `Change` a reset writes, over a value the caller has already resolved. `delete`, `remove`
+/// and `rt_off` send the same per-key template, measured in `ks-delete-rt`, `ks-remove-one-rt` and
+/// `rt-off-w`, so a correction to that template has to land on all three at once and this is what
+/// makes it land. `create` is not a caller: its rapid trigger arm builds `Change::rt_on`, the
+/// opposite template.
 ///
-/// Resolves nothing and reads no device, deliberately. The two callers agree on the template and
-/// disagree on how they reach the value: `delete` refuses on `NoneOutsideAKeyset` and names
-/// `--value`/`--press`/`--release` as the way out, while `remove`, which has no such flags, falls
-/// back to `NO_SIGNAL_BASE` for the actuation point and refuses for rapid trigger. A helper that
-/// resolved the value as well would hand one command the other's behaviour.
+/// Resolves nothing and reads no device, deliberately. The three callers agree on the template and
+/// disagree on how they reach the value: `delete` and `rt_off` refuse on `NoneOutsideAKeyset` and
+/// name `--value`/`--press`/`--release` as the way out, while `remove`, which has no such flags,
+/// falls back to `NO_SIGNAL_BASE` for the actuation point and refuses for rapid trigger. A helper
+/// that resolved the value as well would hand one command the other's behaviour.
 ///
 /// The two arms do different things to touch nibble 0, and only the actuation point arm moves it.
 /// `Target::Ap` uses `Change::ap`, not `Change::ap_keeping_touch`, so a key at nibble 0 ("follow
@@ -553,14 +554,7 @@ pub(crate) fn remove<T: Transport>(
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let sets = keyset::group(&m);
-    let leaving: Vec<(u16, u8)> = usages
-        .iter()
-        .filter_map(|&u| {
-            sets.iter()
-                .find(|k| k.members.contains(&u))
-                .map(|k| (k.index, u))
-        })
-        .collect();
+    let leaving = leaving_members(&sets, usages);
 
     // Resolved here, not in `reset_change`: `remove` has no `--value`/`--press`/`--release` to
     // fall back on, so `remove_base_ap` invents `NO_SIGNAL_BASE` where `remove_base_rt` refuses,
@@ -600,6 +594,44 @@ pub(crate) fn remove<T: Transport>(
         &sets,
         &plan,
     )?;
+    Ok(plan)
+}
+
+/// `wh set rt --off`'s plan: rapid trigger off on every selected key, its sensitivities reset, and
+/// its `0xFE` membership cleared. Measured in `captures/rt-off-w.jsonl`: the vendor's per-key
+/// rapid trigger off resets `W` from its own 500/500 to the board's global 100/100 and then writes
+/// `0xFE = 0`, one record per frame, as the last thing it sends. That file's read sweep does not
+/// cover `0xFE`, so whether `W` held a membership beforehand is unmeasured; what is measured is
+/// that the clear goes out unconditionally, which is `plan`'s own rule for a `Some(index)`.
+///
+/// `rt` is the operator's `--press`/`--release`. `None` reads the board's global instead, from
+/// every key outside a rapid trigger keyset, and refuses when they disagree or when there are
+/// none, naming those two flags as the way past: `wh` never picks a winner among values nobody
+/// typed. Nothing is excluded from that read, so the "no key outside a keyset" refusal has exactly
+/// one cause here, unlike `remove_base_rt`, which excludes its own selection and so has two.
+///
+/// Reuses `announce_remove`, and the wording is not a coincidence: this command now reaches the
+/// same destination `wh keyset remove rt` does, resetting each key to the base and to no keyset,
+/// so a key leaving a keyset, a keyset emptied by that, and a key that only has its membership
+/// rewritten all have to be said the same way in both. Reads only; the caller applies the plan.
+pub(crate) fn rt_off<T: Transport>(
+    out: &mut impl Write,
+    s: &mut Session<T>,
+    usages: &[u8],
+    rt: Option<(Um, Um)>,
+) -> Result<keyset::WritePlan> {
+    let m = keyset::read_membership(s, Kind::Rt)?;
+    let sets = keyset::group(&m);
+    let leaving = leaving_members(&sets, usages);
+    let (press, release) = match rt {
+        Some(v) => v,
+        None => global_rt_or_bail(s, &m, "--press and --release")?,
+    };
+    let target = Target::Rt(press, release);
+    let change = reset_change(target);
+    let cleared = keyset::KeysetIndex::clear(Kind::Rt);
+    let plan = keyset::plan(s, usages, &change, Some(cleared))?;
+    announce_remove(out, Kind::Rt, &leaving, usages, target, false, &sets, &plan)?;
     Ok(plan)
 }
 
@@ -834,6 +866,21 @@ fn announce_delete(
         writeln!(out, "  {}", describe_member(kind, plan, before.usage))?;
     }
     Ok(())
+}
+
+/// Each selected key that is currently in a keyset, as (its keyset's index, the key), in `usages`
+/// order. What `announce_remove` needs to say a key is leaving a keyset rather than simply being
+/// reset. Shared by `remove` and `rt_off`, which reach the same destination and so must agree on
+/// which keys are leaving something; a second copy would be free to drift.
+fn leaving_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, u8)> {
+    usages
+        .iter()
+        .filter_map(|&u| {
+            sets.iter()
+                .find(|k| k.members.contains(&u))
+                .map(|k| (k.index, u))
+        })
+        .collect()
 }
 
 /// Existing keysets that would lose members to a create over `usages`, as (index, the members it
@@ -1217,8 +1264,9 @@ fn mode_rt_on(mode_raw: u16) -> bool {
 /// The one fault line a mode mismatch contributes, or `None` when the board agrees, annotated
 /// with rapid trigger state on both sides. Split out from `verify_write_as` so a test can read it
 /// back directly: `report_verification` writes fault lines to real process stderr, which a test
-/// cannot capture. `run.rs`'s `verify_rt`/`verify_rt_off` build their own mode-fault wording
-/// inline and so cannot be pinned this precisely; this function is what makes that possible here.
+/// cannot capture. `run.rs`'s `verify_rt`, the one write path left that does not go through
+/// `verify_write_as`, builds its own mode-fault wording inline and so cannot be pinned this
+/// precisely; this function is what makes that possible here.
 fn mode_fault(got: u16, want: u16) -> Option<String> {
     if got == want {
         return None;

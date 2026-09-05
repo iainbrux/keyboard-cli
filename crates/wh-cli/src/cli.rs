@@ -101,11 +101,13 @@ pub enum SetWhat {
         /// Sensitivity in mm (sets press and release)
         #[arg(long, conflicts_with = "off")]
         set: Option<f64>,
-        /// Press sensitivity in mm (overrides --set for press)
-        #[arg(long, conflicts_with = "off")]
+        /// Press sensitivity in mm (overrides --set for press; with --off, the value the keys
+        /// are reset to instead of the board's global)
+        #[arg(long)]
         press: Option<f64>,
-        /// Release sensitivity in mm (overrides --set for release)
-        #[arg(long, conflicts_with = "off")]
+        /// Release sensitivity in mm (overrides --set for release; with --off, the value the
+        /// keys are reset to instead of the board's global)
+        #[arg(long)]
         release: Option<f64>,
         /// Disable rapid trigger on these keys
         #[arg(long)]
@@ -281,29 +283,41 @@ mod tests {
         );
     }
 
-    /// `--press`/`--release` only mean anything as an override on top of `--set`, so each must
-    /// refuse to parse alongside `--off`, the same as `--set --off` does above.
+    /// `--press`/`--release` mean two things: an override on top of `--set`, and, alongside
+    /// `--off`, the sensitivity the keys are reset to. `wh set rt --off` refuses outright when the
+    /// board's free keys disagree on that value and names these two flags as the way past, so they
+    /// have to parse alongside `--off` or the refusal names a flag the operator cannot use.
     #[test]
-    fn press_and_off_conflict() {
-        assert!(
-            Cli::try_parse_from(["wh", "set", "rt", "--keys", "w", "--press", "0.4", "--off"])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn release_and_off_conflict() {
-        assert!(Cli::try_parse_from([
+    fn press_and_release_parse_alongside_off() {
+        let c = Cli::try_parse_from([
             "wh",
             "set",
             "rt",
             "--keys",
             "w",
+            "--off",
+            "--press",
+            "0.3",
             "--release",
             "0.4",
-            "--off"
         ])
-        .is_err());
+        .expect("--press/--release must be usable with --off");
+        match c.cmd {
+            Cmd::Set {
+                what:
+                    SetWhat::Rt {
+                        press,
+                        release,
+                        off,
+                        ..
+                    },
+            } => {
+                assert_eq!(press, Some(0.3));
+                assert_eq!(release, Some(0.4));
+                assert!(off);
+            }
+            _ => panic!("wrong parse"),
+        }
     }
 
     #[test]

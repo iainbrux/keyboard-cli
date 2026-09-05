@@ -405,12 +405,14 @@ would cover every command at once, or at each call site. The first is one change
 suppressing a backup some caller wants; the second is several and will be applied unevenly.
 
 Note that a call-site guard is not uniformly available. `auto_backup` has nine call sites in
-`crates/wh-cli/src/run.rs`, and three of them have nothing to test: `set rt` off and on build their
-records through `ops::set_rt_off` and `ops::set_rt` after the backup is taken, and `restore` goes
-through `ops::restore_all` and never builds a `WritePlan` at all. The other six do hold a plan
-before backing up, so `plan.is_empty()` is available there and only there. An earlier draft of this
-entry claimed it was available at every call site; that was wrong, and it was the recommendation the
-entry rested on.
+`crates/wh-cli/src/run.rs`, and two of them have nothing to test: `set rt`'s enable path builds its
+records through `ops::set_rt` after the backup is taken, and `restore` goes through
+`ops::restore_all` and never builds a `WritePlan` at all. The other seven do hold a plan before
+backing up, so `plan.is_empty()` is available there and only there. An earlier draft of this entry
+claimed it was available at every call site; that was wrong, and it was the recommendation the entry
+rested on. `set rt --off` moved from the first group to the second when 2.13 routed it through
+`keyset::plan`, which is also why it can no longer send an empty plan: the membership clear always
+goes out.
 
 ## Post 1.0, not necessary
 
