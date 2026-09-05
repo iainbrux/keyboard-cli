@@ -20,7 +20,7 @@ fn query_pairing<T: Transport>(s: &mut Session<T>, usage: u8) -> Result<Pairing,
     let payload = s.roundtrip(&socd::read_pairing(usage))?;
     let p = socd::parse_pairing(&payload).map_err(|e| DeviceError::Decode(e.to_string()))?;
     if p.keys().0 != usage {
-        return Err(DeviceError::Decode(format!(
+        return Err(DeviceError::SocdInconsistent(format!(
             "expected the SOCD pairing for {}, got a row starting at {}",
             label(usage),
             label(p.keys().0)
@@ -29,17 +29,46 @@ fn query_pairing<T: Transport>(s: &mut Session<T>, usage: u8) -> Result<Pairing,
     Ok(p)
 }
 
-/// Every SOCD pairing on the board, in the order discovery meets each pairing's first member.
+/// What one SOCD read saw: the board's own key matrix, and the pairings on it.
+///
+/// The matrix is returned rather than discarded because every caller needs it: `wh socd`'s key
+/// arguments are resolved against it, the same assertion every other key-taking surface makes,
+/// and reading it twice in one command would be two chances to disagree as well as three wasted
+/// roundtrips.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Board {
+    matrix: Vec<u8>,
+    pairings: Vec<Pairing>,
+}
+
+impl Board {
+    /// Every key usage the board reports, in `ops::read_matrix` order. The universe a key
+    /// selector resolves against.
+    pub fn matrix(&self) -> &[u8] {
+        &self.matrix
+    }
+    /// The pairings, in the order discovery meets each one's first member.
+    pub fn pairings(&self) -> &[Pairing] {
+        &self.pairings
+    }
+    /// The pairing `usage` belongs to, if any.
+    pub fn pairing_of(&self, usage: u8) -> Option<Pairing> {
+        self.pairings.iter().find(|p| p.contains(usage)).copied()
+    }
+}
+
+/// Every SOCD pairing on the board, in the order discovery meets each pairing's first member,
+/// alongside the key matrix the sweep ran over.
 ///
 /// The vendor's own connect sequence is reproduced: sweep MODE over the board's key matrix,
 /// take the keys whose advanced nibble reads `8`, and query `cmd 0x2c` for each. Both members
 /// are queried, as the vendor does, and their two rows must agree; a flagged key whose partner
 /// is not flagged, or whose partner disagrees, is an error naming the keys rather than a silent
 /// skip, since either means the board holds a state `wh` cannot render honestly.
-pub fn read_socd<T: Transport>(s: &mut Session<T>) -> Result<Vec<Pairing>, DeviceError> {
-    let usages = ops::read_matrix(s)?;
+pub fn read_socd<T: Transport>(s: &mut Session<T>) -> Result<Board, DeviceError> {
+    let matrix = ops::read_matrix(s)?;
     let mut flagged = Vec::new();
-    for u in usages {
+    for &u in &matrix {
         let mode = Mode::from_value(ops::read_layout_value(s, u, layout::MODE)?);
         if mode.is_socd() {
             flagged.push(u);
@@ -55,9 +84,8 @@ pub fn read_socd<T: Transport>(s: &mut Session<T>) -> Result<Vec<Pairing>, Devic
             .partner(u)
             .expect("query_pairing checked the row's own key");
         if !flagged.contains(&partner) {
-            return Err(DeviceError::Decode(format!(
-                "SOCD is inconsistent on this board: {} is paired with {}, but {}'s mode does \
-                 not have SOCD set",
+            return Err(DeviceError::SocdInconsistent(format!(
+                "{} is paired with {}, but {}'s mode does not have SOCD set",
                 label(u),
                 label(partner),
                 label(partner)
@@ -68,8 +96,8 @@ pub fn read_socd<T: Transport>(s: &mut Session<T>) -> Result<Vec<Pairing>, Devic
             .find(|&&(k, _)| k == partner)
             .expect("every flagged key was queried above");
         if *partner_row != p {
-            return Err(DeviceError::Decode(format!(
-                "SOCD is inconsistent on this board: {} and {} answer with different pairings",
+            return Err(DeviceError::SocdInconsistent(format!(
+                "{} and {} answer with different pairings",
                 label(u),
                 label(partner)
             )));
@@ -78,7 +106,7 @@ pub fn read_socd<T: Transport>(s: &mut Session<T>) -> Result<Vec<Pairing>, Devic
             pairings.push(p);
         }
     }
-    Ok(pairings)
+    Ok(Board { matrix, pairings })
 }
 
 /// Writes one pairing and verifies it landed.
@@ -92,7 +120,7 @@ pub fn write_socd_pair<T: Transport>(s: &mut Session<T>, pair: Pairing) -> Resul
     let echo = s.roundtrip(&socd::write_pair(pair))?;
     let echoed = socd::parse_pairing(&echo).map_err(|e| DeviceError::Decode(e.to_string()))?;
     if echoed != pair {
-        return Err(DeviceError::Decode(format!(
+        return Err(DeviceError::SocdInconsistent(format!(
             "the board echoed a different SOCD pairing than the one written: {}",
             echoed.describe()
         )));
@@ -101,7 +129,7 @@ pub fn write_socd_pair<T: Transport>(s: &mut Session<T>, pair: Pairing) -> Resul
     for u in [a, b] {
         let mode = Mode::from_value(ops::read_layout_value(s, u, layout::MODE)?);
         if !mode.is_socd() {
-            return Err(DeviceError::Decode(format!(
+            return Err(DeviceError::SocdInconsistent(format!(
                 "{} reports mode {:#06x} after the pair write, whose advanced nibble is {} and \
                  not {} (SOCD)",
                 label(u),
@@ -112,7 +140,7 @@ pub fn write_socd_pair<T: Transport>(s: &mut Session<T>, pair: Pairing) -> Resul
         }
         let got = query_pairing(s, u)?;
         if got != pair {
-            return Err(DeviceError::Decode(format!(
+            return Err(DeviceError::SocdInconsistent(format!(
                 "{} reports the SOCD pairing {} after writing {}",
                 label(u),
                 got.describe(),
@@ -196,7 +224,7 @@ pub fn remove_socd_pair<T: Transport>(
     for r in plan.records() {
         let got = Mode::from_value(ops::read_layout_value(s, r.key, layout::MODE)?);
         if got.value() != r.value {
-            return Err(DeviceError::Decode(format!(
+            return Err(DeviceError::SocdInconsistent(format!(
                 "{} reports mode {:#06x} after the unpair, wanted {:#06x} (SOCD nibble cleared, \
                  touch mode and high byte preserved)",
                 label(r.key),

@@ -191,8 +191,8 @@ pub fn parse_pairing(payload: &[u8]) -> Result<Pairing, DecodeError> {
 mod tests {
     use super::*;
 
-    /// `captures/socd-toggle-on.jsonl` frame 0: enabling W+S with LAST-INPUT priority. The
-    /// capture files are gitignored, so the bytes are literals here.
+    /// `captures/socd-toggle-on.jsonl` frame 2: enabling W+S with LAST-INPUT priority. Frames 0
+    /// and 1 are a `bd` poll pair. The capture files are gitignored, so the bytes are literals.
     const TOGGLE_ON_WRITE: [u8; PAYLOAD_LEN] =
         [0x01, 0x1a, 0x16, 0x00, 0x16, 0x1a, 0x00, 0x00, 0x00, 0x00];
     /// `captures/socd-add-qe.jsonl` frame 0: adding Q+E with W+S already paired. A write carries

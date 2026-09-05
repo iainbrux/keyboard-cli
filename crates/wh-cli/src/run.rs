@@ -83,6 +83,26 @@ pub(crate) fn key_label(usage: u8) -> String {
     wh_proto::keys::label(usage)
 }
 
+/// A touch mode in the operator's vocabulary rather than Rust's, for the sentences that name one.
+/// The five measured nibbles get the meanings `docs/protocol.md` records; anything else says it is
+/// unmeasured and gives the number, instead of leaking `Unknown(5)` tuple-variant syntax into a
+/// line an operator reads.
+///
+/// `crate::keyset::mode_change` still prints `{:?}` for its own "mode Global to Single" transition
+/// line, deliberately and as its doc comment says; this is the renderer to adopt there if that
+/// choice is ever revisited.
+pub(crate) fn touch_mode_label(t: cmds::TouchMode) -> String {
+    use cmds::TouchMode;
+    match t {
+        TouchMode::Global => "the board's global travel".to_string(),
+        TouchMode::Single => "its own actuation point".to_string(),
+        TouchMode::RtGlobal => "rapid trigger on the board's global sensitivity".to_string(),
+        TouchMode::Rt => "rapid trigger on its own sensitivity".to_string(),
+        TouchMode::RtContinuous => "continuous rapid trigger".to_string(),
+        TouchMode::Unknown(n) => format!("an unmeasured mode ({n})"),
+    }
+}
+
 /// "key" for 1, "keys" for anything else, so a count-carrying sentence never reads "1 keys".
 /// Shared rather than three separate inline copies (`report_verification`, `restore`'s summary
 /// line, and `wh set ap --base`'s own announcement), the same reason `ap_mode_clause` was
@@ -1249,7 +1269,7 @@ fn socd_cmd(what: crate::cli::SocdWhat, store: &Store) -> Result<()> {
         SocdWhat::List => {
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
-            with_session(|s| crate::socd::list(&mut out, s))
+            with_session(|s| crate::socd::list(&mut out, &wh_device::socd::read_socd(s)?))
         }
         SocdWhat::Pair {
             key_a,
@@ -1257,13 +1277,16 @@ fn socd_cmd(what: crate::cli::SocdWhat, store: &Store) -> Result<()> {
             priority,
             dry_run,
         } => {
-            // Resolved before a session opens: two different known keys, and a priority naming
-            // one of them or `last-input`. A typo costs no device roundtrip and no backup.
-            let pair = crate::socd::resolve_pair(&key_a, &key_b, &priority)?;
+            let groups = store.groups()?;
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
-                crate::socd::check_unpaired(&wh_device::socd::read_socd(s)?, pair)?;
+                // Every key argument is resolved against the board's own matrix, which the SOCD
+                // read already had to fetch. A key this board does not have is refused here
+                // rather than written into a pairing `list` could never show again.
+                let board = wh_device::socd::read_socd(s)?;
+                let pair = crate::socd::resolve_pair(&board, &groups, &key_a, &key_b, &priority)?;
+                crate::socd::check_unpaired(&board, pair)?;
                 crate::socd::announce_pair(&mut out, pair)?;
                 if dry_run {
                     return print_frames(&mut out, &[wh_proto::socd::write_pair(pair)]);
@@ -1274,11 +1297,12 @@ fn socd_cmd(what: crate::cli::SocdWhat, store: &Store) -> Result<()> {
             })
         }
         SocdWhat::Unpair { keys, dry_run } => {
+            let groups = store.groups()?;
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
             with_session(|s| {
-                let live = wh_device::socd::read_socd(s)?;
-                let targets = crate::socd::resolve_unpair(&live, &keys)?;
+                let board = wh_device::socd::read_socd(s)?;
+                let targets = crate::socd::resolve_unpair(&board, &groups, &keys)?;
                 // Every plan is built, and every announcement made, before the first write: a
                 // named key that turns out not to be paired must stop the command with nothing
                 // sent, however many pairs came before it in the list.

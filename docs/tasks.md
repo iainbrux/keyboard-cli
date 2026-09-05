@@ -84,9 +84,17 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   last part is `wh`'s own read-modify-write rule applied past the measurement, and it says so.
   A key may sit in one pair only, which the UI's model implies and the operator confirmed;
   whether the board would accept an overlap stays unmeasured, because `pair` refuses rather than
-  finding out by accident. The two open questions above are unchanged by this work: nothing here
-  can see an orphaned pairing, since discovery only queries flagged keys, and priority `3` and `4`
-  are refused by their own decode error rather than silently read as last-input.
+  finding out by accident. Every key argument resolves through the shared `Selector` grammar
+  against the board's own live matrix and must name exactly one key. The board accepting arbitrary
+  keys is about the wire, not about what `wh` should send: pairing a key the board in front of you
+  does not have wrote a pairing `list` could not show and `unpair` could not undo, and pairing one
+  real key with one absent one left the whole command family refusing until the vendor UI cleared
+  it, both measured in review. The arity rule is also what keeps a broad selector out of a write
+  path here, so there is still no whole-board form needing a typed-`yes` guard.
+
+  The two open questions above are unchanged by this work: nothing here can see an orphaned
+  pairing, since discovery only queries flagged keys, and priority `3` and `4` are refused by
+  their own decode error rather than silently read as last-input.
 
 - [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
   architectural blocker for any long-running interface. The board announces entering and leaving

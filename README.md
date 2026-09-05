@@ -274,7 +274,8 @@ write, it sends the new value with the vendor's own dead-zone constants (`200`/`
 wh set mm --value 1.5
 ```
 
-Manage SOCD pairs, two keys whose opposing inputs resolve to one:
+Manage SOCD pairs (simultaneous opposing cursor direction): two keys whose opposing inputs, held
+together, resolve to a single one instead of cancelling or both registering.
 
 ```
 wh socd list
@@ -292,6 +293,15 @@ is also why each pair is listed once although both members are queried.
 `--priority` names one of the two keys, or `last-input` (the default), matching the configurator's
 own PRIORITY selector. It takes exactly two different keys, and the order they are given in is the
 order that reaches the wire, which changes the priority byte but not the setting.
+
+**Every key argument goes through the same selector grammar as `--keys`, resolved against the
+board's live matrix, and must name exactly one key.** So a key name, a stored or builtin group that
+holds exactly one key, or the hex form `wh socd list` itself prints (`0xA0`) all work, typos get the
+usual "did you mean" hint, and a key this board does not have is refused rather than paired: the
+board accepts arbitrary usages on the wire, but a pairing on a key that is not there is one
+`wh socd list` cannot show you and `wh socd unpair` cannot undo. A selector matching several keys is
+refused for arity, which is also why there is no whole-board form here and so no typed-`yes` guard
+to worry about.
 
 **A key may sit in one pair only.** `wh socd pair` refuses if either key is already paired, names
 the pair that holds it, and points at `wh socd unpair`. That is the vendor UI's model; whether the
@@ -461,9 +471,10 @@ an override:
 
 In all three cases, take a fresh snapshot on the board you are restoring to.
 
-If you need to undo a change to remapping, SOCD, lighting, or anything else in the list above, use
-the board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
-configurator; `wh` does not implement either.
+If you need to undo a change to remapping, lighting, or anything else in the list above, use the
+board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
+configurator; `wh` does not implement either. SOCD is the exception: a snapshot cannot bring a pair
+back, but `wh socd unpair` undoes a pairing directly, and `wh socd pair` recreates one.
 
 ## No drift: `wh` caches no device state
 
