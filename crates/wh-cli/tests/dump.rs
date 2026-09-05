@@ -2828,8 +2828,11 @@ fn set_ap_over_the_whole_board_requires_a_typed_yes() {
         decline_err.contains("wh set ap --base 1.50"),
         "got: {decline_err}"
     );
+    // The full sentence, subject included: `wh keyset remove`, `wh keyset create` and
+    // `wh set rt --off` all end their own refusals with "was not confirmed", so the tail alone
+    // cannot tell this command's refusal from any of theirs.
     assert!(
-        decline_err.contains("was not confirmed"),
+        decline_err.contains("ap set over the whole board was not confirmed"),
         "got: {decline_err}"
     );
     // All four keys sit at MODE 0x18 here, none on touch nibble 0, so `moved_modes` is 0 and the
@@ -2987,7 +2990,11 @@ fn set_ap_over_the_whole_board_names_every_keyset_that_will_cease_to_exist() {
     // Without this, a mutation that ignores `confirm`'s result and writes anyway still exits
     // non-zero here, since the unconfirmed write then runs into the exhausted decline script:
     // a status and prompt text that fire either way cannot tell a refusal from that accident.
-    assert!(stderr.contains("was not confirmed"), "got: {stderr}");
+    // The subject is asserted with it, since three other commands end a refusal the same way.
+    assert!(
+        stderr.contains("ap set over the whole board was not confirmed"),
+        "got: {stderr}"
+    );
 
     std::fs::remove_file(script).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -3029,8 +3036,12 @@ fn set_ap_over_the_whole_board_names_the_mode_count_when_promoting_off_global_tr
     );
     assert!(stderr.contains("wh set ap --base 2.00"), "got: {stderr}");
     // Same reasoning as the test above: a status and prompt text that fire whatever the answer
-    // cannot tell a refusal from the unconfirmed write hitting the exhausted decline script.
-    assert!(stderr.contains("was not confirmed"), "got: {stderr}");
+    // cannot tell a refusal from the unconfirmed write hitting the exhausted decline script, and
+    // the tail alone cannot tell this command's refusal from the three others that share it.
+    assert!(
+        stderr.contains("ap set over the whole board was not confirmed"),
+        "got: {stderr}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
@@ -3223,10 +3234,13 @@ fn set_ap_over_the_whole_board_prompt_goes_to_stderr_not_stdout() {
             && !stdout.contains("this selection moves every key into one new keyset"),
         "the prompt must not also reach stdout: got stdout: {stdout}"
     );
-    // Same reasoning as the other two whole-board decline tests touched this round: a status
-    // that fires whatever the answer cannot tell a refusal from the unconfirmed write hitting
-    // the exhausted decline script.
-    assert!(stderr.contains("was not confirmed"), "got: {stderr}");
+    // Same reasoning as the other whole-board decline tests: a status that fires whatever the
+    // answer cannot tell a refusal from the unconfirmed write hitting the exhausted decline
+    // script, and the shared tail cannot tell this command's refusal from another's.
+    assert!(
+        stderr.contains("ap set over the whole board was not confirmed"),
+        "got: {stderr}"
+    );
 
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);

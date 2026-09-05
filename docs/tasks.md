@@ -625,24 +625,23 @@ rather than as settings it recognises.
   When it is picked up: write the simulation as a test rather than a script, so the number is
   re-derived by the suite instead of pasted into a comment that rots again.
 
-- [ ] **2.28 Four whole-board refusal assertions match a string three commands emit.**
-  `crates/wh-cli/tests/dump.rs:2768`, `:2926`, `:2969` and `:3165` assert `contains("was not
-  confirmed")` on a declined whole-board run. `wh keyset remove`, `wh keyset create` and
-  `wh set ap` all end their refusal with that phrase, so none of these can tell its own command's
-  refusal from another's.
+- [x] ~~**2.28 Four whole-board refusal assertions match a string three commands emit.**~~ Four
+  `contains("was not confirmed")` assertions on a declined whole-board run, where
+  `wh keyset remove`, `wh keyset create` and `wh set rt --off` all end a refusal with that phrase,
+  so none of them could tell its own command's refusal from another's.
 
-  **Measured 2026-09-05, and this is not theoretical.** The same shape at
-  `crates/wh-cli/tests/keyset.rs:4439` let a mutation pass the whole workspace green while
+  **Measured 2026-09-05, and this was not theoretical.** The same shape in
+  `crates/wh-cli/tests/keyset.rs` let a mutation pass the whole workspace green while
   `wh keyset remove ap` told the operator "rapid trigger off over the whole board was not
-  confirmed", naming a command they had not run. That one is now tightened to the full sentence and
-  the underlying hazard is closed by type, but these four still carry the weak assertion.
+  confirmed", naming a command they had not run.
 
-  Found while closing 2.13 and deliberately not fixed there: they guard `confirm_whole_board_ap_set`
-  and `confirm_whole_board_create`, so tightening them would have put `wh set ap` and
-  `wh keyset create` inside a rapid trigger diff. Correct scoping, not an oversight.
-
-  Each needs its own full refusal sentence rather than the shared tail. Prove each by mutating its
-  command's noun to another command's and watching only that test fail.
+  Closed 2026-09-05: all four now assert `ap set over the whole board was not confirmed` in full.
+  Proved by mutating the refusal to `wh keyset create`'s noun and watching exactly those four fail
+  and nothing else. Two corrections to this entry, both measured while closing it. All four guard
+  `confirm_whole_board_ap_set` alone, not `confirm_whole_board_create` as well: every create
+  refusal already asserted its own subject. And a fifth site carried the same weak assertion, the
+  unit test `confirm_whole_board_ap_set_refuses_on_no` in `crates/wh-cli/src/keyset.rs`, now
+  tightened with the other four; it failed under the same mutation.
 
 - [x] ~~**2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.**~~ All
   non-blocking, all in code files. The five-fixed-keys, nibble-0 and template-step-1 counts below
@@ -693,36 +692,53 @@ rather than as settings it recognises.
 
   The remaining 26 findings are in the document, not repeated here.
 
-- [ ] **2.18 Parked findings from task 2.4b's `wh keyset create` reviews.** Five review rounds
+- [x] ~~**2.18 Parked findings from task 2.4b's `wh keyset create` reviews.**~~ Five review rounds
   closed everything that changes behaviour. The bullets below are what survived, all judged not to
   block the rest of the CLI, all measured rather than suspected. Two were added after this entry was
-  written, and any struck through since have been closed.
+  written. All are now closed, the last four on 2026-09-05.
 
   - ~~`verify_write_as`'s (named `verify_create` when this was written) `rt_keyset` fallback to the
     pre-write value was unpinned.~~ Closed: mutating it to compare the readback against itself fails
     `keyset_set_rt_end_to_end_catches_a_membership_drift_on_the_second_member`.
-  - `value_moves`'s rapid trigger arm is pinned as a unit but neither of its two comparisons
-    individually, because the fixture moves both press and release. A fixture moving only one
-    closes it. Consequence if the release half is lost: a create is announced as keeping a value it
-    is about to overwrite.
-  - `describe_member` (renamed from `describe_loss` once it started covering a freshly-enrolled
+  - ~~`value_moves`'s rapid trigger arm is pinned as a unit but neither of its two comparisons
+    individually, because the fixture moves both press and release.~~ Closed:
+    `keyset_create_announces_a_rapid_trigger_steal_when_only_one_half_of_the_pair_moves` moves only
+    `w`'s release and only `a`'s press, in one create, so each comparison is pinned on its own.
+    Mutating the arm to compare press alone, then release alone, fails it each time and leaves the
+    original both-halves fixture green. The press-only run printed "loses w (keeps 0.10/0.50mm)"
+    beside frames writing 0.30mm, which is the consequence this bullet named.
+  - ~~`describe_member` (renamed from `describe_loss` once it started covering a freshly-enrolled
     free key too, which loses nothing) documents a fourth outcome that appears to be
-    unreachable. Reasoning, not measurement: `plan` emits value records only when MODE or a value
-    moved, so if the value did not move then MODE did, and the branch above catches it. Either
-    delete the branch and its doc bullet or find the case that reaches it.
+    unreachable.~~ Closed: the branch and its doc bullet are deleted. Established from `Change`'s
+    own closed set of constructors, whose fields are private: each carries at most one kind's
+    value, so a bundle whose described kind's value did not move can only have come from a moved
+    MODE. `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins what that rests on,
+    for both kinds, and fails the moment a `Change` carries both kinds' values at once, which is
+    exactly what would have to change for the line to be needed again. Measured, not reasoned: the
+    one thing that did reach it was a forged `Target`, and that is now what picks the kind.
   - ~~`mode_change`'s comment justified printing a `TouchMode` through `{:?}` by a precedent in
     `dump` that does not exist.~~ Closed: the comment now says `dump` prints `on`/`off` and a raw
     `mode_raw` instead, that this announcement is the only place in `wh` that names a touch mode to
     the operator, and that an unknown nibble prints rough Rust tuple-variant syntax matching
     `ops::rt_records`, meaning the behaviour, since that function builds records and prints
     nothing. The behaviour itself was already right and is unchanged.
-  - `announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s. Safe inside
-    `create` by construction and pinned there by three fixtures, but it is the last surviving
-    instance of the pattern four rounds were spent removing. Recorded in the plan as a warning to
-    the task that consumes it.
-  - `verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
-    create. Cannot affect what is checked, which was proven by deleting the label and watching every
-    other parameter go dead. A small enum would make it unforgeable.
+  - ~~`announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s.~~ Closed
+    by removing the parameter: `Target::kind()` derives it from the value the announcement is
+    already printing, so what is compared and what is named can no longer disagree.
+    `announce_delete` and `announce_remove` had the identical shape and lost theirs the same way,
+    so "the last surviving instance" was three. The residual forgery, a `Target` whose variant
+    disagrees with the `Change` beside it, is measured as caught: building an rt create's target as
+    `Target::Ap` fails five fixtures, on a header and member lines naming actuation points while
+    the frames carry rapid trigger values. `confirm_whole_board_create` still takes a `kind`
+    alongside its `Target`; it picks a different clause builder from it, and both of its refusals
+    are pinned in full.
+  - ~~`verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
+    create.~~ Closed: `KeysetOp`, four variants, since `set` had joined the three since this was
+    written. The kind is not folded in, unlike `WholeBoardOp::KeysetRemove`'s, because all four run
+    over either kind. `remove`'s label turned out to be the one of the four with no end-to-end
+    cover, so a remove could still have reported itself as a create with the workspace green;
+    `keyset_remove_leaves_the_keyset_alive_when_others_remain` now asserts it, and fails alone
+    under that swap.
   - ~~`verify_restore` was pinned as a whole and not per comparison.~~ Closed: every comparison,
     `ap`, `rt_press`, `rt_release`, `mode`, and both keyset memberships (`0xFF` and `0xFE`), is now
     its own fixture-backed fault, confirmed by disabling each one at a time against the full

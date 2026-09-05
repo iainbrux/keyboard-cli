@@ -213,6 +213,17 @@ pub(crate) enum Target {
 }
 
 impl Target {
+    /// Which kind of keyset this value belongs to. Every announcement reads its kind from here
+    /// rather than taking one alongside: a kind handed in separately can disagree with the value
+    /// being printed, so the same announcement could compare one kind's field while naming the
+    /// other's. `reset_change` already picks its `Change` from a `Target` for the same reason.
+    fn kind(self) -> Kind {
+        match self {
+            Target::Ap(_) => Kind::Ap,
+            Target::Rt(..) => Kind::Rt,
+        }
+    }
+
     fn display(self) -> String {
         match self {
             Target::Ap(v) => format!("{:.2}mm", v.to_mm()),
@@ -336,7 +347,7 @@ pub(crate) fn create<T: Transport>(
             input,
         )?;
     }
-    announce_steal(out, kind, &losing, index.value(), target, &plan)?;
+    announce_steal(out, &losing, index.value(), target, &plan)?;
     Ok(plan)
 }
 
@@ -474,7 +485,7 @@ pub(crate) fn delete<T: Transport>(
     let change = reset_change(target);
     let cleared = keyset::KeysetIndex::clear(kind);
     let plan = keyset::plan(s, &ks.members, &change, Some(cleared))?;
-    announce_delete(out, kind, index, target, &plan)?;
+    announce_delete(out, index, target, &plan)?;
     Ok(plan)
 }
 
@@ -632,7 +643,7 @@ pub(crate) fn remove<T: Transport>(
     } else {
         TargetSource::BoardBase
     };
-    announce_remove(out, kind, &leaving, usages, target, source, &sets, &plan)?;
+    announce_remove(out, &leaving, usages, target, source, &sets, &plan)?;
     Ok(plan)
 }
 
@@ -733,16 +744,7 @@ pub(crate) fn rt_off<T: Transport>(
             input,
         )?;
     }
-    announce_remove(
-        out,
-        Kind::Rt,
-        &leaving,
-        usages,
-        target,
-        source,
-        &sets,
-        &plan,
-    )?;
+    announce_remove(out, &leaving, usages, target, source, &sets, &plan)?;
     Ok(plan)
 }
 
@@ -906,10 +908,8 @@ fn confirm_whole_board_remove(
 /// left outside `leaving` says that keyset ceases to exist, the same fact the whole-board prompt
 /// already names for every keyset at once, now named for a partial removal that empties just one.
 /// Each key's current value comes from `plan.before()`, the same source `announce_delete` uses.
-#[allow(clippy::too_many_arguments)]
 fn announce_remove(
     out: &mut impl Write,
-    kind: Kind,
     leaving: &[(u16, u8)],
     usages: &[u8],
     target: Target,
@@ -917,6 +917,7 @@ fn announce_remove(
     sets: &[Keyset],
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
+    let kind = target.kind();
     // Said wherever `target` is shown, rather than letting a default nobody read, or a number the
     // operator typed, render exactly like a reading of the board's own base.
     let source_suffix = source.suffix();
@@ -980,7 +981,8 @@ fn announce_remove(
             // is emitted only when the mode value or the kind's own owned value differs, and
             // `Change::ap` leaves rt targets equal to `prior` while `Change::rt_off` leaves ap
             // equal, so "bundle emitted and the kind's own value unchanged" always means the mode
-            // did change. Kept defensively, matching `describe_member`'s own fourth case.
+            // did change. Kept because the arm above binds a value and cannot be the final one
+            // without an `expect`, which is worse here than a line that says something true.
             writeln!(
                 out,
                 "{}: {} keeps {prior_value}{source_suffix}, already in no {} keyset",
@@ -1012,11 +1014,11 @@ fn keyset_disappears(sets: &[Keyset], leaving: &[(u16, u8)], index: u16) -> bool
 /// uses when a create takes a member from another keyset, since a delete is the same kind of loss.
 fn announce_delete(
     out: &mut impl Write,
-    kind: Kind,
     index: u16,
     target: Target,
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
+    let kind = target.kind();
     writeln!(
         out,
         "{} keyset {index}: deleting, returning members to {}",
@@ -1209,12 +1211,12 @@ pub(crate) fn confirm_ap_target(plan: &keyset::WritePlan, depth: Um) -> Result<(
 /// `usages` `plan` was built over, so `plan.before()` always has an entry for it.
 pub(crate) fn announce_steal(
     out: &mut impl Write,
-    kind: Kind,
     losing: &[(u16, Vec<u8>)],
     new_index: u16,
     target: Target,
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
+    let kind = target.kind();
     writeln!(
         out,
         "{} keyset {new_index}: creating at {}",
@@ -1247,17 +1249,23 @@ pub(crate) fn announce_steal(
 }
 
 /// One member's line, describing what a create's steal, a create's plain enrollment of a free
-/// key, or a delete's own write does to it. Four cases, since a value record can be present
+/// key, or a delete's own write does to it. Three cases, since a value record can be present
 /// without the value it carries actually moving: `plan` echoes a key's own value back unchanged
 /// whenever anything else about it (its touch mode, say) changes, so "a record exists" is not
 /// "the value changes".
 ///
 /// - The value itself moves: "w at 2.00mm", its prior value, about to be overwritten.
-/// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
 /// - The value stays but the touch mode moves: "w (keeps 2.00mm, mode Global to Single)", naming
 ///   the thing that actually changes rather than implying nothing did.
-/// - Something else was written but neither the value nor the touch mode moved:
-///   "w (keeps 2.00mm)".
+/// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
+///
+/// A fourth line, "w (keeps 2.00mm)" for a bundle that moved neither the value nor the mode, was
+/// carried defensively here until it was established that no board reaches it. `plan` emits a
+/// bundle only when the mode, the actuation point or a sensitivity moves, and every `Change`
+/// carries at most one kind's value, so for the kind being described a bundle with the mode
+/// unchanged always means that kind's own value moved. That is what
+/// `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins; the line would have to
+/// come back if a `Change` ever carried both kinds' values at once.
 fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let prior = plan
         .before()
@@ -1270,8 +1278,6 @@ fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
         format!("{name} at {value}")
     } else if let Some(change) = mode_change(plan, prior, u) {
         format!("{name} (keeps {value}, {change})")
-    } else if plan.value_records().iter().any(|r| r.key == u) {
-        format!("{name} (keeps {value})")
     } else {
         format!("{name} (keeps {value}, index only)")
     }
@@ -1455,10 +1461,43 @@ pub(crate) fn verify_write<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
-    op: &str,
+    op: KeysetOp,
     plan: &keyset::WritePlan,
 ) -> Result<()> {
-    verify_write_as(out, s, &format!("{} keyset {op}", kind_name(kind)), plan)
+    verify_write_as(
+        out,
+        s,
+        &format!("{} keyset {}", kind_name(kind), op.verb()),
+        plan,
+    )
+}
+
+/// Which keyset subcommand a verification report belongs to. The label was a `&str` before, so
+/// any word at all could be reported, and a delete could label itself a create. Nothing here
+/// selects what is checked, so the entire cost of the wrong word was what the operator is told a
+/// write did, which is the half no readback catches. Each of the four labels is now pinned by an
+/// end-to-end test, so a call site passing the wrong variant fails as well.
+///
+/// The kind is not folded in, unlike `WholeBoardOp::KeysetRemove`'s: all four of these run over
+/// either kind, so no variant determines one.
+#[derive(Clone, Copy)]
+pub(crate) enum KeysetOp {
+    Create,
+    Set,
+    Delete,
+    Remove,
+}
+
+impl KeysetOp {
+    /// The verb in "<kind> keyset <verb>: N keys verified".
+    fn verb(self) -> &'static str {
+        match self {
+            KeysetOp::Create => "create",
+            KeysetOp::Set => "set",
+            KeysetOp::Delete => "delete",
+            KeysetOp::Remove => "remove",
+        }
+    }
 }
 
 /// The body of `verify_write`, taking the exact label to report rather than assembling one from
@@ -1704,6 +1743,52 @@ mod tests {
         lines
     }
 
+    /// What `describe_member`'s deleted fourth line rested on, measured rather than reasoned: a
+    /// key whose own value and touch mode both already sit where the change wants them gets no
+    /// value bundle at all, so "index only" is the truth about the wire and not an assumption.
+    /// Both kinds, since each has its own half of the claim: `Change::ap` carries no
+    /// sensitivities and `Change::rt_on` no actuation point, so neither can move the other kind's
+    /// fields and produce a bundle whose own value stayed put. A `Change` carrying both at once
+    /// would fail here first, which is the warning that the deleted line has to come back.
+    #[test]
+    fn plan_writes_no_bundle_when_nothing_the_change_carries_moves() {
+        let usage = 0x1Au8;
+        // MODE 0x10 is touch nibble 1 (`Single`), which `Change::ap` leaves alone, and 0x38 is
+        // nibble 3 (`Rt`), which `Change::rt_on` leaves alone. 0x10 rather than this file's usual
+        // 0x18: it is the value a real board was measured holding on all 68 keys.
+        let mut lines = settings_script(usage, 2000, 0x10, 100, 150, 0, 0);
+        lines.extend(settings_script(usage, 2000, 0x38, 100, 150, 0, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+
+        let ap_plan = keyset::plan(&mut s, &[usage], &keyset::Change::ap(Um(2000)), None).unwrap();
+        assert!(
+            ap_plan.value_records().is_empty(),
+            "got: {:?}",
+            ap_plan.value_records()
+        );
+        assert_eq!(
+            describe_member(Kind::Ap, &ap_plan, usage),
+            "w (keeps 2.00mm, index only)"
+        );
+
+        let rt_plan = keyset::plan(
+            &mut s,
+            &[usage],
+            &keyset::Change::rt_on(Um(100), Um(150)),
+            None,
+        )
+        .unwrap();
+        assert!(
+            rt_plan.value_records().is_empty(),
+            "got: {:?}",
+            rt_plan.value_records()
+        );
+        assert_eq!(
+            describe_member(Kind::Rt, &rt_plan, usage),
+            "w (keeps 0.10/0.15mm, index only)"
+        );
+    }
+
     /// The scenario `wh keyset set` builds in practice: a plan that writes no membership record
     /// at all, over a key whose `ap_keyset` drifts between the pre-write read and the readback.
     /// Nothing in the plan asked for that field to move, so the fallback to `before` is what
@@ -1726,7 +1811,7 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        let err = verify_write(&mut out, &mut s, Kind::Ap, "create", &plan).unwrap_err();
+        let err = verify_write(&mut out, &mut s, Kind::Ap, KeysetOp::Create, &plan).unwrap_err();
         assert!(
             err.to_string().contains("readback mismatch on 1 key(s)"),
             "got: {err}"
@@ -1969,7 +2054,13 @@ mod tests {
             &mut "no\n".as_bytes(),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("was not confirmed"), "got: {err}");
+        // The full sentence, subject included: three other commands end a refusal with "was not
+        // confirmed", so the tail alone cannot tell this one's from theirs.
+        assert!(
+            err.to_string()
+                .contains("ap set over the whole board was not confirmed"),
+            "got: {err}"
+        );
     }
 
     /// `create`'s own sibling: a selection short of the whole matrix must never reach the prompt

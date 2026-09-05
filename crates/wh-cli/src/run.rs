@@ -1,6 +1,7 @@
 //! Command dispatch. Every command in the `wh` tree, read and write alike, runs through here.
 
 use crate::cli::{BackupsWhat, Cli, Cmd, KeysWhat, SetWhat};
+use crate::keyset::KeysetOp;
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -853,9 +854,9 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     with_session(|s| {
                         let usages = resolve_keys(s, &keys, store)?;
                         // `kind` is taken from `change`, the same binding that builds the plan
-                        // below, and threaded from nowhere else: `announce_steal`'s `kind` picks
-                        // what it reads back, so a caller-supplied constant could drift from what
-                        // the plan actually touches.
+                        // below, rather than written out again as `Kind::Ap`: the membership read
+                        // and the plan then cannot end up on different layouts. `announce_steal`
+                        // takes no kind at all now, reading it off the `Target` it prints.
                         let change = wh_device::keyset::Change::ap(depth);
                         let kind = change.kind();
                         let m = wh_device::keyset::read_membership(s, kind)?;
@@ -880,7 +881,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                                 &mut input,
                             )?;
                         }
-                        let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
+                        let what = ap_write_label(&mut out, &membership, &plan, depth)?;
                         if dry_run {
                             return print_frames(&mut out, &plan.frames());
                         }
@@ -902,7 +903,6 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
 /// only correct on its own.
 fn ap_write_label(
     out: &mut impl Write,
-    kind: wh_device::keyset::Kind,
     membership: &crate::keyset::ApMembership,
     plan: &wh_device::keyset::WritePlan,
     depth: Um,
@@ -919,7 +919,6 @@ fn ap_write_label(
         crate::keyset::ApMembership::Split { index, losing } => {
             crate::keyset::announce_steal(
                 out,
-                kind,
                 losing,
                 index.value(),
                 crate::keyset::Target::Ap(depth),
@@ -1031,7 +1030,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset create")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "create", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Create, &plan)
             })
         }
         KeysetWhat::Set {
@@ -1069,7 +1068,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset set")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "set", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Set, &plan)
             })
         }
         KeysetWhat::Delete {
@@ -1105,7 +1104,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset delete")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "delete", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Delete, &plan)
             })
         }
         KeysetWhat::Remove {
@@ -1139,7 +1138,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 }
                 auto_backup(s, store, "keyset remove")?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "remove", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Remove, &plan)
             })
         }
     }
@@ -2022,14 +2021,7 @@ mod tests {
         let membership = crate::keyset::ApMembership::Keep;
 
         let mut out = Vec::new();
-        let err = ap_write_label(
-            &mut out,
-            wh_device::keyset::Kind::Ap,
-            &membership,
-            &plan,
-            Um(1200),
-        )
-        .unwrap_err();
+        let err = ap_write_label(&mut out, &membership, &plan, Um(1200)).unwrap_err();
         assert!(
             err.to_string()
                 .contains("plan resolved w to 2.50mm, not the 1.20mm requested"),

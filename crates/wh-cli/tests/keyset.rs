@@ -451,6 +451,65 @@ fn keyset_create_announces_a_rapid_trigger_steal() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `value_moves`'s rapid trigger arm is two comparisons, press and release, and the steal fixture
+/// above moves both at once, so either one alone could be lost with it still green. Here `w` moves
+/// only its release (0.50mm to 0.30mm) and `a` only its press (0.70mm to 0.10mm), which pins each
+/// comparison separately. What is at stake is the announcement claiming a key keeps a value the
+/// same write is about to overwrite. The comma between the two members is asserted with them, so
+/// the two lines cannot be welded into one and still match.
+#[test]
+fn keyset_create_announces_a_rapid_trigger_steal_when_only_one_half_of_the_pair_moves() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 0), (0x07, 0)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
+    }
+    // MODE 0x38 is touch nibble 3 (`Rt`), which `Change::rt_on` leaves exactly as it is, so no
+    // MODE record goes out and no mode clause can stand in for the value comparison here.
+    lines.extend(key_settings_lines(0x1A, 2000, 0x38, 100, 500, 0, 1)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 2000, 0x38, 700, 300, 0, 1)); // plan's read of a
+
+    let script = write_script("keyset-create-rt-steal-one-half", &lines);
+    let config_home = scratch_config_dir("keyset-create-rt-steal-one-half");
+    let out = run_wh(
+        &[
+            "keyset",
+            "create",
+            "rt",
+            "--keys",
+            "w,a",
+            "--press",
+            "0.10",
+            "--release",
+            "0.30",
+            "--dry-run",
+        ],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("rt keyset 2: creating at 0.10/0.30mm"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("keyset 1 loses w at 0.10/0.50mm,a at 0.70/0.30mm"),
+        "got: {text}"
+    );
+    assert!(
+        !text.contains("keeps"),
+        "both keys really do lose a value here, neither keeps one: {text}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The common case: `wh keyset create ap --keys w,a,s,d` where none of the four is in any
 /// keyset. `losing` is empty, so before the shared `announce_steal` gained a free-key line this
 /// printed only its header and nothing about the four members it was about to overwrite. Each
@@ -3280,6 +3339,14 @@ fn keyset_remove_leaves_the_keyset_alive_when_others_remain() {
     assert!(
         !write_stdout.contains("ceases to exist"),
         "keyset 3 keeps a and s; it must not be announced as destroyed: {write_stdout}"
+    );
+    // The only end-to-end cover of `KeysetOp::Remove`'s own label: create, set and delete each
+    // have one, and without this a remove reporting itself as any of the three passes every gate.
+    assert!(
+        write_stdout
+            .lines()
+            .any(|l| l == "ap keyset remove: 1 key verified"),
+        "got: {write_stdout}"
     );
 
     let mut list_lines = matrix_lines();
