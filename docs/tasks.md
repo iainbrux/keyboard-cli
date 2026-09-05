@@ -46,18 +46,18 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
 
 - [x] ~~**3.2 One capture session: SOCD, RGB/LED, dead zones.**~~ Run 2026-09-05, sixteen files,
   written up in `docs/protocol.md` and `docs/keysets.md`. Everything it was for is answered, and
-  more: the SOCD write model is complete, `cmd 0x18` is the lighting record with brightness and
-  sleep timer decomposed, sub-order `0xc0` is Show Analog Output, layouts `0x16`/`0x17` are the
-  safety-zone margins (closing a Phase 1 mystery), the configurator has no dead-zone control so
-  the `cmd 0x29` 200/200 exposure is retired as not operator-reachable (why 200 stays open,
+  more: the SOCD write model is measured end to end, `cmd 0x18` is the lighting record with
+  brightness and sleep timer decomposed, sub-order `0xc0` is Show Analog Output, layouts
+  `0x16`/`0x17` are the safety-zone margins (closing a Phase 1 mystery), the configurator has no
+  dead-zone control so the `cmd 0x29` 200/200 exposure is retired as not operator-reachable (why
+  200 stays open,
   `docs/backlog.md` has the split), an untouched profile's
   actuation points read 2.00mm on all 68 keys (corroborating `NO_SIGNAL_BASE`), and the SHARE
   tab's export format was cracked and proven in both directions. `socd-reload-read` and
-  `profile-select-3`
-  establish profiles 4 and 3 from their own frames; the other fourteen files are attributed by
-  sitting continuity, not frames.
+  `profile-select-3` establish profiles 4 and 3 from their own frames; the other fourteen files
+  are attributed by sitting continuity, not frames.
 
-- [ ] **3.3 SOCD, now fully unblocked.** The complete wire model, measured 2026-09-05, is in
+- [ ] **3.3 SOCD, now fully unblocked.** The wire model, measured 2026-09-05, is in
   `docs/protocol.md` under "SOCD": pair writes are one `cmd 0x2c` frame carrying both directions
   plus a priority enum (`0` last-input, `1` first key, `2` second key, and the board normalises
   replies per queried key, so reads must normalise before comparing), participation is MODE's
@@ -67,7 +67,8 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   accepted. CLI surface to design against the UI's own vocabulary (pairs with a
   PRIORITY of LAST-INPUT or one of the two keys): something like `wh socd list | pair | unpair`.
   Open questions carried from the captures: whether an orphaned pairing survives a remove on the
-  board, and whether any priority above `2` exists.
+  board, and the two further priority modes the vendored docs name but the corpus never reached
+  (`3` neutral, `4` depth-based).
 
 - [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
   architectural blocker for any long-running interface. The board announces entering and leaving
@@ -300,9 +301,9 @@ rather than as settings it recognises.
   When this was ruled it was a **chosen default**, not a measurement of the board's factory
   setting: nothing had read an untouched profile. That read happened on 2026-09-05. Profile 3,
   whose actuation points the operator states were never changed, read `0x04 = 2000` on all 68 keys,
-  136 records across two sweeps (`safety-zone-on`), so the constant now matches the one value ever
-  read from an AP-untouched profile. Scope stays honest: one board, one firmware, one profile,
-  and the "untouched"
+  136 records across two sweeps (`safety-zone-on`), so the constant now matches the one value
+  ever read from an AP-untouched profile. Scope stays honest: one board, one firmware, one
+  profile, and the "untouched"
   half rests on the operator's word (profile 3 did carry a rapid trigger keyset, so it is
   AP-untouched, not pristine).
 

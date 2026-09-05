@@ -420,8 +420,10 @@ The nibble also retro-explains the corpus' recurring MODE values: `0x18`, `0x28`
 `0x48` are touch nibbles 1 through 4 over advanced nibble `8`, and all of them, all eras, sit only
 on W/A/S/D, the pairs the board carried. In the 2026-09-05 files no host frame writes the nibble,
 so within that sitting the board demonstrably set it itself on a pair write; the older captures do
-carry host MODE writes with the nibble at `8` (76 records, all W/A/S/D), but every one is a
-read-modify-write echoing a value already read, so none is the origin of the flag either.
+carry host MODE writes with the nibble at `8` (76 records, all W/A/S/D). 65 echo a value already
+read in-file and 11 change the touch nibble while carrying the advanced nibble forward unchanged
+(rapid trigger toggles moving `0x18` to `0x28` and similar), so what every one preserves is the
+nibble it read, and none is the origin of the flag.
 
 **Discovery.** The connect sequence queries `0x2c` (`00 <key> ff`) only for keys whose MODE
 advanced nibble reads `8`: before the re-pair it queried W/A/S/D, after it queried Q/W/E/S. The
@@ -447,8 +449,8 @@ flag, the block-carrying writes and the tail is modelled here.
 Tail state bytes, in order, named from the vendor's export schema (`lighting` in
 "wallhack-keyboard-profile", see below): `childMode`, `luminance`, `mode`, `speed`, `sleep`.
 Measured: luminance is a level out of twelve (`0x0c` in every pre-2026-09-05 reply, `0x0b` after
-one UI step from 100% to 92%, and 11/12 = 91.7%); sleep is literal minutes (`0x00` = OFF written
-`0x3c` after the UI change to 60 MINS). `mode` has read two values across the corpus (`0x01` in
+one UI step from 100% to 92%, and 11/12 = 91.7%); sleep is literal minutes: `0x00` = OFF, and the
+UI change to 60 MINS wrote `0x3c` = 60. `mode` has read two values across the corpus (`0x01` in
 every Phase 1 reply, `0x0a` on 2026-09-05, matching the export's `10`) without ever being changed
 through a captured control, and `speed` has read only `0x02`, so those two encodings rest on the
 export-schema correspondence, not on a watched change. The knob-strip colours seen on profile
@@ -497,11 +499,11 @@ Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
 - **Which profile a capture was taken on is usually not in the capture.** Only seven of the 55 files
   record it: four read it (`initial-load`, `remap-matrix-read`, `custom-value-nudge-after-restore`,
   all answered index `0`, and `socd-reload-read`, answered index `3`) and three select it
-  (`profile-switch`, `layout-16-by-profile`, `profile-select-3`). `profile-switch` selects index
-  `1` first, so despite
+  (`profile-switch`, `layout-16-by-profile`, `profile-select-3`). `profile-switch` selects
+  index `1` first, so despite
   being a Phase 1 capture every read in it is profile 2. Per-key state is per profile
   (`docs/keysets.md`), so two captures may not be compared on values without establishing both
-  sides, and for 31 of the 36 that cannot be done from the frames.
+  sides, and for 48 of the 55 that cannot be done from the frames.
 
 Phase 1 implemented read only. `wh profile <1-4>` (Phase 2) added select, over exactly this wire
 behaviour.

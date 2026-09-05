@@ -14,14 +14,17 @@ capture files from the hardware session (local only, gitignored, backed up outsi
 **Measured 2026-09-05** (see `docs/protocol.md`, "The lighting record"). `cmd 0x18` is the lighting
 record: brightness (a level out of twelve), sleep timer (minutes), a mode and a speed byte, all
 named from the vendor's own export schema and two of them changed through the UI and captured on
-the wire. The knob-side strip itself displays per-press depth in red when Show Analog Output is on
-(sub-order `0xc0`, also identified), and shows the active profile as a coloured LED batch on a
-profile switch: red, green, blue and yellow for profiles 1 to 4, with no host traffic accompanying
-either behaviour, so those colours are firmware-driven.
+the wire. By the operator's eye (not frames): the knob-side strip displays per-press depth in red
+when Show Analog Output is on (sub-order `0xc0`, also identified), and shows the active profile
+as a coloured LED batch on a switch, red, green, blue and yellow for profiles 1 to 4. What the
+frames establish is that no host traffic accompanies either behaviour, so those colours are
+firmware-driven.
 
-**Still open: the colour table.** Every `0x18` frame in either direction carries the same constant
-block of colour-looking triples (`ffff00`, `ff00ff`, and so on). Whether writing different values
-into that block changes anything visible is untested; no UI control edits it. If it is writable,
+**Still open: the colour table.** Every `0x18` write and write echo carries the same block of
+colour-looking triples (`ffff00`, `ff00ff`, and so on); every read reply carries all zeros there,
+so the board never returns it and a read-modify-write echoing a read verbatim would zero it.
+Whether writing different values into that block changes anything visible is untested; no UI
+control edits it. If it is writable,
 the strip becomes a host-drivable output surface, which is the reason this stays on the backlog
 rather than closing. The experiment is one write with one triple changed, watched on the board,
 and it should wait for a `wh` implementation of the `0x18` write rather than a hand-built frame.
@@ -438,7 +441,7 @@ anyone would actually query, and needs neither a daemon nor an extension.
 
 These are known unknowns from the hardware session, listed so nobody re-derives them.
 
-### Unidentified commands
+### Commands, formerly unidentified
 
 - ~~`0x18`~~ **Identified 2026-09-05: PRGB, the lighting record.** Brightness in twelfths, sleep
   timer in minutes, mode and speed named from the export schema. See `docs/protocol.md`, "The

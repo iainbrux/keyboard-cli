@@ -162,9 +162,10 @@ frames carrying 462 write records in total.
 are not a constant, and the corpus measures the vendor writing two different values into them, each
 matching what the board read back at the time. As of 2026-09-05 the values themselves are
 identified: these layouts are the per-key safety-zone margins, written `100` per key by the vendor
-UI's SAFETY ZONE toggle switching on and `0` switching off (`safety-zone-on`/`-off`, profile 3), so
-the per-profile difference in the table below was that toggle's state per profile, not drift.
-Grouped by capture group:
+UI's SAFETY ZONE toggle switching on and `0` switching off (`safety-zone-on`/`-off`, profile 3).
+That names what the values are; it does not name what flipped profile 1 from `0` to `100` between
+the 2026-08-28 and 2026-08-29 sittings (the table's first two rows are both profile 1), which is
+still unmeasured. Grouped by capture group:
 
 | Captures | What they read | What the vendor wrote |
 |---|---|---|
@@ -581,12 +582,14 @@ name is corroborated by the interface rather than measured from the wire.
 the reply's second payload byte returns it; arg `0x00` or `0x01` **selects** one. Index `0` is the
 interface's PROFILE 1.
 
-**Which profile each capture was on, from the frames rather than from memory.** Only five files say
-anything at all. Three read the profile and all three were answered index `0`: `initial-load` and
-`remap-matrix-read` on 2026-08-28, and `custom-value-nudge-after-restore` on 2026-08-29. Two contain
-selects. `profile-switch` selects index `1` as its **first** outbound frame, takes all 60 of its read
-requests there, and returns to index `0` at the end, so **that capture is profile 2 throughout**, not
-profile 1. `layout-16-by-profile` selects index `0`, takes 60 read requests, then selects index `1`
+**Which profile each capture was on, from the frames rather than from memory.** Only seven of the
+55 files say anything at all. Four read the profile: `initial-load` and `remap-matrix-read` on
+2026-08-28 and `custom-value-nudge-after-restore` on 2026-08-29, all answered index `0`, and
+`socd-reload-read` on 2026-09-05, answered index `3`. Three contain selects, the two below plus
+`profile-select-3` (2026-09-05, index `2` acknowledged). `profile-switch` selects index `1` as
+its **first** outbound frame, takes all 60 of its read requests there, and returns to index `0`
+at the end, so **that capture is profile 2 throughout**, not profile 1. `layout-16-by-profile`
+selects index `0`, takes 60 read requests, then selects index `1`
 as its last outbound frame and stops. The remaining 31 captures record no profile at all.
 
 **What `layout-16-by-profile` measures, and what it does not.** It measures profile 1 on 2026-09-04
@@ -623,7 +626,7 @@ change over time.
 
 **The standing consequence for this document and any other.** Comparing a 2026-08-29 capture with a
 2026-09-04 keyset capture compares two profiles, not two points in time, and nothing may be inferred
-from such a pair without establishing both sides. Worse, the profile of 31 of the 36 captures is not
+from such a pair without establishing both sides. Worse, the profile of 48 of the 55 captures is not
 in the frames at all, so most such pairs cannot be established from the corpus alone. `README.md`
 records that every hardware result taken on 2026-09-04 was on profile 2, which rests on the
 operator's note rather than on a capture.
@@ -723,8 +726,8 @@ output toggle and the profile export/import, written up in `docs/protocol.md`).
 
 **The corpus spans four profiles and mostly does not say which.** Only seven files record a profile
 at all, and one of them, `profile-switch`, is profile 2 despite being a Phase 1 capture; the
-2026-09-05 sitting added profile 4 (`socd-reload-read`) and profile 3 (`profile-select-3`). Any
-statistic
+2026-09-05 sitting added profile 4 (`socd-reload-read`) and profile 3 (`profile-select-3`).
+Any statistic
 aggregated across the whole corpus mixes profiles, which is fine for framing and checksum counts and
 misleading for values.
 
