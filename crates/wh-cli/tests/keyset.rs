@@ -4435,8 +4435,13 @@ fn keyset_remove_over_the_whole_board_requires_a_typed_yes() {
         decline_err.contains("every key moves to 2.00mm"),
         "got: {decline_err}"
     );
+    // The full sentence, subject included. "was not confirmed" alone is emitted by
+    // `wh keyset create` and `wh set ap`'s own whole-board guards too, so it cannot tell this
+    // command's refusal from theirs, and it did not: a refactor that handed this call site the
+    // wrong subject told an operator running `wh keyset remove ap` that "rapid trigger off" was
+    // not confirmed, and every gate stayed green.
     assert!(
-        decline_err.contains("was not confirmed"),
+        decline_err.contains("ap keyset removal over the whole board was not confirmed"),
         "got: {decline_err}"
     );
 

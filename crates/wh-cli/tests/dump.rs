@@ -1770,9 +1770,18 @@ fn set_rt_off_over_the_whole_board_requires_a_typed_yes() {
         stderr.contains(RT_OFF_WHOLE_BOARD_PROMPT),
         "unexpected stderr: {stderr}"
     );
+    // Both halves, matching every sibling route: the warning and the "type yes to continue: "
+    // line are written separately, so asserting one leaves the other free to move to the wrong
+    // stream or duplicate onto both with the suite green. Measured: a `println!` of the second
+    // half onto stdout was caught by five tests across the other three routes and by none here.
     assert!(
-        !stdout.contains("this selects every key on the board"),
-        "the prompt belongs on stderr and nowhere else: {stdout}"
+        stderr.contains("type yes to continue"),
+        "the prompt's second half must reach stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("this selects every key on the board")
+            && !stdout.contains("type yes to continue"),
+        "neither half of the prompt belongs on stdout: {stdout}"
     );
     assert!(
         stdout.lines().any(|l| {
@@ -1835,6 +1844,17 @@ fn set_rt_off_over_the_whole_board_refuses_anything_but_yes() {
         stderr.contains(RT_OFF_WHOLE_BOARD_PROMPT),
         "unexpected stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("type yes to continue"),
+        "the prompt's second half must reach stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("this selects every key on the board")
+            && !stdout.contains("type yes to continue"),
+        "neither half of the prompt belongs on stdout: {stdout}"
+    );
+    // The full sentence, subject included: "was not confirmed" alone is emitted by three other
+    // whole-board guards, so it cannot tell this command's refusal from theirs.
     assert!(
         stderr.contains("rapid trigger off over the whole board was not confirmed"),
         "unexpected stderr: {stderr}"
@@ -1927,7 +1947,8 @@ fn set_rt_off_refuses_half_an_override_in_either_direction() {
         assert!(
             stderr.contains(
                 "--off resets both sensitivities, so pass --press and --release together or \
-                 neither; with neither, the value comes from the board's own global"
+                 neither; with neither, both come from the keys outside every rapid trigger \
+                 keyset that this selection leaves behind"
             ),
             "unexpected stderr for {args:?}: {stderr}"
         );
@@ -4064,8 +4085,10 @@ fn set_rt_off_dry_run_reads_matrix_and_mode_but_sends_no_write_or_save() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stdout.contains("dry run"), "unexpected stdout: {stdout}");
     assert!(
-        !stderr.contains("this selects every key on the board"),
-        "a dry run writes nothing and must not prompt: {stderr}"
+        !stderr.contains("this selects every key on the board")
+            && !stderr.contains("type yes to continue")
+            && !stdout.contains("type yes to continue"),
+        "a dry run writes nothing and must not prompt on either stream: {stderr}"
     );
 
     // The exact frame set, not just that each expected frame appears somewhere: pins that each

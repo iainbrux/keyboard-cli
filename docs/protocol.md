@@ -180,8 +180,9 @@ full possible range. Within the corpus: layout `0x04` (actuation point) only eve
 below) but `wh` does not read or write the key mapping through them; remapping keys is out of Phase 1
 scope. `0x16`, `0x17`, and `0x19` remain unused by `wh`. `0xff` and `0xfe` are read by every `wh`
 command that needs keyset membership, and written by `wh keyset create`, `wh keyset delete`,
-`wh keyset remove`, `wh restore`, and by `wh set ap` when a selection allocates a keyset, whether
-that is a split of an existing one or a create over keys that were all free. `wh keyset set`
+`wh keyset remove`, `wh restore`, by `wh set ap` when a selection allocates a keyset, whether that
+is a split of an existing one or a create over keys that were all free, and by `wh set rt --off`,
+which clears `0xfe` on every selected key unconditionally, matching the vendor. `wh keyset set`
 changes only a keyset's value, never its membership: it always passes no index to `keyset::plan`,
 so no membership record is ever sent.
 How the vendor writes membership is fully measured in `docs/keysets.md`. Board keyset membership is

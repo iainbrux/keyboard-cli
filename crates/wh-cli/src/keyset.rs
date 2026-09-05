@@ -619,12 +619,11 @@ pub(crate) fn remove<T: Transport>(
     if will_write && usages.len() == m.entries().len() {
         confirm_whole_board_remove(
             prompt_out,
-            kind,
+            WholeBoardOp::KeysetRemove(kind),
             &sets,
             target,
             &plan,
             input,
-            &format!("{} keyset removal", kind_name(kind)),
         )?;
     }
 
@@ -660,6 +659,45 @@ pub(crate) fn remove<T: Transport>(
 /// `prompt_out` is the caller's stderr, `out` its stdout, the same split `remove` documents.
 ///
 /// Reads only; the caller applies the plan.
+/// Which command a whole-board confirmation is guarding. The refusal sentence is built from this
+/// inside `confirm_whole_board_remove` and can never be handed in as words: an earlier shape took
+/// the subject as a `&str`, and swapping one caller's for the other's compiled silently and told a
+/// `wh keyset remove ap` operator that "rapid trigger off" was not confirmed, naming a command they
+/// had not run. Both refusals are now pinned in full by an end-to-end test, so a caller passing the
+/// wrong variant fails as well.
+///
+/// It carries the kind rather than sitting alongside one, so the function takes no separate `kind`
+/// at all: `rt_off` is rapid trigger by construction, and a `kind` argument it could get wrong is a
+/// second source of truth for something already known here.
+#[derive(Clone, Copy)]
+enum WholeBoardOp {
+    /// `wh keyset remove <kind> --keys all`, over the kind it is removing from.
+    KeysetRemove(Kind),
+    /// `wh set rt --keys all --off`.
+    RapidTriggerOff,
+}
+
+impl WholeBoardOp {
+    /// The layout this operation writes membership to, which is what picks the keyset wording and
+    /// the mode clause.
+    fn kind(self) -> Kind {
+        match self {
+            WholeBoardOp::KeysetRemove(kind) => kind,
+            WholeBoardOp::RapidTriggerOff => Kind::Rt,
+        }
+    }
+
+    /// The subject of "... over the whole board was not confirmed". `KeysetRemove` names its kind,
+    /// since `ap` and `rt` removals are different commands to the operator who ran one;
+    /// `RapidTriggerOff` does not, since "rt rapid trigger off" says the same thing twice.
+    fn refusal_subject(self) -> String {
+        match self {
+            WholeBoardOp::KeysetRemove(kind) => format!("{} keyset removal", kind_name(kind)),
+            WholeBoardOp::RapidTriggerOff => "rapid trigger off".to_string(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn rt_off<T: Transport>(
     out: &mut impl Write,
@@ -688,12 +726,11 @@ pub(crate) fn rt_off<T: Transport>(
     if will_write && usages.len() == m.entries().len() {
         confirm_whole_board_remove(
             prompt_out,
-            Kind::Rt,
+            WholeBoardOp::RapidTriggerOff,
             &sets,
             target,
             &plan,
             input,
-            "rapid trigger off",
         )?;
     }
     announce_remove(
@@ -757,12 +794,17 @@ fn rt_off_base<T: Transport>(
     }
 }
 
-/// The typed confirmation guarding a remove that covers every key in the board's matrix: every
+/// The typed confirmation guarding a reset that covers every key in the board's matrix: every
 /// keyset of this kind ceases to exist once nothing is left to be a member of anything, and every
 /// key moves to `target` regardless of what it held before, including a whole-board selection with
 /// no live keysets at all, where `target` is the only thing about to change and so the only thing
 /// worth naming, unless a touch mode also moves and says so too. `--dry-run` never reaches here,
 /// since it writes nothing to confirm.
+///
+/// Two commands reach it, `wh keyset remove` and `wh set rt --off`, which `op` distinguishes; the
+/// name still says "remove" because that is the one it was written for and renaming it would touch
+/// a dozen references for no behaviour. Everything below about streams and terminals holds for
+/// both.
 ///
 /// Called after `plan` is built, not before: the value and keyset clauses can both read as a
 /// no-op, every key already at the target and no keyset to lose, on a board where every key's
@@ -786,16 +828,15 @@ fn rt_off_base<T: Transport>(
 /// sanctioned path, not just guard against the hang. Sending the prompt to stderr instead needs no
 /// terminal check at all: stdin, still open, answers it the same way regardless of what carries
 /// the prompt itself.
-#[allow(clippy::too_many_arguments)]
 fn confirm_whole_board_remove(
     out: &mut impl Write,
-    kind: Kind,
+    op: WholeBoardOp,
     sets: &[Keyset],
     target: Target,
     plan: &keyset::WritePlan,
     input: &mut impl BufRead,
-    refusal: &str,
 ) -> Result<()> {
+    let kind = op.kind();
     let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
     let keysets = if indices.is_empty() {
         format!("no {} keysets exist to lose", kind_name(kind))
@@ -831,7 +872,10 @@ fn confirm_whole_board_remove(
         target.display()
     );
     if !crate::confirm::confirm(out, &prompt, input)? {
-        bail!("{refusal} over the whole board was not confirmed");
+        bail!(
+            "{} over the whole board was not confirmed",
+            op.refusal_subject()
+        );
     }
     Ok(())
 }
@@ -1569,12 +1613,11 @@ mod tests {
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
-            Kind::Ap,
+            WholeBoardOp::KeysetRemove(Kind::Ap),
             &sets,
             Target::Ap(Um(2000)),
             &plan,
             &mut "yes\n".as_bytes(),
-            "ap keyset removal",
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -1599,12 +1642,11 @@ mod tests {
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
-            Kind::Ap,
+            WholeBoardOp::KeysetRemove(Kind::Ap),
             &[],
             Target::Ap(Um(1800)),
             &plan,
             &mut "yes\n".as_bytes(),
-            "ap keyset removal",
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();

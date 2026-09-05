@@ -664,7 +664,8 @@ fn verify_rt<T: Transport>(
 /// `Option<(Um, Um)>` could.
 enum RtAction {
     /// `--off`, carrying the `--press`/`--release` the keys are reset to. `None` means read the
-    /// board's global instead, which `crate::keyset::rt_off` does and refuses over.
+    /// board's base instead, from the keys outside every rapid trigger keyset that the selection
+    /// leaves behind, which `crate::keyset::rt_off` does and refuses over.
     Off {
         rt: Option<(Um, Um)>,
     },
@@ -688,14 +689,15 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             // value is refused before `resolve_keys` sends any DEFKEY roundtrips.
             let action = if off {
                 // Both or neither, never one: `--off` resets both sensitivities together, and a
-                // half-given override would have to read the other half from the very global
-                // whose disagreement is the reason these flags were reached for.
+                // half-given override would have to read the other half from the very base
+                // reading whose disagreement is the reason these flags were reached for.
                 let rt = match (press, release) {
                     (None, None) => None,
                     (Some(p), Some(r)) => Some((mm(p)?, mm(r)?)),
                     _ => bail!(
                         "--off resets both sensitivities, so pass --press and --release together \
-                         or neither; with neither, the value comes from the board's own global"
+                         or neither; with neither, both come from the keys outside every rapid \
+                         trigger keyset that this selection leaves behind"
                     ),
                 };
                 RtAction::Off { rt }

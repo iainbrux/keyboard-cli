@@ -496,8 +496,8 @@ rather than as settings it recognises.
   little. `--press`/`--release` lost `conflicts_with = "off"`, per this entry's own ruling: a
   refusal naming a flag the operator cannot pass is the defect, not the fix. They must be passed
   together or not at all, since `--off` resets both sensitivities and a half-given override would
-  have to read the other half from the very global whose disagreement was the reason to reach for
-  them.
+  have to read the other half from the very base reading whose disagreement was the reason to reach
+  for them.
 
   **Two corrections from fix round 1, both measured, both changing what this entry prescribed.**
   This entry said the sensitivities come from `keyset::global_rt`. They come from
