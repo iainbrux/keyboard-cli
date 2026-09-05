@@ -15,7 +15,7 @@ Complete. See the Done section.
 Ordered by the operator on 2026-09-05. The north star is a TUI replicating terminal.wallhack.com
 one to one, mouse-clickable and arrow-navigable. The ordering principle: extend the data model and
 finish the transport before the TUI is written, so it is written once against its final foundation.
-Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land before 3.5.
+Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must land before 3.5.
 
 - [x] ~~**3.1 `wh set --mm`, the configurator's "MM" CUSTOM VALUE.**~~ The stepper step size, not an
   actuation point. Already measured: three vendor writes in the corpus (`custom-value-change` at
@@ -44,18 +44,31 @@ Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land bef
   own choice, made to avoid an avoidable 200/200 dead-zone write while `docs/backlog.md`'s question
   stays open.
 
-- [ ] **3.2 One capture session: SOCD, RGB/LED, dead zones.** All three need the operator at the
-  vendor UI with a capture running, so they are one sitting. Toggle SOCD pairs on and off and
-  remap which keys pair; change LED or RGB settings if the UI exposes them (suspected `cmd 0x18`,
-  payload shapes `7f7f` and `ff00ff00`, six request/reply pairs in the corpus, never identified);
-  and move the dead-zone controls if the configurator exposes any, which would settle the
-  `docs/backlog.md` question of whether the `cmd 0x29` 200/200 is a constant or a user setting at
-  its default, a question the read path cannot answer because the board reports 0 on every read.
+- [x] ~~**3.2 One capture session: SOCD, RGB/LED, dead zones.**~~ Run 2026-09-05, sixteen files,
+  written up in `docs/protocol.md` and `docs/keysets.md`. Everything it was for is answered, and
+  more: the SOCD write model is measured end to end, `cmd 0x18` is the lighting record with
+  brightness and sleep timer decomposed, sub-order `0xc0` is Show Analog Output, layouts
+  `0x16`/`0x17` are the safety-zone margins (closing a Phase 1 mystery), the configurator has no
+  dead-zone control so the `cmd 0x29` 200/200 exposure is retired as not operator-reachable (why
+  200 stays open,
+  `docs/backlog.md` has the split), an untouched profile's
+  actuation points read 2.00mm on all 68 keys (corroborating `NO_SIGNAL_BASE`), and the SHARE
+  tab's export format was cracked and proven in both directions. `socd-reload-read` and
+  `profile-select-3` establish profiles 4 and 3 from their own frames; the other fourteen files
+  are attributed by sitting continuity, not frames.
 
-- [ ] **3.3 SOCD.** `cmd 0x2c` is almost certainly it: queries by key, replies with symmetric
-  pairs, measured as W with S and A with D. Behaviour measured, name inferred, writes never
-  observed. Blocked on 3.2's captures for the write shape. CLI surface to be designed once the
-  writes are measured.
+- [ ] **3.3 SOCD, now fully unblocked.** The wire model, measured 2026-09-05, is in
+  `docs/protocol.md` under "SOCD": pair writes are one `cmd 0x2c` frame carrying both directions
+  plus a priority enum (`0` last-input, `1` first key, `2` second key, and the board normalises
+  replies per queried key, so reads must normalise before comparing), participation is MODE's
+  advanced nibble equal to `8`, an enum value per the vendored docs and never a bit test, set by
+  the board itself on a pair write, removal writes MODE with the nibble cleared and sends no
+  `0x2c`, discovery is a MODE sweep then a `0x2c` query per flagged key, and arbitrary keys are
+  accepted. CLI surface to design against the UI's own vocabulary (pairs with a
+  PRIORITY of LAST-INPUT or one of the two keys): something like `wh socd list | pair | unpair`.
+  Open questions carried from the captures: whether an orphaned pairing survives a remove on the
+  board, and the two further priority modes the vendored docs name but the corpus never reached
+  (`3` neutral, `4` depth-based).
 
 - [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
   architectural blocker for any long-running interface. The board announces entering and leaving
@@ -76,8 +89,23 @@ Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land bef
   (`remap-one-key`, `initial-load`, and the FN-layer table in `docs/protocol-inventory.md`). `wh`
   already reads them for key identity. Independent CLI work; can land before or after 3.7.
 
-- [ ] **3.7 RGB/LED, from 3.2's captures.** Investigation then build. Nothing is known today
-  beyond the suspected `cmd 0x18`.
+- [ ] **3.7 Lighting, no longer an investigation.** `cmd 0x18` is decomposed (brightness in
+  twelfths, sleep in minutes, mode and speed named from the export schema), so the build is
+  `wh led brightness|sleep` against a measured record. The one remaining investigation is whether
+  the constant colour-table block is writable, which stays in `docs/backlog.md` and should be
+  probed through the eventual `wh` write path rather than a hand-built frame. Key backlights are
+  measured white-only with no UI control: a documented refusal under the beta definition.
+
+- [ ] **3.8 Profile export and import, the `WHKB1.` envelope.** Measured 2026-09-05, written up in
+  `docs/protocol.md` under "The profile export envelope". The format is cracked (prefix plus
+  base64url of raw-deflate JSON, schema `wallhack-keyboard-profile` v1, encoder read from the
+  vendor bundle), a `wh`-authored envelope was accepted by the vendor UI, and the UI's import is
+  diff-and-write: it wrote exactly the one key that differed, through the standard template. So
+  `wh profile export` and `wh profile import` are both buildable, and import should mimic the
+  vendor's diff-and-write. The envelope carries fields `wh` does not yet model (gamepad, DKS), so
+  a first import implementation must decide loudly what it applies and what it refuses, never
+  silently dropping a field. This is the most literal 1:1 interoperability feature the project can
+  build: snapshots exchangeable with the vendor UI in both directions.
 
 ### Phase 3 exit criteria: what "beta" means
 
@@ -86,7 +114,7 @@ Agreed with the operator on 2026-09-05. Beta is not literal 1:1 with terminal.wa
 unknown.**
 
 - The TUI and CLI cover everything measured: the performance core, keysets, profiles, MM, SOCD,
-  remapping, and RGB if 3.2's captures crack it.
+  remapping, and lighting brightness and sleep (colour is measured as not supported).
 - Whatever remains (dynamic keystroke, mod tap, gamepad mode, polling rate) is a documented "not
   supported" with a measured reason, in the README, the way the snapshot docs already state what a
   snapshot does not capture. A stated limit is fine; an unstated one is a defect.
@@ -270,8 +298,14 @@ rather than as settings it recognises.
   dominant value: across every layout `0x04` read in the corpus it accounts for 3453 of them,
   against sixteen other distinct values and no reading of `2500` ever.
 
-  This is a **chosen default**, not a measurement of the board's factory setting. Nothing has read an untouched profile. Profiles 3 and 4 are believed never used and one
-  read of either would replace this constant with a measured number.
+  When this was ruled it was a **chosen default**, not a measurement of the board's factory
+  setting: nothing had read an untouched profile. That read happened on 2026-09-05. Profile 3,
+  whose actuation points the operator states were never changed, read `0x04 = 2000` on all 68 keys,
+  136 records across two sweeps (`safety-zone-on`), so the constant now matches the one value
+  ever read from an AP-untouched profile. Scope stays honest: one board, one firmware, one
+  profile, and the "untouched"
+  half rests on the operator's word (profile 3 did carry a rapid trigger keyset, so it is
+  AP-untouched, not pristine).
 
   **`rt` has no such default and refuses in the same case, ruled during review rather than at this
   entry's first writing.** No `0x14`/`0x15` reading has ever been `2000`, and the corpus shows the
@@ -708,7 +742,8 @@ rather than as settings it recognises.
 
 - [ ] **2.29 Two stale corpus counts in `ops::ap_records`'s doc.**
   `crates/wh-device/src/ops.rs:264-267` says "across all 27 keyset-era captures" and "469 measured
-  echoes". The corpus is 39 files. Left deliberately when the rest of 2.16 was corrected on
+  echoes". The corpus has grown twice since (39 files when this was opened, 55 as of 2026-09-05).
+  Left deliberately when the rest of 2.16 was corrected on
   2026-09-05: re-deriving them means simulating `ap_records`'s own per-key output against every
   capture to decide which MODE writes it would and would not have sent, which is a materially
   riskier measurement than counting records, and a wrong number here would be worse than a stale
@@ -943,13 +978,13 @@ rather than as settings it recognises.
   its own. Start with `wh spy` over the vendor collection we already have access to, then Raw Input
   for key presses. **This unblocks the knob item below, and it settles whether key `0x01` is FN by
   observation, which we had parked as unmeasurable because confirming it means remapping FN away.**
-- [ ] **Setting the colour of the LEDs beside the knob.** They do change colour, so they are RGB and
-  usable as an output surface, not just a thing to decode. Command `0x18` is the candidate, on byte
-  patterns alone. Capture a pure red, green and blue in sequence to fix the byte order.
-- [ ] **Are the key backlights colour-programmable, or white only?** The LIGHT key (`0xFC`) is
-  confirmed, so lighting is a first-class board function. Whether it is RGB, per-key addressable, or
-  a single-colour backlight is open. Mostly answerable by looking at the board and the vendor UI
-  before any capture.
+- [ ] **Setting the colour of the LEDs beside the knob.** Narrowed 2026-09-05: `cmd 0x18` is the
+  lighting record and the strip's observed colours are firmware-driven; the one remaining probe is
+  whether the colour-table block in `0x18` writes is writable to other values. See
+  `docs/backlog.md` and `docs/protocol.md`.
+- [x] ~~**Are the key backlights colour-programmable, or white only?**~~ Answered 2026-09-05 by
+  looking, per this entry's own suggestion: white only, no UI control anywhere, one firmware pulse
+  behaviour on FN. Brightness and sleep timer are host-controllable through `cmd 0x18`.
 - [ ] **How the knob is programmed.** Volume travels over the standard HID consumer-control
   collection, not the vendor collection we capture, so our existing method cannot see it at all.
   Blocked on the spy.
@@ -962,18 +997,22 @@ rather than as settings it recognises.
 
 ### Protocol gaps
 
-- [ ] **Command `0x18`.** Suspected RGB or LED control, 10 request and reply pairs across five
-  files. `0x2c` was resolved on 2026-08-29: it is SOCD, measured, see `docs/keysets.md`.
-- [ ] **Nine `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none needed
-  by anything in Phase 1.
+- [x] ~~**Command `0x18`.**~~ Identified 2026-09-05: PRGB, the lighting record, see
+  `docs/protocol.md`. `0x2c` was resolved on 2026-08-29 as SOCD's read side and confirmed by
+  writes on 2026-09-05.
+- [ ] **Eight `cmd 0x00` sub-orders.** All request and reply balanced, none ever failing, none
+  needed by anything shipped. `0xc0` left the list on 2026-09-05, identified as Show Analog
+  Output.
 - [ ] **Layouts `0x16`, `0x17` and `0x19`.** `0x16` and `0x17` were recorded as never once
   observed non-zero across 1806 records. That held for Phase 1 only: they read `100` on every key of
   profile 1 from 2026-08-29 onward, measured in `layout-16-by-profile`, and `0` on every key of
   profile 2, measured in `profile-switch`, which establishes its own profile from its frames. An
   earlier revision cited `layout-16-by-profile` for both halves; it contains no profile 2 read. They are not the global rapid trigger sensitivity, measured 2026-08-29:
   they stayed at `100` through two global changes that moved `0x14`/`0x15` to `150` and then `200`.
-  What moved them on profile 1 is unmeasured, and `wh` never writes them so it is not ours. `0x19`
-  is still only ever `0x0000` or `0x3e2c`.
+  Identified 2026-09-05 as
+  the per-key safety-zone margins (`docs/protocol.md`); what flipped them on profile 1 between the
+  2026-08-28 and 2026-08-29 sittings is still unmeasured. `0x19`
+  is still only ever `0x0000` or `0x3e2c` and stays open.
 - [ ] **Where the global rapid trigger sensitivity is stored.** No global command carries it. It
   appears only in `0x14`/`0x15` of keys outside a rapid trigger keyset, which would also be how the
   configurator reads it back. Plausible and testable, not measured. Needed to name the reset target

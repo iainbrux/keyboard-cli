@@ -59,7 +59,7 @@ long-running interface.
 `70 0xFF` reads the active profile; `70 <index>` selects one. A snapshot belongs to the profile it
 was taken on, which is why `wh restore` refuses a mismatch outright.
 
-**Only five of the 39 captures record which profile they were on**, so a value comparison between
+**Only seven of the 55 captures record which profile they were on**, so a value comparison between
 two captures is invalid unless both sides are established, and for most pairs that cannot be done
 from the frames at all. `layout-16-by-profile` measures only profile 1: it selects index `1` as its
 last outbound frame and stops, so it contains no profile 2 read. That the two profiles held

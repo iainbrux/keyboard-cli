@@ -82,11 +82,11 @@ two board-side captures; see "The board announces its own adjust mode" below.
 |---|---|---|---|
 | `0x00` | 42 | 42 | CMD, orders. Sub-order lives in `payload[0]`; see "cmd 0x00 sub-orders" below |
 | `0x01` | 4 | 4 | SYNC, device identity; see "Device identity" below |
-| `0x18` | 6 | 6 | **Unidentified.** Suspected LED or RGB control: the payload has a `7f7f` and `ff00ff00` shape that reads like colour or level data, but this is a guess from byte patterns, not a measurement |
+| `0x18` | 6 | 6 | **PRGB, the lighting record** (`KB2_CMD_PRGB` upstream). Identified 2026-09-05 by writes from the vendor UI's LED controls; see "The lighting record" below. The `7f7f`/`ff00ff00` shapes are a colour-table block, present in writes and write echoes, all zeros in read replies |
 | `0x23` | 540 | 540 | KEY, per-key layout records; see "Key records" below |
 | `0x29` | 6 | 6 | DB, the global record; see "The global record" below |
 | `0x2b` | 6 | 6 | DEFKEY, the physical key matrix; see "The DEFKEY matrix" below |
-| `0x2c` | 8 | 8 | **Unidentified.** Almost certainly SOCD: it queries by key and replies with symmetric pairs, measured as W paired with S and A paired with D, matching the linked-key pairs visible in the vendor web UI. The behaviour is measured; the name (SOCD) is inference |
+| `0x2c` | 8 | 8 | **SOCD.** Confirmed 2026-09-05 by writes from the vendor UI's SOCD editor; see "SOCD" below. The Phase 1 reads (queries by key, symmetric pairs, W with S and A with D) were this command's read side |
 
 ## `cmd 0x00` sub-orders
 
@@ -101,7 +101,7 @@ adjust mode" below.
 
 | sub-order | pairs | Meaning |
 |---|---|---|
-| `0x22` | 5 | **Unidentified.** Reply payload always `002200` |
+| `0x22` | 5 | **Unidentified.** Reply payload always `002200`, including three reads in each direction of the 2026-09-05 SAFETY ZONE toggles, so it does not carry that state |
 | `0x50` | 3 | **Unidentified.** Reply payload always `005000` |
 | `0x70` | 4 | **Profile read and select.** Argument `0xFF` reads the active profile; a zero-based index selects one. See "Profiles" below |
 | `0xa1` | 6 | **Unidentified.** Reply payload always `00a100` |
@@ -110,7 +110,7 @@ adjust mode" below.
 | `0xbb` | 3 | **Unidentified.** Reply payload always `00bb0000` |
 | `0xbc` | 3 | **Unidentified.** Reply payload always `00bc6400` |
 | `0xbd` | 9 | **Unidentified.** Reply payload always `00bd01ff`. Recurs as a poll rather than sitting only in the connect sequence, so it is not purely a handshake step |
-| `0xc0` | 3 | **Unidentified.** Reply payload always `00c001` |
+| `0xc0` | 3 | **Show Analog Output.** Identified 2026-09-05: `c0 ff` reads the state (`00 c0 <0|1>`), `c0 <0|1>` writes it, measured from the vendor UI's toggle both directions (`analog-output-on`/`-off`). Every Phase 1 connect read `1`. What the setting does (the knob-side strip showing per-press depth) is the operator's eye observation, not frames |
 
 Order `0x02` (`ORDER_TYPE_SAVING_PARAMETER` upstream, SAVE) deserves its own sentence: the upstream
 Sparklink source names it as the save order, but across five complete write sequences (write
@@ -166,8 +166,8 @@ would have added every padding slot in the session to that one row.
 | `0x08` | 2252 | 5 | Mode (touch mode nibble plus advanced-key nibble). Modelled and used by `wh` |
 | `0x14` | 1806 | 3 | RT press depth, micrometres. Modelled and used by `wh` |
 | `0x15` | 1806 | 4 | RT release depth, micrometres. Modelled and used by `wh` |
-| `0x16` | 1806 | 1 | Recorded as always `0` from a corpus with no keysets in it. Read `0` on profile 1 throughout 2026-08-28, `100` on profile 1 from 2026-08-29 onward, and `0` in every 2026-09-04 keyset capture, and stayed at `100` through two global sensitivity changes, so it is not the global sensitivity. Purpose unknown |
-| `0x17` | 1806 | 1 | Same as `0x16`, and always written with it. Purpose unknown |
+| `0x16` | 1806 | 1 | **Safety-zone press margin.** Identified 2026-09-05: the vendor UI's SAFETY ZONE toggle writes `100` to every key when switched on and `0` when switched off (`safety-zone-on`/`-off`, 68 keys each way), corroborated by the bundle mapping `zoneSafeTop`/`Bottom` to these layouts. It names what the values are; what flipped profile 1 from `0` to `100` between 2026-08-28 and 2026-08-29 is still unmeasured, and profile 2 read `0` throughout |
+| `0x17` | 1806 | 1 | **Safety-zone release margin.** Same identification as `0x16`, always written with it, same values both directions of the toggle |
 | `0x19` | 680 | 2 | **Unidentified.** Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 412 | 2 | Rapid trigger keyset membership, an index and not a boolean: this sample writes only `1` and `0`, and the wider 36-capture corpus measures it reaching `2` (`docs/keysets.md`). Written host-side, one record per frame. Read and used by `wh` (Phase 2) |
 | `0xff` | 408 | 3 | Actuation point keyset index, host-written, measured to `9`. Recorded here as read-but-never-written from a corpus that had never created a keyset. Read and used by `wh` (Phase 2) |
@@ -378,6 +378,107 @@ auto-commits on a timeout has not been tested.
 was true of every capture taken before these two, and it was a statement about the sample rather
 than about the device.
 
+## SOCD
+
+Measured 2026-09-05, from the vendor UI's SOCD editor over `WH_TERMINAL V1.0.0`
+(`socd-toggle-on`, `socd-toggle-off`, `socd-mode-change`, `socd-mode-change-s`, `socd-add-qe`,
+`socd-reload-read`; `socd-toggle-off-with-nav` is byte-identical to `socd-toggle-off` over its
+whole length save two trailing `bd` poll frames, so the UI navigation it also spanned produced no
+traffic). `socd-reload-read` establishes profile 4 from its own `70 ff` read; the other files carry
+no profile frame and are attributed to the same sitting by continuity, not frames. `cmd 0x2c`
+carries pairings; the MODE layout carries participation.
+
+**A pair write** is one `cmd 0x2c` frame. Read as three-byte records it is
+`01 <a> <b> 00 <b> <a> 00 00 <prio> 00`; the vendored spec (`research/kbdocs/keyboard/model.md`,
+`ISOCDModeV3`) reads the same bytes field-wise as `pos1, pos2, key1, key2, type, mode`, which puts
+a `type` field ("send by position" versus "send by key") at the byte this section cannot otherwise
+name, always `0` in the corpus. Both decompositions fit every captured frame; neither is
+established over the other. Enabling W+S wrote `01 1a1600 161a00 00 00 00`; adding Q+E with W+S
+already paired wrote only the Q/E bytes, so a write carries one pair, not the table. Arbitrary
+keys are accepted: Q/E took effect and read back.
+
+**The priority byte** is an enum, measured against the UI's own selector: `0` LAST-INPUT, `1` the
+first key in the frame wins, `2` the second wins. The upstream docs name further modes this corpus
+never reached: `3` neutral and `4` depth-based (`research/kbdocs/keyboardv2/api/higherKey.md`, the
+bundle's own mode map). **The board normalises replies per queried key**: after writing W+S with
+priority `2` (S wins), querying W returns `1a1600 161a00 ... 02` but querying S returns
+`161a00 1a1600 ... 01`, the records reordered to put the queried key first and the priority
+re-based to match. Same setting, two spellings. Anything reading pairings must normalise before
+comparing, and must not write back a priority byte read from the other key's row.
+
+**Participation lives in MODE's advanced nibble.** After a pair write the paired keys read MODE
+with the low nibble at `8` (`0x0008` on an otherwise-default key). The vendored docs
+(`research/kbdocs/keyboard/api/performance.md`) define that nibble as an **enum** of advanced-key
+modes, `0` none through `8` SOCD and `9` RS, not a bitfield, and `wh-proto` already models it as
+the advanced-key mode nibble. The corpus alone cannot distinguish "bit 3" from "equals 8", since
+only `0` and `8` were ever read, so the enum reading stands on the vendor docs and anything
+testing "SOCD?" must compare the nibble to `8`, never test a bit: a future advanced mode `9`
+shares the bit. Removing a pair writes MODE with the nibble cleared to `0` for both keys, wrapped
+in whole-board MODE read sweeps, and sends no `0x2c` at all.
+
+The nibble also retro-explains the corpus' recurring MODE values: `0x18`, `0x28`, `0x38` and
+`0x48` are touch nibbles 1 through 4 over advanced nibble `8`, and all of them, all eras, sit only
+on W/A/S/D, the pairs the board carried. In the 2026-09-05 files no host frame writes the nibble,
+so within that sitting the board demonstrably set it itself on a pair write; the older captures do
+carry host MODE writes with the nibble at `8` (76 records, all W/A/S/D). 65 echo a value already
+read in-file and 11 change the touch nibble while carrying the advanced nibble forward unchanged
+(rapid trigger toggles moving `0x18` to `0x28` and similar), so what every one preserves is the
+nibble it read, and none is the origin of the flag.
+
+**Discovery.** The connect sequence queries `0x2c` (`00 <key> ff`) only for keys whose MODE
+advanced nibble reads `8`: before the re-pair it queried W/A/S/D, after it queried Q/W/E/S. The
+pairings and priorities survived the reload (W-S still "S wins", Q-E still LAST-INPUT), modulo the
+per-key normalisation above.
+
+Not measured: whether an orphaned `0x2c` pairing survives on the board after a remove (the remove
+never clears it on the wire; the next connect no longer queries the keys, so the read path cannot
+say), the upstream modes `3` and `4`, and the `type` field ever being nonzero.
+
+## The lighting record
+
+Measured 2026-09-05 (`led-brightness-change`, `led-sleep-timer-change`, plus every connect in the
+corpus; the two `led-*` files carry no profile frame and are attributed to profile 3 by sitting
+continuity). `cmd 0x18` frames share one layout: `payload[0]` is the familiar read/write flag, a
+colour-table block occupies the middle, and lighting state rides in the tail bytes. The block (the
+`ffff00 ff00ff ...` triples) appears in every outbound write and every write echo, and is **all
+zeros in every read reply**, so the board does not return it and a read-modify-write that echoes a
+read back verbatim would zero it where the vendor sends the triples. The head bytes before the
+block also vary between frame kinds (five distinct values across the corpus), so nothing but the
+flag, the block-carrying writes and the tail is modelled here.
+
+Tail state bytes, in order, named from the vendor's export schema (`lighting` in
+"wallhack-keyboard-profile", see below): `childMode`, `luminance`, `mode`, `speed`, `sleep`.
+Measured: luminance is a level out of twelve (`0x0c` in every pre-2026-09-05 reply, `0x0b` after
+one UI step from 100% to 92%, and 11/12 = 91.7%); sleep is literal minutes: `0x00` = OFF, and the
+UI change to 60 MINS wrote `0x3c` = 60. `mode` has read two values across the corpus (`0x01` in
+every Phase 1 reply, `0x0a` on 2026-09-05, matching the export's `10`) without ever being changed
+through a captured control, and `speed` has read only `0x02`, so those two encodings rest on the
+export-schema correspondence, not on a watched change. The knob-strip colours seen on profile
+switches and with Show Analog Output are the operator's eye observations; the captures around them
+(`profile-select-3`, `analog-output-on`/`-off`) carry no `cmd 0x18` traffic, so those behaviours
+are firmware-driven, which half is measured.
+
+## The profile export envelope
+
+The vendor UI's SHARE tab exports a profile as text: the literal prefix `WHKB1.` followed by
+base64url (no padding) of raw-deflate-compressed JSON, schema `wallhack-keyboard-profile` version
+1. The encoder was read from the vendor bundle (`CompressionStream("deflate-raw")`,
+`research/deob2.js`), and a real export taken on 2026-09-05 decodes fully with nothing unconsumed,
+every checkable field agreeing with independently measured board state: `lighting`,
+`showAnalogOutput`, `enableSafetyZone`, `ledSleepTimer`, `pollingRate`, `mmPresetActuationPoint`,
+and per-key `keyApRt` whose `triggerPosition` matched the measured actuation points. The export
+string and the modified one used below are kept beside the captures
+(`captures/profile-export-string.txt`, `captures/profile-import-string.txt`), since the claim is
+only reproducible with them.
+
+Import is measured too: an envelope authored outside the vendor UI, differing from the board in
+exactly one key's actuation point, was accepted by the UI, which then wrote **only that key**,
+through the standard seven-record per-key template (`profile-import`, profile 3 by sitting
+continuity). Import is diff-and-write, not a blanket rewrite. The envelope carries no dead-zone
+field (the safety zone travels as the `enableSafetyZone` boolean, re-expanded at apply time), and
+carries `gamepad*` fields and, per the bundle's import validation, SOCD and DKS structures not yet
+exercised.
+
 ## Profiles
 
 Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
@@ -385,22 +486,24 @@ Sub-order `0x70` of `cmd 0x00` reads or selects the board's active profile:
 - Sending argument `0xFF` reads the current profile. The reply echoes the sub-order and returns a
   zero-based index in `payload[2]`.
 - Sending a zero-based index selects that profile; the reply echoes the same index back, the same
-  shape as a read. The corpus contains four selects across two files, to index `1` then `0` in
-  `captures/profile-switch.jsonl` and index `0` then `1` in `captures/layout-16-by-profile.jsonl`,
-  never one for each of the board's four profiles. That `0x00` to
-  `0x03` is the full valid range is an extrapolation, not a measurement of all four: it rests on
-  `wh-proto`'s own `MAX_WIRE_INDEX = 3` bound and the vendor UI showing four profile slots, not on
-  having selected profiles 2 and 3 on the wire and watched them succeed.
+  shape as a read. The corpus contains five selects across three files: index `1` then `0` in
+  `captures/profile-switch.jsonl`, index `0` then `1` in `captures/layout-16-by-profile.jsonl`,
+  and index `2` acknowledged in `captures/profile-select-3.jsonl` (2026-09-05), so three of the
+  four indices have been selected on the wire and succeeded. Index `3` never has: that `0x00` to
+  `0x03` is the full valid range still rests on `wh-proto`'s own `MAX_WIRE_INDEX = 3` bound and
+  the vendor UI showing four slots for that last step.
 - Select measurably takes roughly 120 times as long as a read (from the selects above, which
   round-trip in 122 to 141ms against 0.5 to 1.1ms for the three profile reads in the corpus); a
   caller doing both in sequence should not assume they cost the same.
 
-- **Which profile a capture was taken on is usually not in the capture.** Only five of the 36 files
-  record it: three read it (`initial-load`, `remap-matrix-read` and `custom-value-nudge-after-restore`,
-  all answered index `0`) and two select it. `profile-switch` selects index `1` first, so despite
+- **Which profile a capture was taken on is usually not in the capture.** Only seven of the 55 files
+  record it: four read it (`initial-load`, `remap-matrix-read`, `custom-value-nudge-after-restore`,
+  all answered index `0`, and `socd-reload-read`, answered index `3`) and three select it
+  (`profile-switch`, `layout-16-by-profile`, `profile-select-3`). `profile-switch` selects
+  index `1` first, so despite
   being a Phase 1 capture every read in it is profile 2. Per-key state is per profile
   (`docs/keysets.md`), so two captures may not be compared on values without establishing both
-  sides, and for 31 of the 36 that cannot be done from the frames.
+  sides, and for 48 of the 55 that cannot be done from the frames.
 
 Phase 1 implemented read only. `wh profile <1-4>` (Phase 2) added select, over exactly this wire
 behaviour.
@@ -427,17 +530,15 @@ Honestly, what this corpus does not resolve:
   at `0.2`mm. What the board does with either value is unmeasured and unobservable through the read
   path, which reports `0` whatever was written. `wh restore` writes the 200 the vendor writes; see
   `docs/keysets.md` and `docs/backlog.md`.
-- Layouts `0x16`, `0x17`, and `0x19`. `0x16`/`0x17` were recorded here as never non-zero. They read
-  `0` in every Phase 1 capture, then `100` on profile 1 from 2026-08-29 onward, including through
-  two global sensitivity changes, and `0` in every 2026-09-04 keyset capture. They have never been
-  read non-zero on profile 2. What moved them on profile 1 is not measured, and `wh` never writes
-  them so it is not ours. Tying it to a keyset existing rather than to the sitting or the firmware
-  remains an inference.
-  `0x19` is still only ever `0x0000` or `0x3e2c`. `0xff` and `0xfe` are no longer open: both are
-  host-written keyset indices, allocated max plus one, measured in `docs/keysets.md`.
-- Commands `0x18` and `0x2c`: unidentified at the command level, discussed above.
-- The nine unidentified `cmd 0x00` sub-orders: `0x22`, `0x50`, `0xa1`, `0xb9`, `0xba`, `0xbb`,
-  `0xbc`, `0xbd`, `0xc0`. Two now have a context beyond the connect sequence: `0x22` is read three
+- Layout `0x19` is still only ever `0x0000` or `0x3e2c` and stays open. `0x16`/`0x17` are
+  identified: the safety-zone margins (see the layout table). What flipped them on profile 1
+  between the 2026-08-28 and 2026-08-29 sittings is still unmeasured; the toggle names the values,
+  not that event. `0xff` and `0xfe` are no longer open either: both are host-written keyset
+  indices, allocated max plus one, measured in `docs/keysets.md`.
+- Commands `0x18` and `0x2c` are identified as of 2026-09-05: lighting and SOCD, see their sections.
+- The unidentified `cmd 0x00` sub-orders, now eight: `0x22`, `0x50`, `0xa1`, `0xb9`, `0xba`,
+  `0xbb`, `0xbc`, `0xbd`. `0xc0` left the list on 2026-09-05, identified as Show Analog Output.
+  Two of the rest have a context beyond the connect sequence: `0x22` is read three
   times at the head of every global rapid trigger capture, always replying `0`, and `0xbd` appears
   in 13 files, including before the write in `remap-one-key`. The write-barrier reading has
   direct counterexamples. `ks-global-rt-sens-150` and `ks-global-rt-sens-200` write exactly the same
