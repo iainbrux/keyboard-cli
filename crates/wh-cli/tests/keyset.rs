@@ -838,6 +838,49 @@ fn keyset_create_ap_end_to_end_backs_up_writes_and_verifies() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The `origin` recorded in the single backup file the store holds, read through the real parser
+/// rather than off the raw text. Insists on exactly one file, so a test can never read a leftover
+/// from an earlier run and call it this run's label.
+fn only_backup_origin(config_home: &std::path::Path) -> String {
+    let dir = config_home.join("wh").join("backups");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(paths.len(), 1, "expected exactly one backup: {paths:?}");
+    let path = paths.pop().unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_file_text(&path, &text).unwrap();
+    snap.origin.expect("an auto-backup must record an origin")
+}
+
+/// The label a real `wh keyset create` run writes into the backup file it takes, read back off
+/// disk. The keyset family shares `auto_backup` with `set`, so one command's label reaching the
+/// file says nothing about another's: an operator picking a backup by origin needs each to name
+/// the command that took it.
+#[test]
+fn keyset_create_ap_end_to_end_records_its_own_command_as_the_backup_origin() {
+    let lines = create_ap_write_script(S_CORRECT_AP);
+    let script = write_script("keyset-create-ap-origin", &lines);
+    let config_home = scratch_config_dir("keyset-create-ap-origin");
+
+    let out = run_wh(
+        &["keyset", "create", "ap", "--keys", "w,s", "--value", "2.00"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(only_backup_origin(&config_home), "auto: keyset create");
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// `s`'s actuation point write silently fails to land (the board still reports its pre-write
 /// value) while everything else about it lands correctly, exactly the shape of the reviewer's
 /// original repro: membership alone can't tell this apart from a real success.

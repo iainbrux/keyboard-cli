@@ -951,6 +951,48 @@ fn set_ap_end_to_end_reports_mismatch_on_readback() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The `origin` recorded in the single backup file the store holds, read through the real parser
+/// rather than off the raw text. Insists on exactly one file, so a test can never read a leftover
+/// from an earlier run and call it this run's label.
+fn only_backup_origin(config_home: &std::path::Path) -> String {
+    let dir = config_home.join("wh").join("backups");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(paths.len(), 1, "expected exactly one backup: {paths:?}");
+    let path = paths.pop().unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let snap = wh_config::snapshot::Snapshot::from_file_text(&path, &text).unwrap();
+    snap.origin.expect("an auto-backup must record an origin")
+}
+
+/// The label a real `wh set ap` run writes into the backup file it takes, read back off disk.
+/// Every other test of the origin builds a snapshot by hand, so none of them can tell whether a
+/// command reaches its own label: an operator choosing between backups by origin restores the
+/// wrong board state if it does not.
+#[test]
+fn set_ap_end_to_end_records_its_own_command_as_the_backup_origin() {
+    let path = write_script("set-ap-origin", &set_ap_script(1200));
+    let config_home = scratch_config_dir("set-ap-origin");
+
+    let out = run_wh(
+        &["set", "ap", "--keys", "w", "--set", "1.2"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(only_backup_origin(&config_home), "auto: set ap");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The end-to-end promotion path: `wh set ap --keys a` against 'a' (0x04), whose MODE reads back
 /// `Global` (0x00, advanced nibble 0). `plan`'s own six-layout read repeats that same value, so
 /// the write batch gains a MODE record (nibble promoted to `Single`, advanced nibble 0 preserved,

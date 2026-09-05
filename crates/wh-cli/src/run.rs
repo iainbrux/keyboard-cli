@@ -548,13 +548,53 @@ fn resolve_rt_override(
     Ok(Some((p, r)))
 }
 
-/// Takes and saves an auto-backup, recording `command` (e.g. `set rt`) as its origin. `restore`
+/// Why a backup was taken, one variant per command family that takes one plus the manual `wh
+/// backup`. The reason was a `&str` before, so a copy-pasted call site could label a `restore`
+/// backup a `keyset delete`, and nothing failed: the label is only ever written and displayed,
+/// never acted on, so no readback can catch it.
+#[derive(Clone, Copy)]
+enum BackupReason {
+    SetAp,
+    SetRt,
+    KeysetCreate,
+    KeysetSet,
+    KeysetDelete,
+    KeysetRemove,
+    Restore,
+    /// `wh backup`, the only one an operator asks for directly, hence no `auto: ` prefix.
+    Manual,
+}
+
+impl BackupReason {
+    /// The `Snapshot::origin` this reason writes, verbatim. These strings are already on disk in
+    /// operators' existing backups and are what `wh backups list` and `--last` print, so they are
+    /// a compatibility surface: changing one would make old and new backups of the same command
+    /// read as different things.
+    fn origin(self) -> &'static str {
+        match self {
+            BackupReason::SetAp => "auto: set ap",
+            BackupReason::SetRt => "auto: set rt",
+            BackupReason::KeysetCreate => "auto: keyset create",
+            BackupReason::KeysetSet => "auto: keyset set",
+            BackupReason::KeysetDelete => "auto: keyset delete",
+            BackupReason::KeysetRemove => "auto: keyset remove",
+            BackupReason::Restore => "auto: restore",
+            BackupReason::Manual => "manual",
+        }
+    }
+}
+
+/// Takes and saves an auto-backup, recording `reason` (e.g. `SetRt`) as its origin. `restore`
 /// reads the board's profile through its own separate `ops::profile` call rather than off this
 /// function's returned snapshot, so a future `--no-backup` flag or a best-effort backup here
 /// cannot silently drop the profile safety check.
-fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store, command: &str) -> Result<()> {
+fn auto_backup<T: Transport>(
+    s: &mut Session<T>,
+    store: &Store,
+    reason: BackupReason,
+) -> Result<()> {
     let mut snap = snapshot_from_device(s)?;
-    snap.origin = Some(format!("auto: {command}"));
+    snap.origin = Some(reason.origin().to_string());
     let path = store.save_backup(&snap.to_json()?)?;
     best_effort_eprintln(&format!("(backed up to {})", path.display()));
     Ok(())
@@ -736,7 +776,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                         if dry_run {
                             return print_frames(&mut out, &plan.frames());
                         }
-                        auto_backup(s, store, "set rt")?;
+                        auto_backup(s, store, BackupReason::SetRt)?;
                         wh_device::keyset::apply(s, &plan)?;
                         crate::keyset::verify_write_as(&mut out, s, "rt off", &plan)
                     }
@@ -745,7 +785,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                             let records = ops::rt_records(s, &usages, press, release)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
-                        auto_backup(s, store, "set rt")?;
+                        auto_backup(s, store, BackupReason::SetRt)?;
                         let records = ops::set_rt(s, &usages, press, release)?;
                         verify_rt(&mut out, s, press, release, &records)
                     }
@@ -829,7 +869,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                         if dry_run {
                             return print_frames(&mut out, &plan.frames());
                         }
-                        auto_backup(s, store, "set ap")?;
+                        auto_backup(s, store, BackupReason::SetAp)?;
                         wh_device::keyset::apply(s, &plan)?;
                         crate::keyset::verify_write_as(
                             &mut out,
@@ -885,7 +925,7 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                         if dry_run {
                             return print_frames(&mut out, &plan.frames());
                         }
-                        auto_backup(s, store, "set ap")?;
+                        auto_backup(s, store, BackupReason::SetAp)?;
                         wh_device::keyset::apply(s, &plan)?;
                         crate::keyset::verify_write_as(&mut out, s, &what, &plan)
                     })
@@ -1028,7 +1068,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset create")?;
+                auto_backup(s, store, BackupReason::KeysetCreate)?;
                 wh_device::keyset::apply(s, &plan)?;
                 crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Create, &plan)
             })
@@ -1066,7 +1106,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset set")?;
+                auto_backup(s, store, BackupReason::KeysetSet)?;
                 wh_device::keyset::apply(s, &plan)?;
                 crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Set, &plan)
             })
@@ -1102,7 +1142,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset delete")?;
+                auto_backup(s, store, BackupReason::KeysetDelete)?;
                 wh_device::keyset::apply(s, &plan)?;
                 crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Delete, &plan)
             })
@@ -1136,7 +1176,7 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset remove")?;
+                auto_backup(s, store, BackupReason::KeysetRemove)?;
                 wh_device::keyset::apply(s, &plan)?;
                 crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Remove, &plan)
             })
@@ -1149,7 +1189,7 @@ fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     let mut out = stdout.lock();
     with_session(|s| {
         let mut snap = snapshot_from_device(s)?;
-        snap.origin = Some("manual".into());
+        snap.origin = Some(BackupReason::Manual.origin().to_string());
         let text = snap.to_json()?;
         match to {
             Some(p) => {
@@ -1517,7 +1557,7 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Resul
         // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.
-        auto_backup(s, store, "restore")?;
+        auto_backup(s, store, BackupReason::Restore)?;
         ops::restore_all(s, &global, &records, &membership)?;
         // Printed only after verification passes, so stdout never claims success on a run
         // where stderr reports a mismatch.
@@ -1582,6 +1622,21 @@ mod tests {
             name: name.to_string(),
             selector: selector.to_string(),
         }
+    }
+
+    /// Every origin string, pinned literally. Operators' existing backup files already hold these
+    /// exact words and `wh backups list` prints them, so a rename here would silently split one
+    /// command's history into two labels; this test is what makes that a deliberate act.
+    #[test]
+    fn every_backup_reason_renders_its_persisted_origin_string() {
+        assert_eq!(BackupReason::SetAp.origin(), "auto: set ap");
+        assert_eq!(BackupReason::SetRt.origin(), "auto: set rt");
+        assert_eq!(BackupReason::KeysetCreate.origin(), "auto: keyset create");
+        assert_eq!(BackupReason::KeysetSet.origin(), "auto: keyset set");
+        assert_eq!(BackupReason::KeysetDelete.origin(), "auto: keyset delete");
+        assert_eq!(BackupReason::KeysetRemove.origin(), "auto: keyset remove");
+        assert_eq!(BackupReason::Restore.origin(), "auto: restore");
+        assert_eq!(BackupReason::Manual.origin(), "manual");
     }
 
     #[test]

@@ -638,24 +638,51 @@ rather than as settings it recognises.
   `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
   disagreeing one. Implemented in 2.4b and 2.13, not here.
 
-- [ ] **2.30 `auto_backup`'s reason is a forgeable string that gets persisted.** Nine call sites in
-  `crates/wh-cli/src/run.rs` pass a literal like `"keyset create"`, which becomes
-  `snap.origin = "auto: keyset create"`, is written into the backup file, and is shown by
-  `wh backups list`. Nothing ties a real run to the label it writes: the only tests touching the
-  origin are `wh-config`'s round trip and one `dump.rs` test over a hand-built snapshot. Measured
-  consequence of a copy-paste: a wrong label persists with the whole workspace green, and an
-  operator later choosing between backups by origin restores the wrong one. `auto_backup` serves
-  five command families, so the cure is a backup-reason enum of its own, not a reuse of
-  `KeysetOp`. Found 2026-09-05 while closing 2.18; same shape as the `verify_write` op that 2.18
-  fixed, one line above which it sits.
+- [x] ~~**2.30 `auto_backup`'s reason is a forgeable string that gets persisted.**~~ Nine call
+  sites in `crates/wh-cli/src/run.rs` passed a literal like `"keyset create"`, which became
+  `snap.origin = "auto: keyset create"`, was written into the backup file, and is shown by
+  `wh backups list`. Nothing tied a real run to the label it wrote: the only tests touching the
+  origin were `wh-config`'s round trip and one `dump.rs` test over a hand-built snapshot.
 
-- [ ] **2.31 `confirm_whole_board_create` still takes a `kind` beside its `Target`.** The last
-  kind-beside-target in `crates/wh-cli/src/keyset.rs` (378-384). Left deliberately when 2.18
-  closed: its kind genuinely selects between `ap_mode_clause` and `rt_on_mode_clause`, and forcing
-  the wrong kind through it fails seven tests, so it is pinned today. But the `Target::kind()`
-  cure that removed the other three applies verbatim, and the reason it was left lives only in a
-  gitignored report, which is exactly how safe-by-construction arguments get lost. Either apply
-  the cure or write the safety argument at the call site.
+  Closed 2026-09-05. `BackupReason` in `run.rs`, eight variants: one per command family that takes
+  an auto-backup, plus `Manual` for `wh backup`. `origin()` renders the exact strings the literals
+  produced, `"auto: set ap"` through `"auto: restore"` and a bare `"manual"`, because those words
+  are already in the operator's backup files on disk and are what `wh backups list` and `--last`
+  print. This is a type change, not a wording change, and
+  `every_backup_reason_renders_its_persisted_origin_string` pins all eight verbatim so a rename
+  has to be deliberate.
+
+  The missing end-to-end tie is now two tests that drive a real command and read the file it
+  wrote: `set_ap_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs` and
+  `keyset_create_ap_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/keyset.rs`,
+  one per command family, since one family's label reaching the file says nothing about another's.
+  The task's claim is measured: swapping the `set ap` and `keyset create` literals before the
+  change failed exactly those two new tests and nothing else in the workspace.
+
+  Six of the eight variants (`set rt`, `keyset set`, `keyset delete`, `keyset remove`, `restore`
+  and the manual backup) still have no end-to-end test tying a run to its label, and `set ap
+  --base`'s own call site is untied as well even though its variant is pinned through the plain
+  `--set` path. A wrong variant at one of those sites would still persist quietly: the enum makes
+  the label visible at the call site, it does not make the wrong one impossible.
+
+- [x] ~~**2.31 `confirm_whole_board_create` still takes a `kind` beside its `Target`.**~~ The last
+  kind-beside-target in `crates/wh-cli/src/keyset.rs`, left deliberately when 2.18 closed: its
+  kind genuinely selects between `ap_mode_clause` and `rt_on_mode_clause`, so it was pinned rather
+  than safe by construction, and the argument for leaving it lived only in a gitignored report.
+
+  Closed 2026-09-05 by applying the `Target::kind()` cure rather than writing the argument down.
+  Selecting a clause needs a kind, not a parameter carrying one, and the `Target` already has one:
+  the parameter is gone and the kind picking the clause builder, the keyset wording and the
+  refusal subject is read off the value being confirmed.
+  `#[allow(clippy::too_many_arguments)]` went with it, seven arguments being at the lint's
+  threshold, and clippy passes without it.
+
+  The seven tests the entry named are measured, and they are seven only as a union of both
+  directions: forcing `Kind::Rt` inside the function fails four (the `ap` whole-board create
+  tests), forcing `Kind::Ap` fails the other three (the `rt` ones), and nothing else in the
+  workspace moves either way. All seven pass untouched after the cure, and the mismatch they
+  guarded against, a wrong `kind` beside a right `Target`, is no longer representable, so there is
+  nothing left at that call site to mutate.
 
 - [ ] **2.29 Two stale corpus counts in `ops::ap_records`'s doc.**
   `crates/wh-device/src/ops.rs:264-267` says "across all 27 keyset-era captures" and "469 measured
@@ -780,9 +807,9 @@ rather than as settings it recognises.
     so "the last surviving instance" was three. The residual forgery, a `Target` whose variant
     disagrees with the `Change` beside it, is measured as caught: building an rt create's target as
     `Target::Ap` fails five fixtures, on a header and member lines naming actuation points while
-    the frames carry rapid trigger values. `confirm_whole_board_create` still takes a `kind`
-    alongside its `Target`; it picks a different clause builder from it, and both of its refusals
-    are pinned in full.
+    the frames carry rapid trigger values. `confirm_whole_board_create` kept a `kind`
+    alongside its `Target` at this close, since it picks a different clause builder from it, and
+    both of its refusals are pinned in full; 2.31 took that one too.
   - ~~`verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
     create.~~ Closed: `KeysetOp`, four variants, since `set` had joined the three since this was
     written. The kind is not folded in, unlike `WholeBoardOp::KeysetRemove`'s, because all four run

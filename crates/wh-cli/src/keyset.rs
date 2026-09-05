@@ -213,10 +213,11 @@ pub(crate) enum Target {
 }
 
 impl Target {
-    /// Which kind of keyset this value belongs to. Every announcement reads its kind from here
-    /// rather than taking one alongside: a kind handed in separately can disagree with the value
-    /// being printed, so the same announcement could compare one kind's field while naming the
-    /// other's. `reset_change` already picks its `Change` from a `Target` for the same reason.
+    /// Which kind of keyset this value belongs to. Every announcement, and the whole-board create
+    /// confirmation, reads its kind from here rather than taking one alongside: a kind handed in
+    /// separately can disagree with the value being printed, so the same line could compare one
+    /// kind's field while naming the other's. `reset_change` already picks its `Change` from a
+    /// `Target` for the same reason.
     fn kind(self) -> Kind {
         match self {
             Target::Ap(_) => Kind::Ap,
@@ -336,16 +337,7 @@ pub(crate) fn create<T: Transport>(
     // them anyway. `plan` itself only reads; nothing here has written to the board yet.
     let plan = keyset::plan(s, usages, &change, Some(index))?;
     if will_write {
-        confirm_whole_board_create(
-            prompt_out,
-            kind,
-            &m,
-            usages,
-            index.value(),
-            target,
-            &plan,
-            input,
-        )?;
+        confirm_whole_board_create(prompt_out, &m, usages, index.value(), target, &plan, input)?;
     }
     announce_steal(out, &losing, index.value(), target, &plan)?;
     Ok(plan)
@@ -374,10 +366,12 @@ pub(crate) fn create<T: Transport>(
 /// `confirm_whole_board_remove`'s own doc sets out at length: a redirected stdout would trap the
 /// prompt in the file with nothing on screen, and no terminal check is needed once the prompt
 /// goes to stderr, since stdin answers it either way.
-#[allow(clippy::too_many_arguments)]
+///
+/// Takes no `kind` beside its `target`: the kind selecting the wording and the mode clause is the
+/// one the value belongs to, so it is read off the `Target` that carries it. A separate parameter
+/// could name `rt` over an `Ap` value and prompt about the wrong feature entirely.
 fn confirm_whole_board_create(
     out: &mut impl Write,
-    kind: Kind,
     m: &Membership,
     usages: &[u8],
     new_index: u16,
@@ -388,6 +382,7 @@ fn confirm_whole_board_create(
     if usages.len() != m.entries().len() {
         return Ok(());
     }
+    let kind = target.kind();
     let losing = losing_members(&keyset::group(m), usages);
     let keysets = if losing.is_empty() {
         format!("no {} keysets exist to lose", kind_name(kind))
@@ -2126,7 +2121,6 @@ mod tests {
         let mut out = Vec::new();
         confirm_whole_board_create(
             &mut out,
-            Kind::Ap,
             &m,
             &usages,
             index.value(),
