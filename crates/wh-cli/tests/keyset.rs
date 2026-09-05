@@ -4692,6 +4692,50 @@ fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_nothing_moves() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// The gap the two fixtures above cannot separate: a board where every key already sits on touch
+/// nibble 1 (Single) but every key's actuation point still differs from the base, so `plan` still
+/// bundles a MODE record for each key, echoing the unchanged nibble back, because the bundle is
+/// emitted whenever any of MODE/AP/RT_PRESS/RT_RELEASE differs and the nibble-0 omission only
+/// applies to a nibble that stays `Global`. Counting keys with any value record, or counting keys
+/// with a MODE record, both see this record and wrongly count every key; only counting an actual
+/// touch nibble change, what `moved_mode_count` does, correctly reports zero.
+#[test]
+fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_only_the_value_moves() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 0));
+    }
+    // Every key already Single (nibble 1) but away from the base 2.00mm: the AP change alone
+    // triggers the bundle, and since the nibble is not `Global` the MODE record still goes out,
+    // echoing the same value back unchanged.
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, 0, 0));
+    }
+
+    let script = write_script("keyset-remove-whole-board-value-only-mode-echo", &lines);
+    let config_home = scratch_config_dir("keyset-remove-whole-board-value-only-mode-echo");
+    let out = run_wh_stdin(
+        &["keyset", "remove", "ap", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("this selects every key on the board: every key moves to 2.00mm, and no ap keysets exist to lose"),
+        "the prompt must end there, with no mode clause appended: {stderr}"
+    );
+    assert!(
+        !stderr.contains("move off global travel"),
+        "every key here already holds touch nibble 1; only the value moves, so the clause must be absent entirely: {stderr}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
 /// The measured case where an invented value renders exactly like a real one: every key on this
 /// board is in ap keyset 1, so no free key exists anywhere, not merely outside this selection.
 /// `wh keyset remove ap --keys w` reaches `NoneOutsideAKeyset` from a single-key selection, no
@@ -4764,6 +4808,56 @@ fn keyset_remove_ap_names_a_keyset_that_ceases_to_exist_from_a_partial_removal()
     assert!(
         stdout.contains("ap: removing w from keyset 1, 1.20mm to 2.00mm, keyset 1 ceases to exist"),
         "got: {stdout}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The gap the fixture above cannot reach: two keysets, 1 holding `w,a` and 2 holding `s,d`,
+/// removing `w,a,s`. Keyset 1 loses every member and must be announced as gone; keyset 2 keeps `d`
+/// and must not be. The mutant `leaving.len() == ks.members.len()` compares the whole selection's
+/// size against one keyset's own member count instead of checking that keyset's own members are
+/// the ones leaving, and gets keyset 1 wrong here: `leaving` holds three entries in total (w, a and
+/// s, across both keysets) against keyset 1's two members, so the mutant answers `false` where the
+/// real predicate, matching each of keyset 1's members against `leaving` by index, answers `true`.
+#[test]
+fn keyset_remove_ap_names_a_keyset_that_ceases_to_exist_from_a_partial_removal_of_two_keysets() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
+    }
+    // No base read at all: every key on this board is in keyset 1 or keyset 2, so none is free
+    // regardless of who is selected.
+    lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0)); // plan's read of w
+    lines.extend(key_settings_lines(0x04, 1200, 0x18, 100, 150, 1, 0)); // plan's read of a
+    lines.extend(key_settings_lines(0x16, 1200, 0x18, 100, 150, 2, 0)); // plan's read of s
+
+    let script = write_script("keyset-remove-ap-two-keysets", &lines);
+    let config_home = scratch_config_dir("keyset-remove-ap-two-keysets");
+    let out = run_wh(
+        &["keyset", "remove", "ap", "--keys", "w,a,s", "--dry-run"],
+        &script,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ap: removing w from keyset 1, 1.20mm to 2.00mm (no key outside a keyset to read a base from, using the default), keyset 1 ceases to exist"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("ap: removing s from keyset 2, 1.20mm to 2.00mm (no key outside a keyset to read a base from, using the default)"),
+        "got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("keyset 2 ceases to exist"),
+        "d stays in keyset 2, it must not be announced as destroyed: {stdout}"
     );
 
     std::fs::remove_file(script).unwrap();

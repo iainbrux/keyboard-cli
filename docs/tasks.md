@@ -358,10 +358,11 @@ rather than as settings it recognises.
   the only warning; plus one unit test pinning that a partial selection reaching
   `confirm_whole_board_create` directly prints nothing at all.
 
-- [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
-  Found by a cold reviewer that built its own replay generator and drove the binary, after the
-  committed behaviour had already been measured correct in both cases. **The shipped code is right;
-  what is missing is a test that would notice if it stopped being.** Each is one fixture.
+- [x] ~~**2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**~~
+  Closed 2026-09-05, test-only. Found by a cold reviewer that built its own replay generator and
+  drove the binary, after the committed behaviour had already been measured correct in both cases.
+  **The shipped code was right; what was missing was a test that would notice if it stopped being.**
+  Each was one fixture, `crates/wh-cli/tests/keyset.rs`.
 
   **The mode count can be over-claimed on a board the three current fixtures cannot distinguish.**
   The whole-board prompt counts keys whose touch nibble moves. Two wrong predicates survive the
@@ -369,7 +370,9 @@ rather than as settings it recognises.
   with the correct answer on the shipped fixtures (4 of 4, 2 of 4, 0 of 4) and diverge only on a
   whole board where every key is already at nibble 1 and holds a stray value: every key gets value
   records, no nibble moves, and the mutant prints "4 key(s) move off global travel" when none do.
-  Missing fixture: that board, asserting the clause is absent.
+  Fixture added: `keyset_remove_whole_board_prompt_omits_the_mode_clause_when_only_the_value_moves`,
+  that board, asserting the clause is absent. Both named wrong predicates were mutated in and each
+  made only this fixture fail, then reverted.
 
   The under-reporting direction, which is the dangerous one, is already pinned: counting only keys
   whose owned value also moves, and counting only `Rt` transitions while missing the nibble-0
@@ -379,11 +382,14 @@ rather than as settings it recognises.
   survives the suite green. Measured on two keysets, 1 holding `w,a` and 2 holding `s,d`, removing
   `w,a,s`: keyset 1 is emptied and the mutant omits "keyset 1 ceases to exist". Consequence is mild,
   since the operator still sees a `removing` line for every member, so the destruction stays
-  inferable. Missing fixture: two keysets, remove all of one plus part of the other.
+  inferable. Fixture added:
+  `keyset_remove_ap_names_a_keyset_that_ceases_to_exist_from_a_partial_removal_of_two_keysets`, two
+  keysets, remove all of one plus part of the other. The named mutant was mutated in and made only
+  this fixture fail, then reverted.
 
-  Deliberately not fixed in the branch that found them. Seven fix rounds ran there and three of the
-  last four introduced a defect of the class they were fixing, so an eighth round carried more risk
-  than two unguarded predicates whose behaviour is measured correct.
+  Test-only close: the shipped predicates were not touched. Seven fix rounds ran on the branch that
+  found these gaps and three of the last four introduced a defect of the class they were fixing, so
+  guarding the measured-correct behaviour rather than touching it again was the deliberate choice.
 
 - [x] ~~**2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
   should land before or with 2.23.**~~ Measured: `wh keyset remove ap --keys all > log.txt` puts both
