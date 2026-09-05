@@ -1787,7 +1787,8 @@ fn rt_off_whole_board_reads() -> Vec<String> {
 /// wording change must not be able to satisfy one while the other quietly stops matching the
 /// prompt at all.
 const RT_OFF_WHOLE_BOARD_PROMPT: &str = "this selects every key on the board: every key moves to \
-     0.10/0.10mm, and rt keyset(s) 1 will cease to exist, 1 key(s) have rapid trigger switched off";
+     0.10/0.10mm (from --press/--release, not the board's base), and rt keyset(s) 1 will cease to \
+     exist, 1 key(s) have rapid trigger switched off";
 
 /// `wh set rt --keys all --off` empties every rapid trigger keyset on the board, which before this
 /// command wrote membership at all it could not do, so it takes the same typed `yes` the other

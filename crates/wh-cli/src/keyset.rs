@@ -622,22 +622,27 @@ pub(crate) fn remove<T: Transport>(
     let cleared = keyset::KeysetIndex::clear(kind);
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
 
-    if will_write && usages.len() == m.entries().len() {
-        confirm_whole_board_remove(
-            prompt_out,
-            WholeBoardOp::KeysetRemove(kind),
-            &sets,
-            target,
-            &plan,
-            input,
-        )?;
-    }
-
+    // Resolved before the confirmation, not after: the prompt names the value every key moves to,
+    // and on this route that value is always invented, so the sentence being consented to is the
+    // one place the provenance has to appear. `announce_remove` reuses the same binding.
     let source = if base_invented {
         TargetSource::InventedBase
     } else {
         TargetSource::BoardBase
     };
+    if will_write {
+        confirm_whole_board_remove(
+            prompt_out,
+            WholeBoardOp::KeysetRemove(kind),
+            &m,
+            usages,
+            target,
+            source,
+            &plan,
+            input,
+        )?;
+    }
+
     announce_remove(out, &leaving, usages, target, source, &sets, &plan)?;
     Ok(plan)
 }
@@ -729,12 +734,14 @@ pub(crate) fn rt_off<T: Transport>(
     // Built before the confirmation, matching `remove`: the prompt's mode count is read off the
     // plan, so the operator answers with what is actually about to be sent in front of them.
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
-    if will_write && usages.len() == m.entries().len() {
+    if will_write {
         confirm_whole_board_remove(
             prompt_out,
             WholeBoardOp::RapidTriggerOff,
-            &sets,
+            &m,
+            usages,
             target,
+            source,
             &plan,
             input,
         )?;
@@ -803,6 +810,16 @@ fn rt_off_base<T: Transport>(
 /// a dozen references for no behaviour. Everything below about streams and terminals holds for
 /// both.
 ///
+/// Computes its own trigger from `m` and `usages`, matching both sibling guards, rather than
+/// trusting a caller to have checked first: "this selects every key on the board" and every keyset
+/// ceasing to exist are false of a partial selection, and a caller that forgot must never reach
+/// this wording. The keysets named are derived here from the same `m` for the same reason.
+///
+/// `source` is appended to the value the prompt names, because neither route reaches this line
+/// with a value read off the board: `remove` hands the whole matrix to `remove_base_ap`, which
+/// excludes the selection and so always invents `NO_SIGNAL_BASE`, and `rt_off` always arrives with
+/// the operator's own `--press`/`--release`. The consent line says which, before the answer.
+///
 /// Called after `plan` is built, not before: the value and keyset clauses can both read as a
 /// no-op, every key already at the target and no keyset to lose, on a board where every key's
 /// touch mode still moves (measured: four free keys already at the base, no keysets, `remove`
@@ -825,15 +842,22 @@ fn rt_off_base<T: Transport>(
 /// sanctioned path, not just guard against the hang. Sending the prompt to stderr instead needs no
 /// terminal check at all: stdin, still open, answers it the same way regardless of what carries
 /// the prompt itself.
+#[allow(clippy::too_many_arguments)]
 fn confirm_whole_board_remove(
     out: &mut impl Write,
     op: WholeBoardOp,
-    sets: &[Keyset],
+    m: &Membership,
+    usages: &[u8],
     target: Target,
+    source: TargetSource,
     plan: &keyset::WritePlan,
     input: &mut impl BufRead,
 ) -> Result<()> {
+    if usages.len() != m.entries().len() {
+        return Ok(());
+    }
     let kind = op.kind();
+    let sets = keyset::group(m);
     let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
     let keysets = if indices.is_empty() {
         format!("no {} keysets exist to lose", kind_name(kind))
@@ -865,8 +889,9 @@ fn confirm_whole_board_remove(
         }
     };
     let prompt = format!(
-        "this selects every key on the board: every key moves to {}, and {keysets}{mode_clause}",
-        target.display()
+        "this selects every key on the board: every key moves to {}{}, and {keysets}{mode_clause}",
+        target.display(),
+        source.suffix()
     );
     if !crate::confirm::confirm(out, &prompt, input)? {
         bail!(
@@ -1646,25 +1671,39 @@ mod tests {
     #[test]
     fn confirm_whole_board_remove_names_the_value_and_the_keysets_lost() {
         use wh_device::replay::ReplayTransport;
-        let sets = [ks(1, &[0x1A]), ks(3, &[0x04])];
-        // A plan with no mode transition in it: this test is only about the value and keyset
-        // clauses, which `keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide`
-        // (an end-to-end test) covers on its own.
-        let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        // A two-key board, `w` in ap keyset 1 and `a` in keyset 3, selected whole. A plan with no
+        // mode transition in it: this test is only about the value and keyset clauses, which
+        // `keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide` (an
+        // end-to-end test) covers on its own.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 3));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 1, 0));
+        lines.extend(settings_script(0x04, 2000, 0x18, 100, 150, 3, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let plan = keyset::plan(&mut s, &[0x1A], &keyset::Change::ap(Um(2000)), None).unwrap();
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(2000)), None).unwrap();
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
             WholeBoardOp::KeysetRemove(Kind::Ap),
-            &sets,
+            &m,
+            &usages,
             Target::Ap(Um(2000)),
+            TargetSource::InventedBase,
             &plan,
             &mut "yes\n".as_bytes(),
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("every key moves to 2.00mm"), "got: {text}");
+        assert!(
+            text.contains(
+                "every key moves to 2.00mm (no key outside a keyset to read a base from, using \
+                 the default)"
+            ),
+            "got: {text}"
+        );
         assert!(
             text.contains("ap keyset(s) 1, 3 will cease to exist"),
             "got: {text}"
@@ -1679,15 +1718,21 @@ mod tests {
     #[test]
     fn confirm_whole_board_remove_names_the_value_when_no_keysets_exist() {
         use wh_device::replay::ReplayTransport;
-        let lines = settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0);
+        let mut lines = matrix_lines(&[0x1A]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let plan = keyset::plan(&mut s, &[0x1A], &keyset::Change::ap(Um(1800)), None).unwrap();
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8];
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1800)), None).unwrap();
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
             WholeBoardOp::KeysetRemove(Kind::Ap),
-            &[],
+            &m,
+            &usages,
             Target::Ap(Um(1800)),
+            TargetSource::InventedBase,
             &plan,
             &mut "yes\n".as_bytes(),
         )
@@ -1695,6 +1740,42 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("every key moves to 1.80mm"), "got: {text}");
         assert!(text.contains("no ap keysets exist to lose"), "got: {text}");
+    }
+
+    /// The trigger this guard did not own. Its two siblings each decide from `m` and `usages`
+    /// whether the selection covers the matrix; this one prompted whenever it was called and
+    /// trusted both call sites to have checked, so a third caller, or a moved check, could put
+    /// "this selects every key on the board" in front of an operator who had selected one key.
+    /// Empty input: a prompt here would read it and refuse, so printing nothing unread is the
+    /// point.
+    #[test]
+    fn confirm_whole_board_remove_does_not_prompt_over_a_partial_selection() {
+        use wh_device::replay::ReplayTransport;
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 1, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8]; // only one of the board's two keys
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(2000)), None).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_remove(
+            &mut out,
+            WholeBoardOp::KeysetRemove(Kind::Ap),
+            &m,
+            &usages,
+            Target::Ap(Um(2000)),
+            TargetSource::InventedBase,
+            &plan,
+            &mut "".as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing for a partial selection: {out:?}"
+        );
     }
 
     // -- verify_write: a membership-drift acceptance case --

@@ -209,8 +209,9 @@ impl Change {
     /// An actuation point operation: set every member's `0x04` to `value`, promoting a `Global`
     /// key to `Single` first. The promotion itself is measured (`ks-value-ap`, key `x`: MODE
     /// `0x0000` to `0x0010`); whether it depends on keyset membership specifically is not, so
-    /// it is applied unconditionally here, the non-destructive default. Use `ap_keeping_touch`
-    /// for the rare operation that must not move a key off global travel.
+    /// it is applied unconditionally here, the non-destructive default. `ap_keeping_touch` has no
+    /// production caller today and is the measured road not taken, kept for an operation that must
+    /// not move a key off global travel rather than offered as an alternative to this one.
     pub fn ap(value: Um) -> Self {
         Change {
             kind: Kind::Ap,

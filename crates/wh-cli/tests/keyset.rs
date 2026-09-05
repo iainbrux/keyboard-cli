@@ -4800,7 +4800,10 @@ fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_nothing_moves() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("this selects every key on the board: every key moves to 2.00mm, and no ap keysets exist to lose"),
+        stderr.contains(
+            "this selects every key on the board: every key moves to 2.00mm (no key outside a \
+             keyset to read a base from, using the default), and no ap keysets exist to lose"
+        ),
         "the prompt must end there, with no mode clause appended: {stderr}"
     );
     assert!(
@@ -4844,12 +4847,63 @@ fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_only_the_value_mo
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("this selects every key on the board: every key moves to 2.00mm, and no ap keysets exist to lose"),
+        stderr.contains(
+            "this selects every key on the board: every key moves to 2.00mm (no key outside a \
+             keyset to read a base from, using the default), and no ap keysets exist to lose"
+        ),
         "the prompt must end there, with no mode clause appended: {stderr}"
     );
     assert!(
         !stderr.contains("move off global travel"),
         "every key here already holds touch nibble 1; only the value moves, so the clause must be absent entirely: {stderr}"
+    );
+
+    std::fs::remove_file(script).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The consent line's own provenance. `remove` hands the whole matrix to `remove_base_ap`, which
+/// excludes the selection, so a whole-board ap remove can never read a base from anywhere: the
+/// target is always the invented `NO_SIGNAL_BASE`. On this board every key holds 1.20mm, so the
+/// 2.00mm the prompt names sits on no key and was typed by nobody, and the disclosure has to be in
+/// the sentence being consented to rather than in the announcement that follows a `yes`.
+///
+/// Declined on purpose: a run that answers `no` never reaches `announce_remove`, so finding the
+/// disclosure in this run's stderr can only mean the prompt itself carried it.
+#[test]
+fn keyset_remove_whole_board_prompt_says_the_base_it_names_was_invented() {
+    let mut lines = matrix_lines(); // resolve_keys
+    lines.extend(matrix_lines()); // read_membership's own matrix read
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, 1));
+    }
+    // Every key already Single (nibble 1) at 1.20mm, so no mode clause is appended and the prompt
+    // ends at the keyset clause.
+    for usage in [0x1Au8, 0x04, 0x16, 0x07] {
+        lines.extend(key_settings_lines(usage, 1200, 0x18, 100, 150, 1, 0));
+    }
+
+    let script = write_script("keyset-remove-whole-board-invented-base", &lines);
+    let config_home = scratch_config_dir("keyset-remove-whole-board-invented-base");
+    let out = run_wh_stdin(
+        &["keyset", "remove", "ap", "--keys", "w,a,s,d"],
+        &script,
+        &config_home,
+        "no\n",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "this selects every key on the board: every key moves to 2.00mm (no key outside a \
+             keyset to read a base from, using the default), and ap keyset(s) 1 will cease to exist"
+        ),
+        "the consent line must name where 2.00mm came from: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("no key outside a keyset to read a base from"),
+        "the declined run must announce nothing at all: {stdout}"
     );
 
     std::fs::remove_file(script).unwrap();
