@@ -94,7 +94,10 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   `wh led brightness|sleep` against a measured record. The one remaining investigation is whether
   the constant colour-table block is writable, which stays in `docs/backlog.md` and should be
   probed through the eventual `wh` write path rather than a hand-built frame. Key backlights are
-  measured white-only with no UI control: a documented refusal under the beta definition.
+  measured white-only with no UI control: a documented refusal under the beta definition. For the
+  builder: a vendor-matching outbound read request carries the colour triples and the constant
+  tail `01 03 04 03 0f ff ff` (measured, all 12 read requests), so a replay fixture derived from
+  vendor traffic will not match a read built any other way.
 
 - [ ] **3.8 Profile export and import, the `WHKB1.` envelope.** Measured 2026-09-05, written up in
   `docs/protocol.md` under "The profile export envelope". The format is cracked (prefix plus
