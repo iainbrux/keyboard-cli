@@ -556,6 +556,7 @@ fn resolve_rt_override(
 enum BackupReason {
     SetAp,
     SetRt,
+    SetMm,
     KeysetCreate,
     KeysetSet,
     KeysetDelete,
@@ -574,6 +575,7 @@ impl BackupReason {
         match self {
             BackupReason::SetAp => "auto: set ap",
             BackupReason::SetRt => "auto: set rt",
+            BackupReason::SetMm => "auto: set mm",
             BackupReason::KeysetCreate => "auto: keyset create",
             BackupReason::KeysetSet => "auto: keyset set",
             BackupReason::KeysetDelete => "auto: keyset delete",
@@ -931,6 +933,44 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
                     })
                 }
             }
+        }
+        SetWhat::Mm { value, dry_run } => {
+            // Validated before a session opens, like `Ap`'s `mm(set)?` above: a malformed value
+            // is refused before a single frame is sent.
+            let target = mm(value)?;
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            with_session(|s| {
+                // The read is what makes the announcement below honest, and costs one roundtrip.
+                let old = ops::global_travel(s)?;
+                writeln!(
+                    out,
+                    "mm custom value: {:.2}mm -> {:.2}mm",
+                    old.travel.to_mm(),
+                    target.to_mm()
+                )?;
+                let frame =
+                    cmds::write_global_travel(target, VENDOR_PRESS_DEAD, VENDOR_RELEASE_DEAD);
+                if dry_run {
+                    return print_frames(&mut out, &[frame]);
+                }
+                auto_backup(s, store, BackupReason::SetMm)?;
+                s.roundtrip(&frame)?;
+                // The dead zones read back as 0 on every measured board regardless of what was
+                // written (14 reads across 7 captures, `docs/keysets.md`), so only the travel
+                // field is a meaningful readback check.
+                let readback = ops::global_travel(s)?;
+                if readback.travel != target {
+                    bail!(
+                        "mm custom value mismatch: board reports {:.2}mm, wanted {:.2}mm; \
+                         backup retained, use `wh restore --last` to roll back",
+                        readback.travel.to_mm(),
+                        target.to_mm()
+                    );
+                }
+                writeln!(out, "mm custom value: verified")?;
+                Ok(())
+            })
         }
     }
 }
@@ -1631,6 +1671,7 @@ mod tests {
     fn every_backup_reason_renders_its_persisted_origin_string() {
         assert_eq!(BackupReason::SetAp.origin(), "auto: set ap");
         assert_eq!(BackupReason::SetRt.origin(), "auto: set rt");
+        assert_eq!(BackupReason::SetMm.origin(), "auto: set mm");
         assert_eq!(BackupReason::KeysetCreate.origin(), "auto: keyset create");
         assert_eq!(BackupReason::KeysetSet.origin(), "auto: keyset set");
         assert_eq!(BackupReason::KeysetDelete.origin(), "auto: keyset delete");

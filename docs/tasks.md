@@ -17,12 +17,25 @@ one to one, mouse-clickable and arrow-navigable. The ordering principle: extend 
 finish the transport before the TUI is written, so it is written once against its final foundation.
 Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land before 3.5.
 
-- [ ] **3.1 `wh set --mm`, the configurator's "MM" CUSTOM VALUE.** The stepper step size, not an
+- [x] ~~**3.1 `wh set --mm`, the configurator's "MM" CUSTOM VALUE.**~~ The stepper step size, not an
   actuation point. Already measured: three vendor writes in the corpus (`custom-value-change` at
   travel 400 and 650, `custom-value-nudge-after-restore` at 150), all through `cmd 0x29` with dead
   zones 200/200. Snapshot field renamed to `custom_value_mm` on 2026-09-05 and already restored
   faithfully. The flag name `--mm` is reserved for this by the operator's 2026-09-04 ruling. What is
   left is only the write command and its tests. No new captures needed.
+
+  Closed 2026-09-05 as `wh set mm --value <mm>`, a subcommand rather than a literal `--mm` flag on
+  `set` itself: a flag on the parent command would conflict with its own subcommands, an awkward
+  clap shape for no gain, and the operator's ruling reserves the name `--mm` for this setting, not
+  a specific flag position. `wh set mm` honours that reservation and takes no `--keys`/`--pick`,
+  since the record is one value for the whole board, like `--base` but with no selection to make
+  at all. It reads `ops::global_travel` first so its announcement names the value it is about to
+  replace, writes `cmds::write_global_travel` with the new value and the same vendor dead-zone
+  constants `wh restore` sends (`run::VENDOR_PRESS_DEAD`/`VENDOR_RELEASE_DEAD`), and verifies the
+  travel field on readback only, since the dead zones read back as `0` regardless of what was
+  written on every measured board. `BackupReason::SetMm` is tied to a real run from the start by
+  `set_mm_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs`, unlike the
+  six untied variants 2.30 still lists.
 
 - [ ] **3.2 One capture session: SOCD, RGB/LED, dead zones.** All three need the operator at the
   vendor UI with a capture running, so they are one sitting. Toggle SOCD pairs on and off and
@@ -650,7 +663,7 @@ rather than as settings it recognises.
   are already in the operator's backup files on disk and are what `wh backups list` and `--last`
   print. This is a type change, not a wording change, and
   `every_backup_reason_renders_its_persisted_origin_string` pins all eight verbatim so a rename
-  has to be deliberate.
+  has to be deliberate. A ninth, `SetMm`, joined in 3.1, pinned the same way.
 
   The missing end-to-end tie is now two tests that drive a real command and read the file it
   wrote: `set_ap_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs` and
@@ -659,11 +672,13 @@ rather than as settings it recognises.
   The task's claim is measured: swapping the `set ap` and `keyset create` literals before the
   change failed exactly those two new tests and nothing else in the workspace.
 
-  Six of the eight variants (`set rt`, `keyset set`, `keyset delete`, `keyset remove`, `restore`
+  Six of the nine variants (`set rt`, `keyset set`, `keyset delete`, `keyset remove`, `restore`
   and the manual backup) still have no end-to-end test tying a run to its label, and `set ap
   --base`'s own call site is untied as well even though its variant is pinned through the plain
   `--set` path. A wrong variant at one of those sites would still persist quietly: the enum makes
-  the label visible at the call site, it does not make the wrong one impossible.
+  the label visible at the call site, it does not make the wrong one impossible. `SetMm` is not
+  among the six: unlike every variant recorded here, it was born with its own end-to-end tie,
+  `set_mm_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs`, from 3.1.
 
 - [x] ~~**2.31 `confirm_whole_board_create` still takes a `kind` beside its `Target`.**~~ The last
   kind-beside-target in `crates/wh-cli/src/keyset.rs`, left deliberately when 2.18 closed: its
@@ -884,7 +899,9 @@ rather than as settings it recognises.
   2026-09-04 while naming 2.23's flag. `"MM" CUSTOM VALUE` is the one term the configurator uses for
   this setting, and it is the exact term this task exists to stop being confused with the actuation
   point. Any flag `wh` grows for it should be `--mm`; 2.23 uses `--base` for the actuation point so
-  the two cannot collide. No such flag exists yet: the field is recorded and restored, never set.
+  the two cannot collide. No such flag existed at the time: the field was only recorded and
+  restored, never set. 3.1 later spent the reservation as `wh set mm --value`, a subcommand rather
+  than a literal `--mm` flag; see that entry for why.
 - [x] ~~**2.11 Stop writing zero dead zones on restore.**~~ `wh restore` now sends the 200 and 200
   every measured vendor write carries. Measured 2026-09-05 across every `cmd 0x29` frame in
   `captures/`: 14 read requests in 7 files, every reply reporting both dead zones as `0`, and 3

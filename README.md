@@ -261,6 +261,18 @@ POINT field, which writes exactly this shape; see `docs/keysets.md` for the fram
 wh set ap --base 1.95
 ```
 
+**`wh set mm --value <mm>` is a different setting again, and the pair operators most often**
+**confuse.** It writes the configurator's `"MM" CUSTOM VALUE`, the step size for its `< >` stepper
+controls, held in the `cmd 0x29` global record alongside the dead zones; it is not an actuation
+point at all, base or otherwise, and takes no `--keys` or `--pick` since the board holds one value
+for the whole board. It reads the current value first so the announcement names both the old and
+new value, then writes the new one with the vendor's own dead-zone constants (`200`/`200`), the
+same ones `wh restore` sends.
+
+```
+wh set mm --value 1.5
+```
+
 Manage stored groups:
 
 ```
@@ -309,12 +321,12 @@ wh selftest
 ## A safety note before you write anything
 
 `wh set`, `wh keyset create|set|delete|remove`, `wh restore`, and `wh selftest` write to the physical
-keyboard. `wh set rt`, `wh set ap`, and every `wh keyset create|set|delete|remove` accept `--dry-run`
-(`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports a real run would
-send, and sends nothing. Use it to check a command before it touches hardware, especially the first
-time you type a new key selector. `wh restore` and `wh selftest` have no `--dry-run`; `wh restore`
-takes its own auto-backup before writing (see below), and `wh selftest` only ever rewrites a setting
-to the value it already read.
+keyboard. `wh set rt`, `wh set ap`, `wh set mm`, and every `wh keyset create|set|delete|remove`
+accept `--dry-run` (`wh set rt --keys w --set 0.5 --dry-run`), which prints the exact 64-byte reports
+a real run would send, and sends nothing. Use it to check a command before it touches hardware,
+especially the first time you type a new key selector. `wh restore` and `wh selftest` have no
+`--dry-run`; `wh restore` takes its own auto-backup before writing (see below), and `wh selftest`
+only ever rewrites a setting to the value it already read.
 
 Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
 `keyset list|create|set|delete|remove`, `profile`) names which transport it opened, on stderr, one line,
@@ -429,7 +441,9 @@ Two things look like exceptions and are not:
   the zeros it reports for them, which is unestablished (`docs/backlog.md`): `selftest` is the one
   place `wh` still writes a zero dead zone. Between a read and its write, the board could in
   principle be changed by hand (or by another tool); that is a real read-modify-write window, not
-  `wh` caching anything.
+  `wh` caching anything. `set mm` reads the same global record, but not to no-op it: the read is
+  only what makes its announcement honest about the value it is about to replace, and it always
+  writes the vendor's own dead-zone constants rather than whatever it just read.
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
 
