@@ -1,7 +1,10 @@
-//! The typed confirmation guarding a whole-board destructive write. `wh keyset remove` calls this
-//! today, over a selection covering every key. `wh set ap --keys all` is a separate, still open
-//! task and does not call it yet: this module exists to be shared once it does, not to imply that
-//! hazard is already guarded.
+//! The typed confirmation guarding a whole-board destructive write. `wh keyset remove`,
+//! `wh set ap`, `wh keyset create` and `wh set rt --off` each call this over their own selection
+//! covering every key on the board, sharing one acceptance check rather than risking four that
+//! drift apart. `wh set rt --off` became such a route when it started writing membership: before
+//! that it could not empty a keyset, and now a whole-board run destroys every rapid trigger keyset
+//! there is. These are not claimed to be the only routes to this class of destruction, only the
+//! ones guarded so far.
 
 use anyhow::Result;
 use std::io::{BufRead, Write};

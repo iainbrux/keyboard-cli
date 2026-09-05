@@ -10,6 +10,83 @@ Evidence for every protocol claim below is in `docs/protocol.md`, `docs/protocol
 
 Complete. See the Done section.
 
+## Phase 3
+
+Ordered by the operator on 2026-09-05. The north star is a TUI replicating terminal.wallhack.com
+one to one, mouse-clickable and arrow-navigable. The ordering principle: extend the data model and
+finish the transport before the TUI is written, so it is written once against its final foundation.
+Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land before 3.5.
+
+- [ ] **3.1 `wh set --mm`, the configurator's "MM" CUSTOM VALUE.** The stepper step size, not an
+  actuation point. Already measured: three vendor writes in the corpus (`custom-value-change` at
+  travel 400 and 650, `custom-value-nudge-after-restore` at 150), all through `cmd 0x29` with dead
+  zones 200/200. Snapshot field renamed to `custom_value_mm` on 2026-09-05 and already restored
+  faithfully. The flag name `--mm` is reserved for this by the operator's 2026-09-04 ruling. What is
+  left is only the write command and its tests. No new captures needed.
+
+- [ ] **3.2 One capture session: SOCD, RGB/LED, dead zones.** All three need the operator at the
+  vendor UI with a capture running, so they are one sitting. Toggle SOCD pairs on and off and
+  remap which keys pair; change LED or RGB settings if the UI exposes them (suspected `cmd 0x18`,
+  payload shapes `7f7f` and `ff00ff00`, six request/reply pairs in the corpus, never identified);
+  and move the dead-zone controls if the configurator exposes any, which would settle the
+  `docs/backlog.md` question of whether the `cmd 0x29` 200/200 is a constant or a user setting at
+  its default, a question the read path cannot answer because the board reports 0 on every read.
+
+- [ ] **3.3 SOCD.** `cmd 0x2c` is almost certainly it: queries by key, replies with symmetric
+  pairs, measured as W with S and A with D. Behaviour measured, name inferred, writes never
+  observed. Blocked on 3.2's captures for the write shape. CLI surface to be designed once the
+  writes are measured.
+
+- [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
+  architectural blocker for any long-running interface. The board announces entering and leaving
+  its own adjust mode with `cmd 0x00` sub-order `0xbe` (`be 00` entering, `be 01` leaving), and
+  while adjusting it stops being a keyboard entirely. The vendor configurator ignores the first
+  and re-reads the whole board on the second. `Transport` is strictly request-then-response and
+  cannot receive it. This lands before the TUI so the TUI's read loop is written once against the
+  final transport, and it is what makes both vendor-matching re-reads and the locked-board banner
+  (which the vendor UI lacks, and the operator wants) possible.
+
+- [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,
+  arrow-navigable, values populated by reading the board on open (a full read costs ~40ms, so no
+  cache), re-reading on `be 01`, and showing a locked-board banner between `be 00` and `be 01`.
+  `ratatui` and `crossterm` are already dependencies and `wh keys --pick` is the working seed.
+  Spec to be written when this task opens; it consumes 3.1, 3.3 and 3.4.
+
+- [ ] **3.6 Key remapping, base layer and FN layer.** Layouts `0x00` and `0x01`, both measured
+  (`remap-one-key`, `initial-load`, and the FN-layer table in `docs/protocol-inventory.md`). `wh`
+  already reads them for key identity. Independent CLI work; can land before or after 3.7.
+
+- [ ] **3.7 RGB/LED, from 3.2's captures.** Investigation then build. Nothing is known today
+  beyond the suspected `cmd 0x18`.
+
+### Phase 3 exit criteria: what "beta" means
+
+Agreed with the operator on 2026-09-05. Beta is not literal 1:1 with terminal.wallhack.com; it is
+**every control the configurator exposes being either supported or explicitly refused, with nothing
+unknown.**
+
+- The TUI and CLI cover everything measured: the performance core, keysets, profiles, MM, SOCD,
+  remapping, and RGB if 3.2's captures crack it.
+- Whatever remains (dynamic keystroke, mod tap, gamepad mode, polling rate) is a documented "not
+  supported" with a measured reason, in the README, the way the snapshot docs already state what a
+  snapshot does not capture. A stated limit is fine; an unstated one is a defect.
+- `0xbe` handling works: a long-running interface that goes stale when the operator touches the
+  knob is below the bar.
+
+The beta phase then carries stability commitments, not only bugfixes:
+
+- **Snapshot format stability.** Old backups keep restoring; any format change carries a serde
+  alias or a migration, as the `custom_value_mm` rename already does.
+- **CLI surface stability.** No breaking flag changes without a deprecation cycle. Alpha allowed
+  removing `--force` overnight; beta gives that up.
+- **Invariants frozen.** New commands are fine. Changing what an existing command writes to the
+  board needs the same measured justification a protocol claim needs.
+
+The beta announcement must say plainly: verified against one board on one firmware
+(`WALLHACK K-001` / `App_V1.1.046000`), hardware results measured on profile 2. A beta label
+implies it works on the next K-001 that is not the operator's; the first external bug report is
+the thing beta exists to collect.
+
 ## Phase 2
 
 Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.16
@@ -230,10 +307,10 @@ rather than as settings it recognises.
   and `--release` are gone from the clap variant and from the `Kind::Ap` refusal, which had nothing
   left to refuse and was deleted with them.
 
-- [ ] **2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**
-  There is currently no way to do this, and 2.22 makes the gap visible. The base is not a stored
-  setting: it is what every key outside a keyset holds in layout `0x04`, which is also why 2.10
-  exists. So setting it means writing the value to every free key and touching no membership.
+- [x] ~~**2.23 `wh set ap --base <mm>` to set the board's base actuation point. Depends on 2.22.**~~
+  Done 2026-09-04. The base is not a stored setting: it is what every key outside a keyset holds in
+  layout `0x04`, which is also why 2.10 exists. Setting it writes the value to every free key and
+  touches no membership.
 
   `--base` takes no `--keys` and refuses alongside `--set`: it names the board, not a selection.
   The flag is `--base` and not `--mm` by the operator's ruling, since `--mm` is reserved for 2.10's
@@ -279,14 +356,16 @@ rather than as settings it recognises.
   `crates/wh-cli/src/confirm.rs`.** Reuse it rather than building a second copy; two copies will
   drift, and this is the one piece of code whose whole job is to be hard to get past by accident.
 
-  Unmeasured, and worth a capture before building: what the configurator sends when its GLOBAL
-  ACTUATION POINT field is changed. That the base is what free keys hold is established, so writing
-  `0x04` to every non-member key is the only way to set it; what is not known is whether the vendor
-  sends anything else alongside, a MODE record for instance. `begin("ks-set-global-ap")`, change the
-  field, copy.
+  Measured 2026-09-04 in `captures/ks-set-global-ap.jsonl`: changing the configurator's GLOBAL
+  ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys, `0x04` the new base
+  and `0x14`/`0x15`/`0x16`/`0x17` echoed unchanged, no `0xFF` record anywhere. Separately measured:
+  nine of the 68 keys were read and never written; that those nine are keyset members is an
+  inference, not itself measured, since the capture has no `0xFF` request and no matrix read. See
+  `docs/keysets.md`, "Setting the base actuation point", for the full breakdown, the nine usages,
+  and `wh`'s own two documented divergences from that template.
 
-- [ ] **2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
-  before the part that is not.** Deferred during 2.21 because extracting it would have refactored
+- [x] ~~**2.24 Share what is still identical between `keyset::delete` and `keyset::remove`, and stop
+  before the part that is not.**~~ Deferred during 2.21 because extracting it would have refactored
   `delete`, which is shipped and hardware-verified, inside a task that did not ask for it. 2.22
   changed the two branches enough that this is no longer the same task it was when first written:
   read what is actually shared before touching either.
@@ -313,10 +392,76 @@ rather than as settings it recognises.
   construction shape, parameterised over an already-resolved value each caller keeps producing its
   own way.
 
-- [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
-  Found by a cold reviewer that built its own replay generator and drove the binary, after the
-  committed behaviour had already been measured correct in both cases. **The shipped code is right;
-  what is missing is a test that would notice if it stopped being.** Each is one fixture.
+  **Done 2026-09-05.** `crates/wh-cli/src/keyset.rs` gained `reset_change`, a function
+  taking an already-resolved `Target` and returning `Change::ap` or `Change::rt_off`. It takes no
+  `Session` and no `Kind` of its own: the `Target` variant carries the kind, so a caller cannot
+  hand it a value and a kind that disagree, and it can resolve nothing. `delete` still resolves
+  through `global_ap_or_bail`/`global_rt_or_bail` and `remove` still through
+  `remove_base_ap`/`remove_base_rt`, each building its own `Target` first. `create` is not a
+  caller: its rapid trigger arm needs `Change::rt_on`.
+
+  One test was added, `keyset_delete_ap_refuses_where_remove_would_invent_a_base`, the only test in
+  the repo pinning `delete`'s `NoneOutsideAKeyset` refusal. On a board where every key sits in a
+  keyset, `delete ap` must refuse and name `--value` rather than reach for `NO_SIGNAL_BASE`.
+  Proved by wiring `delete` through `remove_base_ap`, which made a `--dry-run` delete announce
+  "returning members to 2.00mm" and emit three write frames for a value nobody passed.
+
+  `remove`'s two halves were already pinned, by
+  `keyset_remove_ap_names_the_base_as_invented_when_every_key_is_already_in_a_keyset` and
+  `keyset_remove_rt_refuses_when_no_free_key_is_left_to_read_a_sensitivity_from`; a first draft
+  added a duplicate of each and they were dropped, since wiring `remove` through
+  `global_ap_or_bail`/`global_rt_or_bail` is caught by twenty pre-existing tests. Both now carry a
+  pointer saying they are also `remove`'s half of the divergence, so the three read as a set
+  without a test that guards nothing.
+
+- [x] ~~**2.27 `wh keyset create --keys all` is a third unguarded route to destroying every
+  keyset.**~~ Found by a reviewer probing the guard added for `wh set ap --keys all`, and measured:
+  `wh keyset create ap --keys all --value 1.50` on a board holding keysets 1 and 2 ran straight
+  through the membership sweep into `plan`'s reads with stdin closed and no prompt on either stream.
+  Every key moves into the new index, so every existing keyset loses all its members and ceases to
+  exist, exactly as with the other two routes.
+
+  Two commands are now guarded and this one is not, which is worse than none being guarded: an
+  operator who has learned that `wh` asks before a whole-board write will not expect the third route
+  to be silent.
+
+  Reuse `crate::confirm::confirm` and the pattern the other two settled on: prompt on stderr with
+  the announcement on stdout, trigger on the resolved selection covering the matrix rather than the
+  literal `all`, no prompt on `--dry-run`, no bypass flag, and a test asserting the prompt does NOT
+  reach stdout, which is the half that has twice been the one missing.
+
+  `crates/wh-cli/src/confirm.rs`'s module doc has already been narrowed to say the routes it lists
+  are "only the ones guarded so far", so it no longer implies the list is complete. This task need
+  only add the third route to it.
+
+  **Done 2026-09-05.** `keyset::create` now takes the same two extra parameters `remove` already
+  carried, a `prompt_out` writer and a `will_write` flag, plus the input reader, and calls
+  `confirm_whole_board_create` after `plan` exists and before `announce_steal`, so the prompt is
+  built from the plan and a refusal announces nothing at all. `run.rs`'s `KeysetWhat::Create` arm
+  passes a locked stderr, a locked stdin, and `!dry_run`, which is what keeps the guard off a
+  preview without moving the call past that arm's own `dry_run` check. `confirm_whole_board_create`
+  decides the whole-board trigger itself from the membership and the selection, matching
+  `confirm_whole_board_ap_set`, so a caller that forgot to check cannot reach a prompt whose every
+  sentence would be false of a partial selection.
+
+  Both kinds prompt, and the `rt` mode clause (`rt_on_mode_clause`) splits its count by the nibble
+  each key is leaving, since one sentence cannot honestly cover them all: a key leaving nibble 0
+  or 1 is having rapid trigger switched on and is told so, a key leaving nibble 2 had it on
+  already and is only moving onto its own sensitivity, and an unmeasured nibble is counted with
+  the second group, whose wording claims only the destination. Reusing `ap_mode_clause`'s or
+  `remove`'s single sentence would have been false on one board or the other.
+
+  Eight end-to-end tests in `crates/wh-cli/tests/dump.rs`, covering `ap` decline and accept, the
+  two `rt` origin splits, the prompt's absence from stdout, a partial selection, `--dry-run`, a
+  whole-board selection spelled key by key, and a board with no keysets where the mode count is
+  the only warning; plus one unit test pinning that a partial selection reaching
+  `confirm_whole_board_create` directly prints nothing at all.
+
+- [x] ~~**2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**~~
+  Closed 2026-09-05, test-only. Found by a cold reviewer that built its own replay generator and
+  drove the binary, after the committed behaviour had already been measured correct in both cases.
+  **The shipped code was right; what was missing was a test that would notice if it stopped being.**
+  Each was one fixture, `crates/wh-cli/tests/keyset.rs`.
 
   **The mode count can be over-claimed on a board the three current fixtures cannot distinguish.**
   The whole-board prompt counts keys whose touch nibble moves. Two wrong predicates survive the
@@ -324,7 +469,9 @@ rather than as settings it recognises.
   with the correct answer on the shipped fixtures (4 of 4, 2 of 4, 0 of 4) and diverge only on a
   whole board where every key is already at nibble 1 and holds a stray value: every key gets value
   records, no nibble moves, and the mutant prints "4 key(s) move off global travel" when none do.
-  Missing fixture: that board, asserting the clause is absent.
+  Fixture added: `keyset_remove_whole_board_prompt_omits_the_mode_clause_when_only_the_value_moves`,
+  that board, asserting the clause is absent. Both named wrong predicates were mutated in and each
+  made only this fixture fail, then reverted.
 
   The under-reporting direction, which is the dangerous one, is already pinned: counting only keys
   whose owned value also moves, and counting only `Rt` transitions while missing the nibble-0
@@ -334,14 +481,17 @@ rather than as settings it recognises.
   survives the suite green. Measured on two keysets, 1 holding `w,a` and 2 holding `s,d`, removing
   `w,a,s`: keyset 1 is emptied and the mutant omits "keyset 1 ceases to exist". Consequence is mild,
   since the operator still sees a `removing` line for every member, so the destruction stays
-  inferable. Missing fixture: two keysets, remove all of one plus part of the other.
+  inferable. Fixture added:
+  `keyset_remove_ap_names_a_keyset_that_ceases_to_exist_from_a_partial_removal_of_two_keysets`, two
+  keysets, remove all of one plus part of the other. The named mutant was mutated in and made only
+  this fixture fail, then reverted.
 
-  Deliberately not fixed in the branch that found them. Seven fix rounds ran there and three of the
-  last four introduced a defect of the class they were fixing, so an eighth round carried more risk
-  than two unguarded predicates whose behaviour is measured correct.
+  Test-only close: the shipped predicates were not touched. Seven fix rounds ran on the branch that
+  found these gaps and three of the last four introduced a defect of the class they were fixing, so
+  guarding the measured-correct behaviour rather than touching it again was the deliberate choice.
 
-- [ ] **2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
-  should land before or with 2.23.** Measured: `wh keyset remove ap --keys all > log.txt` puts both
+- [x] ~~**2.25 Move the whole-board confirmation prompt from stdout to stderr. Depends on 2.22,
+  should land before or with 2.23.**~~ Measured: `wh keyset remove ap --keys all > log.txt` puts both
   prompt lines (the warning and "type yes to continue: ") in the redirected file and then blocks on
   stdin with nothing at all on the operator's screen, since `confirm` writes to whatever `Write` its
   caller hands it, and `keyset::remove`'s caller in `run.rs` hands it real stdout.
@@ -372,7 +522,15 @@ rather than as settings it recognises.
   built, calls the corrected version from the start rather than repeating the stdout choice and
   needing this fix a second time.
 
-- [ ] **2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**
+  **Done 2026-09-04.** The hazard was measured, not supposed: `keyset::remove` now takes a second
+  writer, so `run.rs` hands it a locked stderr for the prompt and keeps the locked stdout it already
+  passed for the per-key announcement. Every end-to-end assertion on the prompt's text moved from
+  stdout to stderr, and a new test,
+  `keyset_remove_prompt_goes_to_stderr_not_stdout`, pins the negative half directly: the prompt is
+  in stderr *and* absent from stdout, so a future change routing it to both streams fails there even
+  though every other assertion on the prompt's wording would still pass.
+
+- [x] ~~**2.13 `wh set rt --off` must clear rapid trigger keyset membership. Depends on 2.4.**~~
   Measured in `captures/rt-off-w.jsonl`, frame 70: the vendor's per-key rapid trigger off writes
   `0xFE = 0` after the value records, one record per frame, as the last thing it sends. `wh` writes
   the MODE record and stops, so a key turned off through `wh` keeps whatever membership it held and
@@ -394,15 +552,45 @@ rather than as settings it recognises.
   "unwrap or default" lands on `Um(0)`, which would write `0x14 = 0, 0x15 = 0`, a value the vendor
   has never been observed writing. Settled by 2.15: both refuse and both name `--press`/`--release`.
   Second: `keyset::plan` used to send a MODE record at an unchanged nibble-0 value, which
-  `ops::rt_off_records` refuses to do. `plan` no longer emits one at all, measured against 618 MODE
-  write records in the corpus of which none is at nibble 0, so routing this task through `plan` no
-  longer introduces that write.
+  `ops::rt_off_records` refuses to do. `plan` no longer emits one at all, measured against 1150
+  MODE write records in the corpus of which none is at nibble 0, so routing this task through
+  `plan` no longer introduces that write.
 
   Measured in the same review, and settling an earlier doubt: the vendor **does** reset the
   sensitivities on a per-key rapid trigger off. `rt-off-w.jsonl` shows W going from 500/500 to the
   global 100/100. `ops::rt_off_records` writes MODE alone and leaves the private value in place, so
   it is the one that diverges; routing through `Change::rt_off` removes a divergence rather than
   creating one.
+
+  **Done 2026-09-05.** `wh set rt --off` routes through `crate::keyset::rt_off`, which builds
+  `Change::rt_off` over `keyset::plan` with `Some(KeysetIndex::clear(Kind::Rt))`, and reuses
+  `announce_remove` and `verify_write_as`: this command now reaches the same destination
+  `wh keyset remove rt` does, so a key leaving a keyset, a keyset emptied by that, and a key that
+  only has its membership rewritten are said the same way in both. `ops::rt_off_records` and
+  `ops::set_rt_off` are left in place and are no longer on the path, exactly as 2.14 left
+  `ops::ap_records`; `run.rs`'s `verify_rt_off`, which checked MODE alone and so could not see the
+  sensitivities or the membership this write now sends, was deleted rather than left checking too
+  little. `--press`/`--release` lost `conflicts_with = "off"`, per this entry's own ruling: a
+  refusal naming a flag the operator cannot pass is the defect, not the fix. They must be passed
+  together or not at all, since `--off` resets both sensitivities and a half-given override would
+  have to read the other half from the very base reading whose disagreement was the reason to reach
+  for them.
+
+  **Two corrections from fix round 1, both measured, both changing what this entry prescribed.**
+  This entry said the sensitivities come from `keyset::global_rt`. They come from
+  `global_rt_excluding` over the selection instead, which is what 2.22 already settled for
+  `remove`: reading without excluding makes `wh set rt --keys w --off`, on the ordinary board where
+  `w` is the one key with its own sensitivity, refuse as a disagreement with itself. That is the
+  commonest way the command is run and it worked before this task. `NoneOutsideAKeyset` therefore
+  carries two board states here as it does in `remove_base_rt`, told apart from `m.entries()`; both
+  refuse and both name `--press`/`--release`.
+
+  And `wh set rt --keys all --off` became a fourth route to whole-board destruction the moment it
+  started writing membership: measured on a board with two keys in rt keyset 1, it exited 0 with
+  stdin closed, destroyed the keyset and cleared every key's `0xFE`, asking nothing. It now calls
+  the same `confirm_whole_board_remove` the other three call, so `crates/wh-cli/src/confirm.rs`
+  names four routes. A whole-board selection excludes every free key from the base read, so that
+  guard is reachable only with `--press`/`--release`; without them the run refuses earlier.
 - [x] ~~**2.14 Decide what `wh set ap` emits, before the CLI is written.**~~ Settled by
   measurement, 2026-09-03: **one shape, always.** `wh set ap` routes through `keyset::plan` with
   `Change::ap`, whether the key is in an actuation point keyset or not, and `ops::ap_records`
@@ -440,30 +628,116 @@ rather than as settings it recognises.
     keys hold each, descending, which is the order `Global::Split` already carries. A majority vote
     would write a value the operator never typed over every member's actuation point.
   - `NoneOutsideAKeyset`: refuse, and say why, that no key sits outside a keyset so the board holds
-    no global to read. Rejected alternatives: the whole board's majority, which returns some
-    keyset's value wearing the global's name, and the vendor's five fixed keys (`0x29`, `0xfa`,
-    `0x31`, `0x28`, `0x52`), whose disagreement behaviour is unmeasured and one of which was itself
-    in a keyset.
+    no global to read. Rejected alternative: the whole board's majority, which returns some
+    keyset's value wearing the global's name. (The vendor's own read, in `ks-value-ap`, covers the
+    whole board too, five 14-record frames of all 68 keys, not five keys singled out as an earlier
+    draft of this bullet said; its disagreement behaviour is unmeasured, and one read key was
+    itself in a keyset.)
 
   This gives `wh keyset create ap`, `wh keyset delete ap` and `wh set rt --off` a `--value` (or
   `--press`/`--release`) escape hatch that is optional on an agreeing board and required on a
   disagreeing one. Implemented in 2.4b and 2.13, not here.
 
-- [ ] **2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.** All
-  non-blocking, all in code files, so all wanting an implementer rather than a hand edit:
-  - `keyset.rs` `Change::ap` calls the vendor's promotion unmeasured. The promotion is measured
-    (`ks-value-ap`, `X` from `0x0000` to `0x0010`); whether it depends on keyset membership is not.
-    Say which, see 2.14.
-  - `keyset.rs` `frames()` claims a per-key group is at most 4 records. That is a property of
-    `plan`'s output, not of `frames()`: `plan` takes a bare `&[u8]` with no dedup, and a repeated
-    usage produces a 16-record group that does split. Unreachable through the CLI, since both
-    `Selector::resolve` and `read_matrix` dedupe.
-  - `keyset.rs` `value_records()` says the slice is "packed per key below the 14-record limit". It
-    is flat and unpacked; packing happens in `frames()`, and a batch of exactly 14 is reachable.
-  - `keyset.rs` `plan`'s divergence list presents itself as complete and omits one: the vendor
-    writes MODE twice per key per operation, we write it once.
-  - `keyset.rs` says the vendor reads `0x04` from five fixed keys "at the head of every capture".
-    Five of the 27 contain no `0x04` read at all.
+- [x] ~~**2.30 `auto_backup`'s reason is a forgeable string that gets persisted.**~~ Nine call
+  sites in `crates/wh-cli/src/run.rs` passed a literal like `"keyset create"`, which became
+  `snap.origin = "auto: keyset create"`, was written into the backup file, and is shown by
+  `wh backups list`. Nothing tied a real run to the label it wrote: the only tests touching the
+  origin were `wh-config`'s round trip and one `dump.rs` test over a hand-built snapshot.
+
+  Closed 2026-09-05. `BackupReason` in `run.rs`, eight variants: one per command family that takes
+  an auto-backup, plus `Manual` for `wh backup`. `origin()` renders the exact strings the literals
+  produced, `"auto: set ap"` through `"auto: restore"` and a bare `"manual"`, because those words
+  are already in the operator's backup files on disk and are what `wh backups list` and `--last`
+  print. This is a type change, not a wording change, and
+  `every_backup_reason_renders_its_persisted_origin_string` pins all eight verbatim so a rename
+  has to be deliberate.
+
+  The missing end-to-end tie is now two tests that drive a real command and read the file it
+  wrote: `set_ap_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs` and
+  `keyset_create_ap_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/keyset.rs`,
+  one per command family, since one family's label reaching the file says nothing about another's.
+  The task's claim is measured: swapping the `set ap` and `keyset create` literals before the
+  change failed exactly those two new tests and nothing else in the workspace.
+
+  Six of the eight variants (`set rt`, `keyset set`, `keyset delete`, `keyset remove`, `restore`
+  and the manual backup) still have no end-to-end test tying a run to its label, and `set ap
+  --base`'s own call site is untied as well even though its variant is pinned through the plain
+  `--set` path. A wrong variant at one of those sites would still persist quietly: the enum makes
+  the label visible at the call site, it does not make the wrong one impossible.
+
+- [x] ~~**2.31 `confirm_whole_board_create` still takes a `kind` beside its `Target`.**~~ The last
+  kind-beside-target in `crates/wh-cli/src/keyset.rs`, left deliberately when 2.18 closed: its
+  kind genuinely selects between `ap_mode_clause` and `rt_on_mode_clause`, so it was pinned rather
+  than safe by construction, and the argument for leaving it lived only in a gitignored report.
+
+  Closed 2026-09-05 by applying the `Target::kind()` cure rather than writing the argument down.
+  Selecting a clause needs a kind, not a parameter carrying one, and the `Target` already has one:
+  the parameter is gone and the kind picking the clause builder, the keyset wording and the
+  refusal subject is read off the value being confirmed.
+  `#[allow(clippy::too_many_arguments)]` went with it, seven arguments being at the lint's
+  threshold, and clippy passes without it.
+
+  The seven tests the entry named are measured, and they are seven only as a union of both
+  directions: forcing `Kind::Rt` inside the function fails four (the `ap` whole-board create
+  tests), forcing `Kind::Ap` fails the other three (the `rt` ones), and nothing else in the
+  workspace moves either way. All seven pass untouched after the cure, and the mismatch they
+  guarded against, a wrong `kind` beside a right `Target`, is no longer representable, so there is
+  nothing left at that call site to mutate.
+
+- [ ] **2.29 Two stale corpus counts in `ops::ap_records`'s doc.**
+  `crates/wh-device/src/ops.rs:264-267` says "across all 27 keyset-era captures" and "469 measured
+  echoes". The corpus is 39 files. Left deliberately when the rest of 2.16 was corrected on
+  2026-09-05: re-deriving them means simulating `ap_records`'s own per-key output against every
+  capture to decide which MODE writes it would and would not have sent, which is a materially
+  riskier measurement than counting records, and a wrong number here would be worse than a stale
+  one. 2.16's header was narrowed instead so it no longer claims these were corrected.
+
+  Both numbers support the same load-bearing claim, that the vendor rewrites MODE where
+  `ap_records` sends nothing, and that claim was not in doubt. What is stale is the evidence
+  offered for it.
+
+  When it is picked up: write the simulation as a test rather than a script, so the number is
+  re-derived by the suite instead of pasted into a comment that rots again.
+
+- [x] ~~**2.28 Four whole-board refusal assertions match a string three commands emit.**~~ Four
+  `contains("was not confirmed")` assertions on a declined whole-board run, where
+  `wh keyset remove`, `wh keyset create` and `wh set rt --off` all end a refusal with that phrase,
+  so none of them could tell its own command's refusal from another's.
+
+  **Measured 2026-09-05, and this was not theoretical.** The same shape in
+  `crates/wh-cli/tests/keyset.rs` let a mutation pass the whole workspace green while
+  `wh keyset remove ap` told the operator "rapid trigger off over the whole board was not
+  confirmed", naming a command they had not run.
+
+  Closed 2026-09-05: all four now assert `ap set over the whole board was not confirmed` in full.
+  Proved by mutating the refusal to `wh keyset create`'s noun: exactly five tests fail, these four
+  and the unit test named below, and nothing else in the workspace. Two corrections to this entry,
+  both measured while closing it. All four guard `confirm_whole_board_ap_set` alone, not
+  `confirm_whole_board_create` as well: every create refusal already asserted its own subject. And
+  a fifth site carried the same weak assertion, the unit test
+  `confirm_whole_board_ap_set_refuses_on_no` in `crates/wh-cli/src/keyset.rs`, now tightened with
+  the other four; it is the fifth failure under that mutation.
+
+- [x] ~~**2.16 Comment cleanup in `wh-device`, from the final review of the keyset layer.**~~ All
+  non-blocking, all in code files. The five-fixed-keys, nibble-0 and template-step-1 counts below
+  are re-measured against the 39-file corpus current at this close; the already-closed `0x18`
+  distribution and hypothesis bullets predate this round and still cite the 27-file corpus they
+  were measured against, untouched here:
+  - ~~`keyset.rs` `Change::ap` calls the vendor's promotion unmeasured.~~ Closed: the comment now
+    says plainly that the promotion itself is measured (`ks-value-ap`, key `x`: MODE `0x0000` to
+    `0x0010`) and that only its dependence on keyset membership is not.
+  - ~~`keyset.rs` `frames()` claims a per-key group is at most 4 records.~~ Closed: the comment now
+    attributes the cap to `plan`'s deduplicated `usages`, not to `frames()` itself, and says a
+    repeated usage would split here, unreachable through the CLI since `Selector::resolve` and
+    `read_matrix` both dedupe.
+  - ~~`keyset.rs` `value_records()` says the slice is "packed per key below the 14-record
+    limit".~~ Closed: it now says flat and unpacked, packing happens in `frames()`, and a batch of
+    exactly 14 is reachable.
+  - ~~`keyset.rs` `plan`'s divergence list omitted that the vendor writes MODE twice per key per
+    operation.~~ Closed: added to the list.
+  - ~~`keyset.rs` said the vendor reads `0x04` from five fixed keys "at the head of every
+    capture".~~ Closed: now says "where it reads `0x04` at all", and states 5 of the 39 captures
+    contain no `0x04` read request at all (re-measured; the five is unchanged, the denominator is).
   - ~~`ops.rs` said the vendor writes MODE `0x18` on every actuation point change.~~ Closed: the
     comment now says the measured distribution across all 27 captures, `{0x10: 154, 0x18: 40,
     0x20: 376, 0x28: 24, 0x30: 12, 0x38: 10, 0x48: 2}`, and keeps the load-bearing half, that the
@@ -471,88 +745,94 @@ rather than as settings it recognises.
   - ~~`ops.rs` still said a hypothesis "stays a hypothesis until the hardware session tests it".~~
     Closed: the session ran on 2026-08-29, and the comment now points at `docs/keysets.md`'s own
     ranking, that the MODE marker is unlikely to be the whole of the greying story.
-  - `keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped the
-    measurement. Both should stand: 618 MODE write records across the corpus, none at nibble 0.
-  - `wh set rt --set` is a third pair of routes to one intent with different frames, alongside the
-    two recorded in 2.13 and 2.14. `plan` matches the vendor here and `ops::rt_records` diverges.
+  - ~~`keyset.rs`'s nibble-0 justification was rewritten to give the semantic reason and dropped
+    the measurement.~~ Closed: the measurement is back, re-counted at 1150 MODE write records
+    across the 39-file corpus, none at nibble 0 (the 618 the bullet named was stale).
+  - ~~`wh set rt --set` is a third pair of routes to one intent with different frames.~~ Still true
+    after `wh set rt --off` moved onto `plan`: `--set` still reaches the board through
+    `ops::rt_records`, which writes MODE unconditionally where `plan` applies the skip and
+    nibble-0 rules. Recorded on `Change::rt_on` itself.
 
-- [ ] **2.17 What the `docs/keysets.md` verification pass found that touches code. Read before
-  writing 2.4b.** An adversarial pass on 2026-09-03 checked every measured claim in that document
-  against the frames across 78 checked claims: 46 confirmed outright, 9 confirmed in part, 23
-  findings only, 29 findings in all and 8 of them flatly wrong. A second pass over the corrections
-  found nine more, seven of them introduced by the rewrite. The document is now rewritten. Three
-  findings change what the CLI should do rather than only what the document says.
+- [x] ~~**2.17 What the `docs/keysets.md` verification pass found that touches code.**~~ Of the
+  three code-touching findings:
+  - ~~`0x16`/`0x17` are not a constant.~~ Advice to a task that never added them: confirmed
+    `keyset::plan` still never writes those layouts. Nothing to change.
+  - ~~Template step 1 is a two-record cap, not one frame per distinct value.~~ Closed: re-measured
+    at 300 MODE-only write frames across the 39-file corpus (275 carry two records, 25 carry one,
+    none more), added to `frames()`'s own comment as a divergence that is measured, not a match.
+  - ~~The global rapid trigger skip is not measured as a membership test.~~ Nothing in the CLI
+    implements a whole-board rapid-trigger toggle at all; `global_ap_excluding`/`global_rt_excluding`
+    skip on membership by design, to compute a baseline, not as a guess at the vendor's own
+    undocumented rule. No comment to correct.
 
-  - **`0x16` and `0x17` are not a constant.** They are rewritten at the key's current value like
-    any other non-owned layout, matching what each capture that reads them reads: `0` in all 38
-    Phase 1 write records, `100` in all 580 from the profile 1 captures, and `0` in all 414 from the
-    profile 2 ones. `keyset::plan` never writes them, and its stated reason, that a constant would be
-    an invented value, turns out to be right for a reason it did not know. Of the 34 captures before
-    `layout-16-by-profile`, 25 both read and write them, four read without writing, four do neither,
-    and one writes them with no read frames in the file at all.
-    If 2.4b ever adds them, read them per key. Hard-coding `100` would write `100` over `0` on a
-    board that has never held a keyset.
-  - **Template step 1 is a two-record cap, not one frame per distinct value.** Of 162 MODE-only
-    write frames, 147 carry two records and 15 carry one, and none carries more. The vendor splits
-    one value across two frames and puts two values in one. `frames()` packs whole per-key groups up
-    to 14 records, so it already diverges here; the divergence is defensible, but it is now a
-    measured one rather than a match, and the comment in `keyset.rs` should say so.
-  - **The global rapid trigger skip is not measured as a membership test.** None of the four global
-    captures reads `0xFE`. The two skipped keys are simultaneously the members of `0xFE=2` and the
-    only two keys at MODE nibble `3`, so the frames cannot separate the two rules. Worse, `u` and
-    `i` held `0xFE=1` at the last membership read and were written rather than skipped. Anything in
-    the CLI that skips on membership is choosing one of two readings, and should say which.
+  The remaining 26 findings are in the document, not repeated here.
 
-  The remaining 26 findings are in the document. The ones worth knowing while writing the CLI: the
-  allocation of `0xFF=9` is unexplained by any frame and is no longer offered as evidence for max
-  plus one, indices are reused after a delete rather than being monotonic, and the vendor does not
-  always batch two members of one create into the same frame.
-
-- [ ] **2.18 Parked findings from task 2.4b's `wh keyset create` reviews.** Five review rounds
+- [x] ~~**2.18 Parked findings from task 2.4b's `wh keyset create` reviews.**~~ Five review rounds
   closed everything that changes behaviour. The bullets below are what survived, all judged not to
   block the rest of the CLI, all measured rather than suspected. Two were added after this entry was
-  written, and any struck through since have been closed.
+  written. All are now closed, the last four on 2026-09-05.
 
   - ~~`verify_write_as`'s (named `verify_create` when this was written) `rt_keyset` fallback to the
     pre-write value was unpinned.~~ Closed: mutating it to compare the readback against itself fails
     `keyset_set_rt_end_to_end_catches_a_membership_drift_on_the_second_member`.
-  - `value_moves`'s rapid trigger arm is pinned as a unit but neither of its two comparisons
-    individually, because the fixture moves both press and release. A fixture moving only one
-    closes it. Consequence if the release half is lost: a create is announced as keeping a value it
-    is about to overwrite.
-  - `describe_member` (renamed from `describe_loss` once it started covering a freshly-enrolled
+  - ~~`value_moves`'s rapid trigger arm is pinned as a unit but neither of its two comparisons
+    individually, because the fixture moves both press and release.~~ Closed:
+    `keyset_create_announces_a_rapid_trigger_steal_when_only_one_half_of_the_pair_moves` moves only
+    `w`'s release and only `a`'s press, in one create, so each comparison is pinned on its own.
+    Mutating the arm to compare press alone, then release alone, fails it each time and leaves the
+    original both-halves fixture green. The press-only run printed "loses w (keeps 0.10/0.50mm)"
+    beside frames writing 0.30mm, which is the consequence this bullet named.
+  - ~~`describe_member` (renamed from `describe_loss` once it started covering a freshly-enrolled
     free key too, which loses nothing) documents a fourth outcome that appears to be
-    unreachable. Reasoning, not measurement: `plan` emits value records only when MODE or a value
-    moved, so if the value did not move then MODE did, and the branch above catches it. Either
-    delete the branch and its doc bullet or find the case that reaches it.
+    unreachable.~~ Closed: the branch and its doc bullet are deleted. Established from `Change`'s
+    own closed set of constructors, whose fields are private: each carries at most one kind's
+    value, so a bundle whose described kind's value did not move can only have come from a moved
+    MODE. `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins that for the three
+    constructors that reach `describe_member`, `ap`, `rt_on` and `rt_off`, each over a board
+    holding none of the tree's own constants, since an injected second value escapes only by
+    coinciding with what is already there. `ap_keeping_touch` (no production caller today) and
+    `membership_only` (carries no value) are outside it, and `ReplayTransport`'s byte-for-byte
+    matching is their guard. Measured, not reasoned: the one thing that did reach the branch was a
+    forged `Target`, and that is now what picks the kind.
   - ~~`mode_change`'s comment justified printing a `TouchMode` through `{:?}` by a precedent in
     `dump` that does not exist.~~ Closed: the comment now says `dump` prints `on`/`off` and a raw
     `mode_raw` instead, that this announcement is the only place in `wh` that names a touch mode to
     the operator, and that an unknown nibble prints rough Rust tuple-variant syntax matching
     `ops::rt_records`, meaning the behaviour, since that function builds records and prints
     nothing. The behaviour itself was already right and is unchanged.
-  - `announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s. Safe inside
-    `create` by construction and pinned there by three fixtures, but it is the last surviving
-    instance of the pattern four rounds were spent removing. Recorded in the plan as a warning to
-    the task that consumes it.
-  - `verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
-    create. Cannot affect what is checked, which was proven by deleting the label and watching every
-    other parameter go dead. A small enum would make it unforgeable.
+  - ~~`announce_steal`'s `kind` still selects what is compared, unlike `verify_create`'s.~~ Closed
+    by removing the parameter: `Target::kind()` derives it from the value the announcement is
+    already printing, so what is compared and what is named can no longer disagree.
+    `announce_delete` and `announce_remove` had the identical shape and lost theirs the same way,
+    so "the last surviving instance" was three. The residual forgery, a `Target` whose variant
+    disagrees with the `Change` beside it, is measured as caught: building an rt create's target as
+    `Target::Ap` fails five fixtures, on a header and member lines naming actuation points while
+    the frames carry rapid trigger values. `confirm_whole_board_create` kept a `kind`
+    alongside its `Target` at this close, since it picks a different clause builder from it, and
+    both of its refusals are pinned in full; 2.31 took that one too.
+  - ~~`verify_create`'s `op` is a `&str` with three intended values, so a delete can label itself a
+    create.~~ Closed: `KeysetOp`, four variants, since `set` had joined the three since this was
+    written. The kind is not folded in, unlike `WholeBoardOp::KeysetRemove`'s, because all four run
+    over either kind. `remove`'s label turned out to be the one of the four with no end-to-end
+    cover, so a remove could still have reported itself as a create with the workspace green;
+    `keyset_remove_leaves_the_keyset_alive_when_others_remain` now asserts it, and fails alone
+    under that swap.
   - ~~`verify_restore` was pinned as a whole and not per comparison.~~ Closed: every comparison,
     `ap`, `rt_press`, `rt_release`, `mode`, and both keyset memberships (`0xFF` and `0xFE`), is now
     its own fixture-backed fault, confirmed by disabling each one at a time against the full
     workspace and finding exactly one failing test per row.
-  - `wh restore` never checks the snapshot's key usages against the board's live matrix, so a
+  - ~~`wh restore` never checks the snapshot's key usages against the board's live matrix, so a
     snapshot from a different matrix writes values and membership to usages the board may not have.
     Worse than cosmetic, because `verify_restore` reads back the snapshot's usages rather than the
-    board's, so a phantom usage the firmware echoes is reported as verified rather than refused.
-    Fixing it needs a policy decision (refuse, skip, or gate on a flag), a live matrix read inside
-    the session, and a restructure of restore's build-everything-before-sending order.
-  - The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
-    point create now asserts that `0xFE` is untouched, and the converse. `docs/keysets.md`'s
-    separate-counters finding makes that the right assumption, and it is the only one of the six
-    checks resting on the firmware not coupling two layouts. One line saying so satisfies the
-    measure-never-infer rule.
+    board's, so a phantom usage the firmware echoes is reported as verified rather than refused.~~
+    Closed: the operator ruled refuse, on 2026-09-05. `check_restore_matrix` compares the
+    snapshot's usages against a live `ops::read_matrix` inside the session, after the profile
+    check and before `auto_backup`, and refuses naming the absent keys. The cost is accepted and
+    stated in the refusal: a snapshot from a different matrix is unrestorable, not partly
+    restorable. Three roundtrips added to every restore.
+  - ~~The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
+    point create now asserts that `0xFE` is untouched, and the converse.~~ Closed: one line added
+    in `verify_write_as` naming the assumption and the separate-counters finding that makes it right.
 
 - [x] ~~**Decision: `wh set ap --keys all` keeps its current behaviour.**~~ Ruled by the operator on
   2026-09-03, after the whole-branch review raised it. On a board holding keysets, that command
@@ -594,19 +874,23 @@ rather than as settings it recognises.
      catches it. That is the rewrite the whole suite survived before this round, and the second
      `run_wh` call is the only thing that catches it.
 
-- [ ] **2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
-  VALUE`, the step size for its steppers, not the global actuation point. The real global actuation
-  point is not in that record; it is what every key in no keyset holds in layout `0x04`.
+- [x] ~~**2.10 Rename `Snapshot::global.travel_mm`.** Measured: it is the configurator's `"MM" CUSTOM
+  VALUE`, the step size for its steppers, not the global actuation point.~~ Now `custom_value_mm`,
+  carrying `#[serde(alias = "travel_mm")]` so backups already on disk keep restoring. The real
+  global actuation point is still not in that record; it is what every key in no keyset holds in
+  layout `0x04`. `wh dump --table` names it "custom value" too.
 
   **`--mm` is reserved for this, and must not be spent elsewhere.** Ruled by the operator on
   2026-09-04 while naming 2.23's flag. `"MM" CUSTOM VALUE` is the one term the configurator uses for
   this setting, and it is the exact term this task exists to stop being confused with the actuation
   point. Any flag `wh` grows for it should be `--mm`; 2.23 uses `--base` for the actuation point so
-  the two cannot collide.
-- [ ] **2.11 Stop writing zero dead zones on restore.** The vendor's `cmd 0x29` write always carries
-  `press_dead=200` and `release_dead=200`, constants in its own SDK template. The board reports both
-  as `0` on read, so `wh restore` writes `0, 0` where the vendor has only ever written `200, 200`.
-  Send the vendor's constants instead of the zeros we read back.
+  the two cannot collide. No such flag exists yet: the field is recorded and restored, never set.
+- [x] ~~**2.11 Stop writing zero dead zones on restore.**~~ `wh restore` now sends the 200 and 200
+  every measured vendor write carries. Measured 2026-09-05 across every `cmd 0x29` frame in
+  `captures/`: 14 read requests in 7 files, every reply reporting both dead zones as `0`, and 3
+  vendor writes at three different travel values, all carrying `200` and `200`. The snapshot still
+  records what the board reported, informational only. Whether 200 is a fixed constant or a user
+  setting at its default is not established, and is open below.
 - [x] ~~**2.5 `wh profile`, read and select.** `cmd 0x00` sub-order `0x70`, argument `0xFF` to read,
   a zero-based index to select.~~
 - [x] ~~**2.6 `wh backups list`, and what `--last` means.** Manual and automatic backups are now
@@ -672,9 +956,15 @@ rather than as settings it recognises.
   of a rapid trigger keyset delete as something other than "what the vendor wrote".
 - [ ] **Key `0x01`, probably FN. [hardware]** Deliberately unmeasured, because confirming it means
   remapping FN away and FN is how you reach the layer that would let you undo that.
-- [ ] **Widen what a snapshot captures.** It currently records global travel, four layouts per key,
-  and the profile. It does not record key mappings, the FN layer, SOCD, dynamic keystroke, mod tap,
-  gamepad configuration, RGB, or polling rate.
+- [ ] **Are the `cmd 0x29` dead zones fixed constants or a user setting at its default?** Every
+  measured vendor write carries 200 for both, which `wh restore` now writes too, but the vendored
+  `pack.ts` defaults them to `0` while a sibling app exposes them as sliders initialised at `0.2`mm.
+  Unsettleable by readback: the board reports `0` for both whatever was written. If they are a user
+  setting, `wh restore` overwrites the operator's choice invisibly, and `wh selftest`, the one place
+  `wh` still writes a zero dead zone, zeroes it. See `docs/backlog.md`.
+- [ ] **Widen what a snapshot captures.** It currently records the `cmd 0x29` global record, four
+  layouts per key, and the profile. It does not record key mappings, the FN layer, SOCD, dynamic
+  keystroke, mod tap, gamepad configuration, RGB, or polling rate.
 
 ## Done
 

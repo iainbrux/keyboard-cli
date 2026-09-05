@@ -122,8 +122,8 @@ target values differ.
 5. membership (0xFF or 0xFE)     ONE RECORD PER FRAME, always last
 ```
 
-**Step 1 is a two-record cap, not one frame per distinct value.** Of the 270 MODE-only write frames
-in the corpus, 246 carry exactly two records and 24 carry one. None carries more. The vendor splits
+**Step 1 is a two-record cap, not one frame per distinct value.** Of the 300 MODE-only write frames
+in the corpus, 275 carry exactly two records and 25 carry one. None carries more. The vendor splits
 one value across two frames (`ks-create-ap-1` frames 8 and 10, both `0x10`) and puts two different
 values in one frame (`ks-global-rt-on` frame 108, `0x20` and `0x28`), so the grouping is not by
 value. An earlier draft read this backwards.
@@ -344,10 +344,40 @@ rapid trigger off, not nibble 2 (following the board's global).** This is the sa
 `ks-delete-rt`'s whole-keyset delete writes. **`N`'s own actuation point, `1100`, is preserved, not
 reset to the global `2000`.** A rapid trigger removal does not *own* layout `0x04`; the AP record
 it still sends carries `N`'s own prior reading back unchanged, not the global. `wh keyset remove
-rt` implements both of these: `keyset::Change::rt_off` turns rapid trigger off and resets the
+rt` and `wh set rt --off` implement both of these, and send the identical per-key template:
+`keyset::Change::rt_off` turns rapid trigger off and resets the
 sensitivities to the global, and never sets a target actuation point, so `plan` echoes the key's
 own back. It does not reproduce the vendor's `0x16`/`0x17` writes or the repeated MODE record
 above, the same deliberate divergence `plan` documents for every keyset operation.
+
+### Setting the base actuation point
+
+Measured 2026-09-04 in `captures/ks-set-global-ap.jsonl`. Changing the configurator's GLOBAL
+ACTUATION POINT field sent 75 write frames carrying 413 records to 59 keys. Per key: `0x08 = 16`
+twice (its template puts MODE in steps 1 and 3), `0x04 = 1950` the new base, `0x14 = 100` and
+`0x15 = 100` echoed unchanged, `0x16 = 0` and `0x17 = 0` echoed unchanged. No `0xFF` record
+anywhere.
+
+**Measured separately: nine of the 68 keys were read and never written**, usages `0x04`, `0x07`,
+`0x0a`, `0x0c`, `0x12`, `0x13`, `0x16`, `0x18`, `0x1a`. That those nine are keyset members, and
+that the board therefore holds 9 members against 59 free keys, is an inference from board state,
+not itself measured here: the capture contains no `0xFF` request anywhere and no DEFKEY matrix
+read, so nothing in it can establish membership directly. The capture also logs no profile: its
+three `cmd 0x00` requests are all `22ffff`, with no `70` anywhere, so nothing in this section can
+be attributed to a profile either.
+
+The per-key template matches every other free-key write already measured in this document: MODE
+(echoed, sent twice), AP at the new value, and RT press/release/`0x16`/`0x17` all echoed
+unchanged. That much is read directly off the 75 frames. Whether the 59 keys carrying it are
+exactly "every key outside a keyset" is the same inference flagged two paragraphs up, not a second
+and independent measurement; nothing in this capture reads membership to confirm which keys those
+59 actually are.
+
+`wh set ap --base <mm>` implements this: `keyset::plan(s, free_keys, &Change::ap(v), None)`, with
+membership held at `None` so no `0xFF` record is ever written. It carries the same two deliberate
+divergences from the template above that every other `plan`-built write already carries: it never
+writes `0x16`/`0x17`, on the grounds that it never reads them and a constant would be an invented
+value, and it sends MODE once rather than the vendor's twice.
 
 ## Touch nibble 2 is global rapid trigger
 
@@ -484,22 +514,42 @@ transition is a bare write in `ks-create-ap-1`, a file containing no reads at al
 to a keyset existing rather than to the sitting, the firmware or the configurator version is an
 inference. Purpose still unknown.
 
-**`Snapshot::global.travel_mm` is not the global actuation point.** It is the configurator's
+**`Snapshot::global.custom_value_mm` is not the global actuation point.** It is the configurator's
 `"MM" CUSTOM VALUE`, the step size for its `< >` controls. Measured: changing that control from 0.10
 to 0.15 moved the field from `0.1` to `0.15`, and the write carried `travel=150um`. The real global
 actuation point, 2.00mm, is not in that record at all; it is simply what every key in no keyset
-holds in layout `0x04`. The field should be renamed.
+holds in layout `0x04`. The field was called `travel_mm` and was renamed for exactly this reason;
+backups spelling it the old way still load, through a serde alias.
 
-## An open item on the global record
+## The global record's dead zones
 
-The vendor's `cmd 0x29` write always carries `press_dead=200` and `release_dead=200`. Those are
-constants in the vendor's own SDK template, not user settings. **The board reports both as `0` on
-read**, so the values cannot be preserved across a read-modify-write.
+Measured 2026-09-05, by parsing every `cmd 0x29` frame in `captures/`: 14 read requests across 7
+files, and every reply reports `press_dead = 0` and `release_dead = 0`; 3 vendor writes, in
+`custom-value-change` (travel 400 and 650) and `custom-value-nudge-after-restore` (travel 150), all
+three carrying `200` and `200`. A reply to a write echoes the write, so the three replies showing
+`200/200` are acknowledgements, not independent reads. (A fifteenth read-shaped reply, `100/0/0`,
+sits in `ks-create-rt-2` with no request in that file, an eighth file and an orphan of a capture
+that started mid-exchange. It agrees with the other fourteen and is counted nowhere above.)
 
-`ops::restore_all` passes the snapshot's values into those fields, which means `wh restore` writes
-`0, 0` where the vendor has only ever written `200, 200`. Whether the board cares is unmeasured, and
-unobservable through the read path. The safe fix is to send the vendor's constants rather than the
-zeros we read back.
+**Whether 200 is a fixed constant or a user setting at its default is not established**, and this
+repo's vendored sources disagree. `research/proto/package/src/utils/pack.ts` defaults `DBDataPack`
+to `pressDead: 0, releaseDead: 0`, so an SDK template value would be zero, not 200; while
+`research/aure/src/components/performance/GlobalTravel.vue`, a different app on the same Sparklink
+SDK, exposes both as user sliders over `0.0` to `1.0` initialised at `0.2`, which is 200
+micrometres. Three writes at three different travel values all carrying `200/200` fit either
+reading. `docs/backlog.md` carries the open question and what would settle it.
+
+`wh restore` used to pass the snapshot's own recorded values into those fields, which meant it wrote
+`0, 0` where the vendor has only ever been seen to write `200, 200`. It now sends 200 and 200
+(`run::VENDOR_PRESS_DEAD` and `run::VENDOR_RELEASE_DEAD`), for 1:1 interoperability with the value
+the vendor writes, and the snapshot's dead zones are informational only. **If they turn out to be a
+user setting, that overwrites the operator's choice unverifiably**: the board reports both as `0` on
+read, so no readback can tell what was replaced, and `verify_restore` never re-reads this record.
+
+`custom-value-nudge-after-restore` writes travel 150 with `200/200`, and `layout-16-by-profile`
+later reads travel 150 back with `0/0`, which would say the board keeps the travel and not the dead
+zones. **That is not established**: the pairing crosses two captures and neither records its
+profile, which is the comparison this project treats as invalid.
 
 ## Command `0x2c` is SOCD
 
@@ -659,7 +709,7 @@ layout neither `wh` nor the configurator reads would not show up here.
 
 ## Corpus
 
-Thirty-six capture files, 5860 frames, all decoding with correct framing and checksums and no hard
+Thirty-nine capture files, 6280 frames, all decoding with correct framing and checksums and no hard
 failures. Up from ten files and 1224 frames after Phase 1, and twenty-seven after the 2026-08-29
 sittings.
 

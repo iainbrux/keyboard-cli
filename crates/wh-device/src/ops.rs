@@ -156,10 +156,18 @@ pub fn rt_records<T: Transport>(
 /// Builds the [mode] records to turn rapid trigger off on `usages`, preserving each key's
 /// advanced-mode nibble. Reads current MODE per key but sends nothing else.
 ///
+/// No longer on the `wh set rt --off` path, the same way `ap_records` is no longer on `wh set
+/// ap`'s: the vendor's own per-key rapid trigger off also resets both sensitivities and clears
+/// the key's `0xFE` membership (`captures/rt-off-w.jsonl`), which this cannot express, so the CLI
+/// routes through `keyset::plan` with `Change::rt_off` instead. The nibble mapping below is still
+/// the shipped one; `TouchChange::Off` carries the identical rule.
+///
 /// Only rewrites keys with rapid trigger on, to `Single` (nibble 1), never to `Global`
 /// (nibble 0). Keys already `Global`, `Single`, or `Unknown` are left untouched: a key with
-/// nothing to change gets no record (see the skip below), so `wh set rt --keys all --off` on a
-/// board with few RT keys doesn't detach every other key from the global travel setting.
+/// nothing to change gets no record (see the skip below), so a whole-board `--off` on a board with
+/// few RT keys doesn't detach every other key from the global travel setting. That was written
+/// about `wh set rt --keys all --off`, which no longer calls this; the property is still this
+/// function's, and `keyset::plan` reaches the same one by its own separate skip rule.
 ///
 /// `RtGlobal` counts: a key following the board's global rapid trigger has it on, so `--off`
 /// must turn it off. Nibble 1 is what the vendor itself writes when the global switch goes off
@@ -217,6 +225,8 @@ pub fn set_rt<T: Transport>(
 /// Disables RT (touch mode to `Single`, per-key actuation point), preserving the advanced
 /// nibble. Returns the records actually written, in `usages` order; not necessarily one per
 /// key, since a key with nothing to change (see `rt_off_records`) contributes none.
+///
+/// Off the `wh set rt --off` path along with `rt_off_records`, for the reason recorded there.
 pub fn set_rt_off<T: Transport>(
     s: &mut Session<T>,
     usages: &[u8],
@@ -339,8 +349,8 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
 ///
 /// A reply naming an index the board's four profiles can't produce surfaces as
 /// `DeviceError::ProfileOutOfRange`, kept distinct from `Decode` (a reply that isn't shaped
-/// like a profile reply at all), so callers can degrade gracefully on the former while still
-/// hard-failing on the latter.
+/// like a profile reply at all). Both stop the caller; the split is what lets each say which
+/// happened, since an impossible index and a garbled reply need different words.
 pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, DeviceError> {
     let payload = s.roundtrip(&cmds::read_profile())?;
     cmds::parse_profile(&payload).map_err(|e| match e {
@@ -787,10 +797,14 @@ mod tests {
     }
 
     /// Replays all 68 real per-key MODE values from `captures/initial-load.jsonl` (none of them
-    /// RT-enabled, confirmed below) through `rt_off_records`, exactly what
-    /// `wh set rt --keys all --off` sends. Guards against rewriting any of the 58 nibble-0 keys
-    /// unconditionally, and against emitting a record that just echoes each key's unchanged
-    /// value: the correct output is no records at all.
+    /// RT-enabled, confirmed below) through `rt_off_records`. Guards against rewriting any of the
+    /// 58 nibble-0 keys unconditionally, and against emitting a record that just echoes each key's
+    /// unchanged value: the correct output is no records at all.
+    ///
+    /// This is a claim about `rt_off_records` and nothing else. It once said "exactly what
+    /// `wh set rt --keys all --off` sends", which stopped being true the moment that command moved
+    /// to `keyset::plan`: it now sends a `0xFE = 0` record for every selected key regardless of
+    /// what its MODE reads, so on this board it sends 68 records where this test expects none.
     #[test]
     fn rt_off_records_leaves_every_real_non_rt_key_from_initial_load_unchanged() {
         assert_eq!(REAL_MODES.len(), 68, "must be exactly the 68 keys captured");
@@ -1478,8 +1492,8 @@ mod tests {
     }
 
     /// A reply that parses fine but names an index the board's four profiles could never
-    /// produce must surface as `ProfileOutOfRange`, not `Decode`, so a caller can degrade only
-    /// for the impossible-profile case, not a genuinely garbled reply.
+    /// produce must surface as `ProfileOutOfRange`, not `Decode`, so a caller can tell the
+    /// impossible-profile case from a genuinely garbled reply and name it to the operator.
     #[test]
     fn profile_maps_an_out_of_range_index_to_profile_out_of_range_not_decode() {
         let lines = [

@@ -31,11 +31,13 @@ runs against the second one, which is why the matching must never be loosened.
 
 **Writes are read-modify-write.** A settings write reads the key's current MODE first, so that
 changing one thing cannot silently clear another. `wh set ap`'s live path is `keyset::plan` with
-`Change::ap`, whose `apply_touch` promotes touch nibble 0 to 1 and deliberately leaves 1, 2, 3, 4 and
-unknown nibbles alone; `ops::ap_records` still does the same but is no longer on that path.
-`rt_records` preserves `RtContinuous`. This is the single most important invariant in the codebase
-and it exists because clobbering a nibble silently disables a feature the user set from the vendor
-UI.
+`Change::ap`, whose `apply_touch` promotes touch nibble 0 to 1 and deliberately leaves 1, 2, 3, 4
+and unknown nibbles alone; `ops::ap_records` still does the same but is no longer on that path.
+`rt_records` preserves `RtContinuous`. `wh set rt --off` goes the same way, through `keyset::plan`
+with `Change::rt_off` and a `0xFE` clear, so it resets the sensitivities and clears the keyset
+membership the vendor clears; `ops::rt_off_records` and `ops::set_rt_off` are off that path too.
+This is the single most important invariant in the codebase and it exists because clobbering a
+nibble silently disables a feature the user set from the vendor UI.
 
 **Only one process can hold the device.** The vendor HID collection (usage page `0xFFA0`) is
 exclusive, so `wh` fails with `DeviceError::Busy` while terminal.wallhack.com has it open. This is
@@ -45,11 +47,19 @@ why there is no daemon and why long-running features are backlogged rather than 
 stale value where the web configurator can. The only exception is the read-modify-write window
 above.
 
+**The board can change under you, and it says so.** The keyboard's own AP and RT keys edit settings
+without the host involved, and while that is happening the board stops being a keyboard at all: it
+will not type until the key is pressed again. It announces both edges with an unsolicited `cmd 0x00`
+sub-order `0xbe`, `be 00` entering and `be 01` leaving, and the vendor configurator ignores the
+first and re-reads the whole board on the second. Measured, see `docs/protocol.md`. `Transport` is
+strictly request-then-response today and cannot receive it, which is the one real blocker for any
+long-running interface.
+
 **The board has four profiles and every per-key layout is per profile.** `cmd 0x00` payload
 `70 0xFF` reads the active profile; `70 <index>` selects one. A snapshot belongs to the profile it
 was taken on, which is why `wh restore` refuses a mismatch outright.
 
-**Only five of the 36 captures record which profile they were on**, so a value comparison between
+**Only five of the 39 captures record which profile they were on**, so a value comparison between
 two captures is invalid unless both sides are established, and for most pairs that cannot be done
 from the frames at all. `layout-16-by-profile` measures only profile 1: it selects index `1` as its
 last outbound frame and stops, so it contains no profile 2 read. That the two profiles held
@@ -100,6 +110,12 @@ see only `ok`. There are three integration suites: `wh-proto/tests/golden.rs`, w
 captured traffic; `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays; and
 `wh-cli/tests/keyset.rs`, the largest of the three and the only end-to-end cover of the `wh keyset`
 command tree.
+
+**A `--test <name>` run is not evidence the crate compiles.** It does not build the bin target's
+unit tests, so a change breaking one of those leaves `cargo test -p wh-cli --test dump` green while
+`cargo test --workspace` fails with a compile error. Measured 2026-09-05, when a function signature
+changed under two unit tests in `crates/wh-cli/src/keyset.rs` and the scoped run passed. Scoped runs
+are for iterating; run the workspace before you believe a result.
 
 ## Safety rules, each one learned the hard way
 
@@ -205,6 +221,11 @@ key", and comparing only the value a command owns will miss a MODE change the sa
 | `docs/keysets.md` | Keyset semantics, measured 2026-08-29 and 2026-09-04 |
 | `docs/backlog.md` | Unscheduled work, with what is known and unknown for each |
 | `capture/README.md` | How to capture real device traffic |
+
+Plan and spec files under `docs/superpowers/` are dated records of what was planned, not living
+documents: a signature or example in one may no longer compile, and that is expected. Correct a
+stale statement where code reads it (comments, README, `docs/*.md`); leave plan files as the record
+of what was decided at the time.
 
 `captures/` holds real device traffic and is **gitignored**. It is the operator's own data. The
 golden test (`cargo test -p wh-proto --test golden`) decodes every frame in it; a missing directory

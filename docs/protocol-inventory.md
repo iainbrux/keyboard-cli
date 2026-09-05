@@ -3,7 +3,7 @@
 Generated from all ten capture files of the 2026-08-28 hardware session. Everything here is counted
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
-**Every count here is of that ten-file sample and no other.** The corpus is now 36 files and 5860
+**Every count here is of that ten-file sample and no other.** The corpus is now 39 files and 6280
 frames, and several values were first seen after this session. Where a row and `docs/protocol.md` or
 `docs/keysets.md` disagree, those two are current and this is a record of what the first session
 measured. Any absolute in a row below, "always", "never", "only ever", is a statement about these
@@ -105,7 +105,10 @@ Note the vendor UI displays firmware as `V0.046` while the device string is `App
 ## The global record, cmd `0x29`
 
 Reply payload is `000000640000000000000000000000` in all three captures that read it. `p[3..5]` is
-`0x0064`. We call the field "travel" from the upstream spec, but **the meaning is not measured**:
-the vendor only reads this record in these ten captures, and 0.1mm is not a plausible switch travel
-for a board whose printed scale runs to 3.5mm. A later session measures a write, always carrying
-`press_dead=200` and `release_dead=200`, see `docs/keysets.md`.
+`0x0064`. We call the field "travel" from the upstream spec, but **what the board does with it is
+not measured**: the vendor only reads this record in these ten captures, and 0.1mm is not a
+plausible switch travel for a board whose printed scale runs to 3.5mm. A later session measures the
+configurator's `"MM" CUSTOM VALUE` control writing that field, and every write carrying
+`press_dead=200` and `release_dead=200` against a read that reports both as `0`. Whether that 200 is
+a constant or a user setting at its default is not established, see `docs/keysets.md` and
+`docs/backlog.md`.

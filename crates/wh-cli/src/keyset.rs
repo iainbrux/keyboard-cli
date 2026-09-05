@@ -8,7 +8,7 @@ use wh_device::keyset::{self, Global, Keyset, Kind, Membership};
 use wh_device::ops;
 use wh_device::session::Session;
 use wh_device::transport::Transport;
-use wh_proto::cmds::{layout, KeyRecord};
+use wh_proto::cmds::{layout, KeyRecord, TouchMode};
 use wh_proto::value::Um;
 
 use crate::cli::KeysetKindArg;
@@ -97,15 +97,23 @@ fn split_message(what: &str, counts: &[(Um, usize)], flag: &str) -> String {
     split_message_str(what, &shown, flag)
 }
 
-fn split_message_str(what: &str, shown: &[(String, usize)], flag: &str) -> String {
-    let parts: Vec<String> = shown
+/// The distinct values and their counts, rendered for a refusal: "3 key(s) at 0.10mm, 1 key(s) at
+/// 0.50mm", in the order given, which every caller takes from `Global::Split` and so is already
+/// descending by count. Shared by all three disagreement messages, which differ in what they
+/// advise and not in how they list what disagreed.
+fn value_counts_list(shown: &[(String, usize)]) -> String {
+    shown
         .iter()
         .map(|(v, n)| format!("{n} key(s) at {v}"))
-        .collect();
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+fn split_message_str(what: &str, shown: &[(String, usize)], flag: &str) -> String {
     format!(
         "the keys outside every keyset disagree on the global {what} ({}), so there is no one \
          global value to use; pass {flag} to say which",
-        parts.join(", ")
+        value_counts_list(shown)
     )
 }
 
@@ -205,6 +213,18 @@ pub(crate) enum Target {
 }
 
 impl Target {
+    /// Which kind of keyset this value belongs to. Every announcement, and the whole-board create
+    /// confirmation, reads its kind from here rather than taking one alongside: a kind handed in
+    /// separately can disagree with the value being printed, so the same line could compare one
+    /// kind's field while naming the other's. `reset_change` already picks its `Change` from a
+    /// `Target` for the same reason.
+    fn kind(self) -> Kind {
+        match self {
+            Target::Ap(_) => Kind::Ap,
+            Target::Rt(..) => Kind::Rt,
+        }
+    }
+
     fn display(self) -> String {
         match self {
             Target::Ap(v) => format!("{:.2}mm", v.to_mm()),
@@ -213,16 +233,85 @@ impl Target {
     }
 }
 
+/// Where the value an announcement names came from. `announce_remove` says "returning w to X" and
+/// "w already at X", both of which read as a claim that X is a destination the board defines. That
+/// is true of one of these three sources and of neither other, so the source travels with the
+/// value rather than being inferred at the line that prints it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TargetSource {
+    /// Read from the keys outside every keyset, which is the board's own base.
+    BoardBase,
+    /// `NO_SIGNAL_BASE`: a chosen default reached when no key was left to read a base from, not a
+    /// reading. `Kind::Ap` only; the rapid trigger side refuses instead.
+    InventedBase,
+    /// Named by the operator, `wh set rt --off --press/--release`. The board never held it and
+    /// nothing was read to reach it.
+    Operator,
+}
+
+impl TargetSource {
+    /// The parenthetical each line appends straight after the value, empty for a real reading
+    /// since that is the case the sentences are already written for.
+    fn suffix(self) -> &'static str {
+        match self {
+            TargetSource::BoardBase => "",
+            TargetSource::InventedBase => {
+                " (no key outside a keyset to read a base from, using the default)"
+            }
+            TargetSource::Operator => " (from --press/--release, not the board's base)",
+        }
+    }
+}
+
+/// The `Change` a reset writes, over a value the caller has already resolved. `delete`, `remove`
+/// and `rt_off` send the same per-key template, measured in `ks-delete-rt`, `ks-remove-one-rt` and
+/// `rt-off-w`, so a correction to that template has to land on all three at once and this is what
+/// makes it land. `create` is not a caller: its rapid trigger arm builds `Change::rt_on`, the
+/// opposite template.
+///
+/// Resolves nothing and reads no device, deliberately. The three callers agree on the template and
+/// disagree on how they reach the value: `delete` and `rt_off` refuse on `NoneOutsideAKeyset` and
+/// name `--value`/`--press`/`--release` as the way out, while `remove`, which has no such flags,
+/// falls back to `NO_SIGNAL_BASE` for the actuation point and refuses for rapid trigger. A helper
+/// that resolved the value as well would hand one command the other's behaviour.
+///
+/// The two arms do different things to touch nibble 0, and only the actuation point arm moves it.
+/// `Target::Ap` uses `Change::ap`, not `Change::ap_keeping_touch`, so a key at nibble 0 ("follow
+/// global travel") is promoted to nibble 1, a per-key pinned actuation point, matching the
+/// vendor's own measured behaviour on an actuation point change (`ks-value-ap`);
+/// `ap_keeping_touch` exists for an operation that must never move a key off global travel, and
+/// resetting a key to the base is not that operation. `Target::Rt` uses `Change::rt_off`, whose
+/// `TouchChange::Off` sends nibbles 2, 3 and 4 to 1 and leaves a key at nibble 0 exactly where it
+/// is: a key following global travel with rapid trigger already off has no rapid trigger to turn
+/// off, and `plan` emits no MODE record for it.
+fn reset_change(target: Target) -> keyset::Change {
+    match target {
+        Target::Ap(v) => keyset::Change::ap(v),
+        Target::Rt(p, r) => keyset::Change::rt_off(p, r),
+    }
+}
+
 /// Creates a keyset over `usages` at the global value, or at an explicit one. Announces which
 /// existing keysets lose members first: a create overwrites its members' values with the global
 /// rather than carrying them in, so the operator sees what is about to go.
+///
+/// `will_write` must agree with whether the caller goes on to send the returned plan to the
+/// device: pass `false` only when the caller's own next step is printing the plan and stopping,
+/// since the whole-matrix confirmation below is skipped whenever it is `false`. `prompt_out` is
+/// separate from `out`, the announcement writer, for the reason `remove`'s own signature splits
+/// them: the prompt is a diagnostic and belongs on stderr, while the announcement is data
+/// someone may pipe.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create<T: Transport>(
     out: &mut impl Write,
+    prompt_out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
     value: Option<Um>,
     rt: Option<(Um, Um)>,
+    will_write: bool,
+    input: &mut impl BufRead,
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let index = keyset::next_index(&m)?;
@@ -247,8 +336,84 @@ pub(crate) fn create<T: Transport>(
     // each stolen member's own pre-write value, and it costs no extra reads since `plan` sends
     // them anyway. `plan` itself only reads; nothing here has written to the board yet.
     let plan = keyset::plan(s, usages, &change, Some(index))?;
-    announce_steal(out, kind, &losing, index.value(), target, &plan)?;
+    if will_write {
+        confirm_whole_board_create(prompt_out, &m, usages, index.value(), target, &plan, input)?;
+    }
+    announce_steal(out, &losing, index.value(), target, &plan)?;
     Ok(plan)
+}
+
+/// The typed confirmation guarding a create whose resolved selection covers every key in the
+/// board's matrix: every key moves into the one freshly allocated index, so every existing keyset
+/// of this kind loses all of its members and ceases to exist. The same destruction
+/// `confirm_whole_board_remove` and `confirm_whole_board_ap_set` guard, reached by a third route,
+/// so this reuses `crate::confirm::confirm` rather than a third acceptance check.
+///
+/// Called after `plan` is built and before `announce_steal`, matching `remove`: the mode clause
+/// is read off the plan, which is the only thing that knows how many touch nibbles actually move,
+/// and a refusal announces nothing at all. `--dry-run` never reaches here, since it writes
+/// nothing to confirm.
+///
+/// Computes its own trigger from `m` and `usages`, matching `confirm_whole_board_ap_set`, rather
+/// than trusting a caller to have checked first: both "this selects every key on the board" and
+/// the list of keysets ceasing to exist are false of a partial selection, and a caller that
+/// forgot must never reach this wording. It is the resolved selection covering the matrix that
+/// triggers it, never the literal `--keys all`: spelling every key out destroys just as much.
+/// `losing` is derived here from the same `m` and `usages` for the same reason, so the keysets
+/// named can never have come from a different selection than the one being confirmed.
+///
+/// `out` is a caller-supplied stderr rather than stdout, for the reason
+/// `confirm_whole_board_remove`'s own doc sets out at length: a redirected stdout would trap the
+/// prompt in the file with nothing on screen, and no terminal check is needed once the prompt
+/// goes to stderr, since stdin answers it either way.
+///
+/// Takes no `kind` beside its `target`: the kind selecting the wording and the mode clause is the
+/// one the value belongs to, so it is read off the `Target` that carries it. A separate parameter
+/// could name `rt` over an `Ap` value and prompt about the wrong feature entirely.
+fn confirm_whole_board_create(
+    out: &mut impl Write,
+    m: &Membership,
+    usages: &[u8],
+    new_index: u16,
+    target: Target,
+    plan: &keyset::WritePlan,
+    input: &mut impl BufRead,
+) -> Result<()> {
+    if usages.len() != m.entries().len() {
+        return Ok(());
+    }
+    let kind = target.kind();
+    let losing = losing_members(&keyset::group(m), usages);
+    let keysets = if losing.is_empty() {
+        format!("no {} keysets exist to lose", kind_name(kind))
+    } else {
+        let indices: Vec<String> = losing.iter().map(|(i, _)| i.to_string()).collect();
+        format!(
+            "{} keyset(s) {} will cease to exist, their members absorbed",
+            kind_name(kind),
+            indices.join(", ")
+        )
+    };
+    // A count, not a per-key list, the same reason the two sibling prompts read one off `plan`:
+    // the board this guards is 68 keys wide, and on a board with no keysets yet the keyset
+    // clause reads as a no-op while every key's touch mode still moves permanently.
+    let mode_clause = match kind {
+        Kind::Ap => ap_mode_clause(plan),
+        Kind::Rt => rt_on_mode_clause(plan),
+    };
+    let prompt = format!(
+        "{}: this selects every key on the board: every key moves into the new keyset \
+         {new_index} at {}\n    {keysets}{mode_clause}",
+        kind_name(kind),
+        target.display()
+    );
+    if !crate::confirm::confirm(out, &prompt, input)? {
+        bail!(
+            "{} keyset creation over the whole board was not confirmed",
+            kind_name(kind)
+        );
+    }
+    Ok(())
 }
 
 /// Changes an existing keyset's value across every member. Membership is untouched: the keyset
@@ -293,25 +458,29 @@ pub(crate) fn delete<T: Transport>(
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let ks = resolve_index(&keyset::group(&m), index)?;
-    let (change, target) = match kind {
+    // Resolved here, not in `reset_change`: `delete` refuses on both `Split` and
+    // `NoneOutsideAKeyset` and offers a flag as the way out, which `remove` has no flag to
+    // satisfy. Only the template built from the resolved value is shared.
+    let target = match kind {
         Kind::Ap => {
             let v = match value {
                 Some(v) => v,
                 None => global_ap_or_bail(s, &m, "--value")?,
             };
-            (keyset::Change::ap(v), Target::Ap(v))
+            Target::Ap(v)
         }
         Kind::Rt => {
             let (p, r) = match rt {
                 Some(v) => v,
                 None => global_rt_or_bail(s, &m, "--press and --release")?,
             };
-            (keyset::Change::rt_off(p, r), Target::Rt(p, r))
+            Target::Rt(p, r)
         }
     };
+    let change = reset_change(target);
     let cleared = keyset::KeysetIndex::clear(kind);
     let plan = keyset::plan(s, &ks.members, &change, Some(cleared))?;
-    announce_delete(out, kind, index, target, &plan)?;
+    announce_delete(out, index, target, &plan)?;
     Ok(plan)
 }
 
@@ -392,18 +561,16 @@ fn remove_split_message(what: &str, counts: &[(Um, usize)]) -> String {
 }
 
 /// A contradictory reading from the board is not the same as no reading: overriding it would
-/// invent a value nobody chose. Shared by both kinds: `remove_base_ap` refuses this and falls back
-/// to `NO_SIGNAL_BASE` only in the separate no-signal case; `remove_base_rt` refuses both here and
-/// there, since it has no fallback to reach for.
+/// invent a value nobody chose. Shared by both of `remove`'s kinds: `remove_base_ap` refuses this
+/// and falls back to `NO_SIGNAL_BASE` only in the separate no-signal case; `remove_base_rt` refuses
+/// both here and there, since it has no fallback to reach for. `rt_off_base` builds its own
+/// wording rather than reusing this: it has `--press`/`--release` to offer and `remove` does not,
+/// so telling its operator only to widen the selection would hide the shorter way out.
 fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
-    let parts: Vec<String> = shown
-        .iter()
-        .map(|(v, n)| format!("{n} key(s) at {v}"))
-        .collect();
     format!(
         "the keys left outside every keyset disagree on the global {what} ({}); include them \
          in the selection so they are reset too",
-        parts.join(", ")
+        value_counts_list(shown)
     )
 }
 
@@ -414,9 +581,13 @@ fn remove_split_message_str(what: &str, shown: &[(String, usize)]) -> String {
 /// rewrite `plan` already applies for `create` and `delete`. `will_write` must agree with whether
 /// the caller goes on to send `plan` to the device: pass `false` only when the caller's own next
 /// step is printing the plan and stopping, never applying it, since the whole-matrix confirmation
-/// below is skipped whenever it is `false`.
+/// below is skipped whenever it is `false`. `prompt_out` is separate from `out`, the announcement
+/// writer: the whole-board prompt is a diagnostic and belongs on stderr, while the per-key
+/// announcement is data someone may pipe, so a caller passes a locked stdout for `out` and a
+/// locked stderr for `prompt_out`.
 pub(crate) fn remove<T: Transport>(
     out: &mut impl Write,
+    prompt_out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
@@ -425,31 +596,23 @@ pub(crate) fn remove<T: Transport>(
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let sets = keyset::group(&m);
-    let leaving: Vec<(u16, u8)> = usages
-        .iter()
-        .filter_map(|&u| {
-            sets.iter()
-                .find(|k| k.members.contains(&u))
-                .map(|k| (k.index, u))
-        })
-        .collect();
+    let leaving = leaving_members(&sets, usages);
 
-    let (change, target, base_invented) = match kind {
+    // Resolved here, not in `reset_change`: `remove` has no `--value`/`--press`/`--release` to
+    // fall back on, so `remove_base_ap` invents `NO_SIGNAL_BASE` where `remove_base_rt` refuses,
+    // and neither behaves like `delete`. Only the template built from the resolved value is
+    // shared.
+    let (target, base_invented) = match kind {
         Kind::Ap => {
             let (v, invented) = remove_base_ap(s, &m, usages)?;
-            // `Change::ap`, not `Change::ap_keeping_touch`: `remove` promotes touch nibble 0
-            // ("follow global travel") to nibble 1, a per-key pinned actuation point, the same
-            // promotion `create`/`set`/`delete` already apply, matching the vendor's own measured
-            // behaviour on an actuation point change (`ks-value-ap`). `ap_keeping_touch` exists for
-            // an operation that must never move a key off global travel; nothing about resetting a
-            // key to the base is that operation, so nothing here should reach for it instead.
-            (keyset::Change::ap(v), Target::Ap(v), invented)
+            (Target::Ap(v), invented)
         }
         Kind::Rt => {
             let (p, r) = remove_base_rt(s, &m, usages)?;
-            (keyset::Change::rt_off(p, r), Target::Rt(p, r), false)
+            (Target::Rt(p, r), false)
         }
     };
+    let change = reset_change(target);
 
     // `plan` is built before the whole-matrix confirmation, not after: the prompt below describes
     // what `plan` actually contains, so the operator answers with that in front of them rather than
@@ -459,29 +622,203 @@ pub(crate) fn remove<T: Transport>(
     let cleared = keyset::KeysetIndex::clear(kind);
     let plan = keyset::plan(s, usages, &change, Some(cleared))?;
 
-    if will_write && usages.len() == m.entries().len() {
-        confirm_whole_board_remove(out, kind, &sets, target, &plan, input)?;
+    // Resolved before the confirmation, not after: the prompt names the value every key moves to,
+    // and on this route that value is always invented, so the sentence being consented to is the
+    // one place the provenance has to appear. `announce_remove` reuses the same binding.
+    let source = if base_invented {
+        TargetSource::InventedBase
+    } else {
+        TargetSource::BoardBase
+    };
+    if will_write {
+        confirm_whole_board_remove(
+            prompt_out,
+            WholeBoardOp::KeysetRemove(kind),
+            &m,
+            usages,
+            target,
+            source,
+            &plan,
+            input,
+        )?;
     }
 
-    announce_remove(
-        out,
-        kind,
-        &leaving,
-        usages,
-        target,
-        base_invented,
-        &sets,
-        &plan,
-    )?;
+    announce_remove(out, &leaving, usages, target, source, &sets, &plan)?;
     Ok(plan)
 }
 
-/// The typed confirmation guarding a remove that covers every key in the board's matrix: every
+/// `wh set rt --off`'s plan: rapid trigger off on every selected key, its sensitivities reset, and
+/// its `0xFE` membership cleared. Measured in `captures/rt-off-w.jsonl`: the vendor's per-key
+/// rapid trigger off resets `W` from its own 500/500 to the board's global 100/100 and then writes
+/// `0xFE = 0`, one record per frame, as the last thing it sends. That file's read sweep does not
+/// cover `0xFE`, so whether `W` held a membership beforehand is unmeasured; what is measured is
+/// that the clear goes out unconditionally, which is `plan`'s own rule for a `Some(index)`.
+///
+/// `rt` is the operator's `--press`/`--release`. `None` reads the board's base through
+/// `rt_off_base`, which excludes the selection for the reason `remove_base_rt` does: the keys being
+/// reset are usually the ones holding their own sensitivity, so including them would make the
+/// commonest run of this command, turning rapid trigger off on the one key that has it, refuse as
+/// a disagreement with itself.
+///
+/// Reuses `announce_remove`, and the wording is not a coincidence: this command reaches the same
+/// destination `wh keyset remove rt` does, resetting each key to the base and to no keyset, so a
+/// key leaving a keyset, a keyset emptied by that, and a key that only has its membership rewritten
+/// all have to be said the same way in both. It reaches the same destruction too, which is why it
+/// calls the same whole-board confirmation: this command can empty every rapid trigger keyset on
+/// the board, which before it wrote membership at all it could not. `will_write` must agree with
+/// whether the caller goes on to send the plan, since that guard is skipped whenever it is false;
+/// `prompt_out` is the caller's stderr, `out` its stdout, the same split `remove` documents.
+///
+/// Reads only; the caller applies the plan.
+/// Which command a whole-board confirmation is guarding. The refusal sentence is built from this
+/// inside `confirm_whole_board_remove` and can never be handed in as words: an earlier shape took
+/// the subject as a `&str`, and swapping one caller's for the other's compiled silently and told a
+/// `wh keyset remove ap` operator that "rapid trigger off" was not confirmed, naming a command they
+/// had not run. Both refusals are now pinned in full by an end-to-end test, so a caller passing the
+/// wrong variant fails as well.
+///
+/// It carries the kind rather than sitting alongside one, so the function takes no separate `kind`
+/// at all: `rt_off` is rapid trigger by construction, and a `kind` argument it could get wrong is a
+/// second source of truth for something already known here.
+#[derive(Clone, Copy)]
+enum WholeBoardOp {
+    /// `wh keyset remove <kind> --keys all`, over the kind it is removing from.
+    KeysetRemove(Kind),
+    /// `wh set rt --keys all --off`.
+    RapidTriggerOff,
+}
+
+impl WholeBoardOp {
+    /// The layout this operation writes membership to, which is what picks the keyset wording and
+    /// the mode clause.
+    fn kind(self) -> Kind {
+        match self {
+            WholeBoardOp::KeysetRemove(kind) => kind,
+            WholeBoardOp::RapidTriggerOff => Kind::Rt,
+        }
+    }
+
+    /// The subject of "... over the whole board was not confirmed". `KeysetRemove` names its kind,
+    /// since `ap` and `rt` removals are different commands to the operator who ran one;
+    /// `RapidTriggerOff` does not, since "rt rapid trigger off" says the same thing twice.
+    fn refusal_subject(self) -> String {
+        match self {
+            WholeBoardOp::KeysetRemove(kind) => format!("{} keyset removal", kind_name(kind)),
+            WholeBoardOp::RapidTriggerOff => "rapid trigger off".to_string(),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rt_off<T: Transport>(
+    out: &mut impl Write,
+    prompt_out: &mut impl Write,
+    s: &mut Session<T>,
+    usages: &[u8],
+    rt: Option<(Um, Um)>,
+    will_write: bool,
+    input: &mut impl BufRead,
+) -> Result<keyset::WritePlan> {
+    let m = keyset::read_membership(s, Kind::Rt)?;
+    let sets = keyset::group(&m);
+    let leaving = leaving_members(&sets, usages);
+    let (target, source) = match rt {
+        Some((p, r)) => (Target::Rt(p, r), TargetSource::Operator),
+        None => {
+            let (p, r) = rt_off_base(s, &m, usages)?;
+            (Target::Rt(p, r), TargetSource::BoardBase)
+        }
+    };
+    let change = reset_change(target);
+    let cleared = keyset::KeysetIndex::clear(Kind::Rt);
+    // Built before the confirmation, matching `remove`: the prompt's mode count is read off the
+    // plan, so the operator answers with what is actually about to be sent in front of them.
+    let plan = keyset::plan(s, usages, &change, Some(cleared))?;
+    if will_write {
+        confirm_whole_board_remove(
+            prompt_out,
+            WholeBoardOp::RapidTriggerOff,
+            &m,
+            usages,
+            target,
+            source,
+            &plan,
+            input,
+        )?;
+    }
+    announce_remove(out, &leaving, usages, target, source, &sets, &plan)?;
+    Ok(plan)
+}
+
+/// The sensitivity `wh set rt --off` resets to when the operator named none: read from `0x14`/`0x15`
+/// of every key that holds no rapid trigger membership and is not itself being reset. Excluding the
+/// selection is the whole point, and it is the lesson `remove_base_rt` already learned: a key with
+/// its own sensitivity is the ordinary reason to run this command, so counting it as a disagreement
+/// would refuse the commonest run there is.
+///
+/// Both failures refuse rather than picking a winner, and both name `--press`/`--release`, which
+/// `remove` cannot do because it has no such flags. `NoneOutsideAKeyset` carries two board states
+/// here for the same reason it does in `remove_base_rt`, and they are told apart from `m.entries()`
+/// rather than conflated: no free key exists at all, or free keys exist and every one of them is in
+/// this selection, which is what a whole-board `--off` always looks like.
+fn rt_off_base<T: Transport>(
+    s: &mut Session<T>,
+    m: &Membership,
+    usages: &[u8],
+) -> Result<(Um, Um)> {
+    match keyset::global_rt_excluding(s, m, usages)? {
+        Global::Agreed(v) => Ok(v),
+        Global::Split(counts) => {
+            let shown: Vec<(String, usize)> = counts
+                .iter()
+                .map(|((p, r), n)| (format!("{:.2}/{:.2}mm", p.to_mm(), r.to_mm()), *n))
+                .collect();
+            bail!(
+                "the keys left outside this selection and outside every rapid trigger keyset \
+                 disagree on the global sensitivity ({}), so there is no one value to reset to; \
+                 pass --press and --release to say which, or include those keys in the selection \
+                 so they are reset too",
+                value_counts_list(&shown)
+            )
+        }
+        Global::NoneOutsideAKeyset => {
+            if m.entries().iter().any(|&(_, membership)| membership == 0) {
+                bail!(
+                    "every key outside a rapid trigger keyset is also in this selection, so there \
+                     is no global sensitivity left to reset these to; pass --press and --release \
+                     to say which value to use"
+                )
+            } else {
+                bail!(
+                    "no key is outside a rapid trigger keyset, so there is no global sensitivity \
+                     to reset these to; pass --press and --release to say which value to use"
+                )
+            }
+        }
+    }
+}
+
+/// The typed confirmation guarding a reset that covers every key in the board's matrix: every
 /// keyset of this kind ceases to exist once nothing is left to be a member of anything, and every
 /// key moves to `target` regardless of what it held before, including a whole-board selection with
 /// no live keysets at all, where `target` is the only thing about to change and so the only thing
 /// worth naming, unless a touch mode also moves and says so too. `--dry-run` never reaches here,
 /// since it writes nothing to confirm.
+///
+/// Two commands reach it, `wh keyset remove` and `wh set rt --off`, which `op` distinguishes; the
+/// name still says "remove" because that is the one it was written for and renaming it would touch
+/// a dozen references for no behaviour. Everything below about streams and terminals holds for
+/// both.
+///
+/// Computes its own trigger from `m` and `usages`, matching both sibling guards, rather than
+/// trusting a caller to have checked first: "this selects every key on the board" and every keyset
+/// ceasing to exist are false of a partial selection, and a caller that forgot must never reach
+/// this wording. The keysets named are derived here from the same `m` for the same reason.
+///
+/// `source` is appended to the value the prompt names, because neither route reaches this line
+/// with a value read off the board: `remove` hands the whole matrix to `remove_base_ap`, which
+/// excludes the selection and so always invents `NO_SIGNAL_BASE`, and `rt_off` always arrives with
+/// the operator's own `--press`/`--release`. The consent line says which, before the answer.
 ///
 /// Called after `plan` is built, not before: the value and keyset clauses can both read as a
 /// no-op, every key already at the target and no keyset to lose, on a board where every key's
@@ -490,30 +827,37 @@ pub(crate) fn remove<T: Transport>(
 /// to describe would let an operator say `yes` to a sentence that is true and still miss the one
 /// thing that changes.
 ///
-/// No `picker::refuse_if_not_terminal`-style guard here, deliberately, though a redirected stdout
-/// (`wh keyset remove ap --keys all > log.txt`) does send this prompt into the file and then block
-/// on stdin with nothing on screen. `--pick` refuses a non-terminal stdout because its live TUI
-/// cannot render to one at all; piping to it is not an escape hatch, it is meaningless. This
-/// prompt is one line out and one line in, and `docs/tasks.md` rules that shape as the sanctioned
-/// way to answer it, "no bypass flag, so tests pipe `yes` on stdin", for real scripted use as well
-/// as for tests.
+/// No `picker::refuse_if_not_terminal`-style guard here, deliberately: `out` is a caller-supplied
+/// stderr, not stdout, precisely so `wh keyset remove ap --keys all > log.txt` no longer traps the
+/// prompt in the redirected file with nothing on screen, the hazard measured before this writer
+/// was split from the per-key announcement's. `--pick` refuses a non-terminal stdout because its
+/// live TUI cannot render to one at all; piping to it is not an escape hatch, it is meaningless.
+/// This prompt is one line out and one line in, and `docs/tasks.md` rules that shape as the
+/// sanctioned way to answer it, "no bypass flag, so tests pipe `yes` on stdin", for real scripted
+/// use as well as for tests.
 ///
 /// To be precise about which guard this argument rules out: a bare `refuse_if_not_terminal`-style
-/// check on stdout alone, mirroring `--pick`'s, would refuse any run whose stdout is piped, tests
-/// included, since the harness pipes all three streams. That form really would break the sanctioned path, not just guard
-/// against the hang. A narrower form, refusing only when stdout is not a terminal *and* stdin is
-/// (an operator at a live prompt with the message routed away from them, the exact case measured
-/// above, never the piped-both-streams shape automation and tests use) would not break it. Not
-/// built here either, but for a different reason: moving the prompt to stderr, still open, closes
-/// the same hazard for every redirection combination with no terminal check at all.
+/// check on this writer, mirroring `--pick`'s, would refuse any run whose streams are piped, tests
+/// included, since the harness pipes all three streams. That form really would break the
+/// sanctioned path, not just guard against the hang. Sending the prompt to stderr instead needs no
+/// terminal check at all: stdin, still open, answers it the same way regardless of what carries
+/// the prompt itself.
+#[allow(clippy::too_many_arguments)]
 fn confirm_whole_board_remove(
     out: &mut impl Write,
-    kind: Kind,
-    sets: &[Keyset],
+    op: WholeBoardOp,
+    m: &Membership,
+    usages: &[u8],
     target: Target,
+    source: TargetSource,
     plan: &keyset::WritePlan,
     input: &mut impl BufRead,
 ) -> Result<()> {
+    if usages.len() != m.entries().len() {
+        return Ok(());
+    }
+    let kind = op.kind();
+    let sets = keyset::group(m);
     let indices: Vec<String> = sets.iter().map(|k| k.index.to_string()).collect();
     let keysets = if indices.is_empty() {
         format!("no {} keysets exist to lose", kind_name(kind))
@@ -529,33 +873,30 @@ fn confirm_whole_board_remove(
     // to lose) while every key's touch mode still moves. Read from `plan` itself, built just
     // above, not inferred from `target` or `sets`: the mode transition is a property of what the
     // plan actually sends, the same reason `announce_remove` reads it from `plan` per key.
-    let moved_modes = plan
-        .before()
-        .iter()
-        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
-        .count();
-    let mode_clause = if moved_modes == 0 {
-        String::new()
-    } else {
-        let what = match kind {
-            Kind::Ap => "move off global travel onto their own actuation point",
-            // Unreachable today: this function only ever runs for a whole-board selection, and a
-            // whole-board `Kind::Rt` selection excludes every free key from `remove_base_rt`'s own
-            // read, which then always hits `NoneOutsideAKeyset` and refuses before `remove` gets
-            // this far. Kept rather than dropped, the same choice `announce_remove`'s own
-            // unreachable branch makes, in case that call pattern ever changes.
-            Kind::Rt => "have rapid trigger switched off",
-        };
-        format!(", {moved_modes} key(s) {what}")
+    let mode_clause = match kind {
+        Kind::Ap => ap_mode_clause(plan),
+        // Reached by `rt_off` and not by `remove`: a whole-board selection excludes every free
+        // key from the base read, which then always hits `NoneOutsideAKeyset`, and `remove` has
+        // no flag to answer that with while `wh set rt --keys all --off --press/--release` does.
+        // So this branch guards the one route that gets this far, not a hypothetical one.
+        Kind::Rt => {
+            let moved_modes = moved_mode_count(plan);
+            if moved_modes == 0 {
+                String::new()
+            } else {
+                format!(", {moved_modes} key(s) have rapid trigger switched off")
+            }
+        }
     };
     let prompt = format!(
-        "this selects every key on the board: every key moves to {}, and {keysets}{mode_clause}",
-        target.display()
+        "this selects every key on the board: every key moves to {}{}, and {keysets}{mode_clause}",
+        target.display(),
+        source.suffix()
     );
     if !crate::confirm::confirm(out, &prompt, input)? {
         bail!(
-            "{} keyset removal over the whole board was not confirmed",
-            kind_name(kind)
+            "{} over the whole board was not confirmed",
+            op.refusal_subject()
         );
     }
     Ok(())
@@ -579,31 +920,27 @@ fn confirm_whole_board_remove(
 /// so naming the mode transition only in the case where the value happens to already sit at the
 /// base would leave it silent in the cases the command is normally used for.
 ///
-/// Two more things named wherever `target` is shown: `base_invented` (`Kind::Ap` only, see
-/// `remove_base_ap`) says the value is a chosen default, not one read from the board, so it never
-/// renders indistinguishably from a real reading; and a `removing` line whose keyset has no member
+/// Two more things named wherever `target` is shown: `source` says where the value came from, so
+/// a chosen default (`remove_base_ap`'s `NO_SIGNAL_BASE`) or a number the operator typed
+/// (`wh set rt --off --press/--release`) never renders indistinguishably from a real reading of the
+/// board's base, which is what "returning to" and "already at" otherwise imply; and a `removing`
+/// line whose keyset has no member
 /// left outside `leaving` says that keyset ceases to exist, the same fact the whole-board prompt
 /// already names for every keyset at once, now named for a partial removal that empties just one.
 /// Each key's current value comes from `plan.before()`, the same source `announce_delete` uses.
-#[allow(clippy::too_many_arguments)]
 fn announce_remove(
     out: &mut impl Write,
-    kind: Kind,
     leaving: &[(u16, u8)],
     usages: &[u8],
     target: Target,
-    base_invented: bool,
+    source: TargetSource,
     sets: &[Keyset],
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
-    // `Kind::Ap` only, since `remove_base_rt` refuses rather than ever reaching an invented value:
-    // says so wherever `target` is shown, rather than letting an invented number render exactly
-    // like one read from the board.
-    let invented_suffix = if base_invented {
-        " (no key outside a keyset to read a base from, using the default)"
-    } else {
-        ""
-    };
+    let kind = target.kind();
+    // Said wherever `target` is shown, rather than letting a default nobody read, or a number the
+    // operator typed, render exactly like a reading of the board's own base.
+    let source_suffix = source.suffix();
     for &u in usages {
         let prior = plan
             .before()
@@ -624,7 +961,7 @@ fn announce_remove(
             };
             writeln!(
                 out,
-                "{}: removing {} from keyset {index}, {prior_value} to {}{invented_suffix}{mode_suffix}{disappear_suffix}",
+                "{}: removing {} from keyset {index}, {prior_value} to {}{source_suffix}{mode_suffix}{disappear_suffix}",
                 kind_name(kind),
                 key_label(u),
                 target.display()
@@ -636,7 +973,7 @@ fn announce_remove(
             // "membership rewritten, value unchanged" rather than treating the write as a no-op.
             writeln!(
                 out,
-                "{}: {} already at {}{invented_suffix} in no {} keyset, membership rewritten, value unchanged",
+                "{}: {} already at {}{source_suffix} in no {} keyset, membership rewritten, value unchanged",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
@@ -645,7 +982,7 @@ fn announce_remove(
         } else if value_moves(kind, plan, prior, u) {
             writeln!(
                 out,
-                "{}: returning {} to {}{invented_suffix}{mode_suffix}, already in no {} keyset",
+                "{}: returning {} to {}{source_suffix}{mode_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 target.display(),
@@ -654,7 +991,7 @@ fn announce_remove(
         } else if let Some(change) = mode_change_here {
             writeln!(
                 out,
-                "{}: {} keeps {prior_value}{invented_suffix}, {change}, already in no {} keyset",
+                "{}: {} keeps {prior_value}{source_suffix}, {change}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 kind_name(kind)
@@ -664,10 +1001,11 @@ fn announce_remove(
             // is emitted only when the mode value or the kind's own owned value differs, and
             // `Change::ap` leaves rt targets equal to `prior` while `Change::rt_off` leaves ap
             // equal, so "bundle emitted and the kind's own value unchanged" always means the mode
-            // did change. Kept defensively, matching `describe_member`'s own fourth case.
+            // did change. Kept because the arm above binds a value and cannot be the final one
+            // without an `expect`, which is worse here than a line that says something true.
             writeln!(
                 out,
-                "{}: {} keeps {prior_value}{invented_suffix}, already in no {} keyset",
+                "{}: {} keeps {prior_value}{source_suffix}, already in no {} keyset",
                 kind_name(kind),
                 key_label(u),
                 kind_name(kind)
@@ -696,11 +1034,11 @@ fn keyset_disappears(sets: &[Keyset], leaving: &[(u16, u8)], index: u16) -> bool
 /// uses when a create takes a member from another keyset, since a delete is the same kind of loss.
 fn announce_delete(
     out: &mut impl Write,
-    kind: Kind,
     index: u16,
     target: Target,
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
+    let kind = target.kind();
     writeln!(
         out,
         "{} keyset {index}: deleting, returning members to {}",
@@ -711,6 +1049,21 @@ fn announce_delete(
         writeln!(out, "  {}", describe_member(kind, plan, before.usage))?;
     }
     Ok(())
+}
+
+/// Each selected key that is currently in a keyset, as (its keyset's index, the key), in `usages`
+/// order. What `announce_remove` needs to say a key is leaving a keyset rather than simply being
+/// reset. Shared by `remove` and `rt_off`, which reach the same destination and so must agree on
+/// which keys are leaving something; a second copy would be free to drift.
+fn leaving_members(sets: &[Keyset], usages: &[u8]) -> Vec<(u16, u8)> {
+    usages
+        .iter()
+        .filter_map(|&u| {
+            sets.iter()
+                .find(|k| k.members.contains(&u))
+                .map(|k| (k.index, u))
+        })
+        .collect()
 }
 
 /// Existing keysets that would lose members to a create over `usages`, as (index, the members it
@@ -780,6 +1133,64 @@ pub(crate) fn ap_membership_for(m: &Membership, usages: &[u8]) -> Result<ApMembe
     })
 }
 
+/// The typed confirmation guarding `wh set ap` when the resolved selection covers every key on
+/// the board: every existing actuation point keyset loses all its members to one freshly
+/// allocated keyset, so every one of them ceases to exist. The same hazard `remove` guards
+/// through `confirm_whole_board_remove`, reached by a different route, so this reuses
+/// `crate::confirm::confirm` rather than a second acceptance check.
+///
+/// Computes its own trigger from `m` and `usages`, the membership read and selection `run.rs`
+/// already has, rather than trusting a caller's own pre-computed membership: a caller passing a
+/// partial selection, or one where the whole board is already exactly one keyset
+/// (`ApMembership::Keep`, nothing to lose and no new keyset to name), must never reach this
+/// wording just because it forgot to check first. Returns without prompting in both cases.
+///
+/// Takes `plan`, built after it by the caller, matching `confirm_whole_board_remove`: the
+/// keyset clause can read as a no-op (no ap keysets exist yet) on a board where `Change::ap`'s
+/// own promotion still moves every free key off touch nibble 0 ("follow global travel") onto
+/// its own pinned actuation point, and only `plan` knows how many.
+pub(crate) fn confirm_whole_board_ap_set(
+    out: &mut impl Write,
+    m: &Membership,
+    usages: &[u8],
+    plan: &keyset::WritePlan,
+    depth: Um,
+    input: &mut impl BufRead,
+) -> Result<()> {
+    if usages.len() != m.entries().len() {
+        return Ok(());
+    }
+    let (index, losing) = match ap_membership_for(m, usages)? {
+        ApMembership::Keep => return Ok(()),
+        ApMembership::Split { index, losing } => (index, losing),
+    };
+    let keysets = if losing.is_empty() {
+        "no ap keysets exist to lose".to_string()
+    } else {
+        let indices: Vec<String> = losing.iter().map(|(i, _)| i.to_string()).collect();
+        format!(
+            "ap keyset(s) {} will cease to exist, their members absorbed",
+            indices.join(", ")
+        )
+    };
+    // A count, not a per-key list, the same reason `confirm_whole_board_remove` reads one off
+    // `plan` rather than off `losing` or `depth`: a board with no losing keysets can still move
+    // every free key permanently off touch nibble 0, and that is the one thing the keyset clause
+    // above cannot say by itself.
+    let mode_clause = ap_mode_clause(plan);
+    let prompt = format!(
+        "ap: this selection moves every key into one new keyset, keyset {}\n    {keysets}\
+         {mode_clause}\n    to change the board's base instead, leaving keysets alone: wh set \
+         ap --base {:.2}",
+        index.value(),
+        depth.to_mm()
+    );
+    if !crate::confirm::confirm(out, &prompt, input)? {
+        bail!("ap set over the whole board was not confirmed");
+    }
+    Ok(())
+}
+
 /// Confirms `plan`'s resolved actuation point target, for every key it covers, equals `depth`,
 /// the operator's own requested value. `verify_write` only ever compares the board against what
 /// `plan` sent: an internally consistent check that a conversion bug in `Change::ap` or `plan`
@@ -820,12 +1231,12 @@ pub(crate) fn confirm_ap_target(plan: &keyset::WritePlan, depth: Um) -> Result<(
 /// `usages` `plan` was built over, so `plan.before()` always has an entry for it.
 pub(crate) fn announce_steal(
     out: &mut impl Write,
-    kind: Kind,
     losing: &[(u16, Vec<u8>)],
     new_index: u16,
     target: Target,
     plan: &keyset::WritePlan,
 ) -> std::io::Result<()> {
+    let kind = target.kind();
     writeln!(
         out,
         "{} keyset {new_index}: creating at {}",
@@ -858,17 +1269,28 @@ pub(crate) fn announce_steal(
 }
 
 /// One member's line, describing what a create's steal, a create's plain enrollment of a free
-/// key, or a delete's own write does to it. Four cases, since a value record can be present
+/// key, or a delete's own write does to it. Three cases, since a value record can be present
 /// without the value it carries actually moving: `plan` echoes a key's own value back unchanged
 /// whenever anything else about it (its touch mode, say) changes, so "a record exists" is not
 /// "the value changes".
 ///
 /// - The value itself moves: "w at 2.00mm", its prior value, about to be overwritten.
-/// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
 /// - The value stays but the touch mode moves: "w (keeps 2.00mm, mode Global to Single)", naming
 ///   the thing that actually changes rather than implying nothing did.
-/// - Something else was written but neither the value nor the touch mode moved:
-///   "w (keeps 2.00mm)".
+/// - Nothing at all was written for it (`plan`'s skip rule): "w (keeps 2.00mm, index only)".
+///
+/// A fourth line, "w (keeps 2.00mm)" for a bundle that moved neither the value nor the mode, was
+/// carried defensively here until it was established that no board reaches it. `plan` emits a
+/// bundle only when the mode, the actuation point or a sensitivity moves, and every `Change`
+/// carries at most one kind's value, so for the kind being described a bundle with the mode
+/// unchanged always means that kind's own value moved. The line would have to come back if a
+/// `Change` ever carried both kinds' values at once.
+///
+/// `plan_writes_no_bundle_when_nothing_the_change_carries_moves` pins that for the three
+/// constructors that reach here, `ap`, `rt_on` and `rt_off`, and its own doc says what it does
+/// not cover. It is not the only guard: a `Change` that starts sending records it did not send
+/// before moves the frames of every fixture over it, which is what `ReplayTransport`'s
+/// byte-for-byte matching exists to refuse.
 fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
     let prior = plan
         .before()
@@ -881,8 +1303,6 @@ fn describe_member(kind: Kind, plan: &keyset::WritePlan, u: u8) -> String {
         format!("{name} at {value}")
     } else if let Some(change) = mode_change(plan, prior, u) {
         format!("{name} (keeps {value}, {change})")
-    } else if plan.value_records().iter().any(|r| r.key == u) {
-        format!("{name} (keeps {value})")
     } else {
         format!("{name} (keeps {value}, index only)")
     }
@@ -903,6 +1323,79 @@ fn mode_change(plan: &keyset::WritePlan, prior: &ops::KeySettings, u: u8) -> Opt
     (new_touch != prior_touch).then(|| format!("mode {prior_touch:?} to {new_touch:?}"))
 }
 
+/// How many keys in `plan` had their touch mode actually move, per `mode_change`. Behind
+/// `ap_mode_clause`, `confirm_whole_board_remove`'s rapid trigger branch, and `wh set ap
+/// --base`'s own announcement, so the count is always read off the plan being announced or
+/// confirmed, never inferred separately from a guess at how many keys sit at touch nibble 0.
+/// `rt_on_mode_clause` walks `plan.before()` itself instead, since it needs the same keys split
+/// by which nibble each is leaving rather than one total.
+pub(crate) fn moved_mode_count(plan: &keyset::WritePlan) -> usize {
+    plan.before()
+        .iter()
+        .filter(|prior| mode_change(plan, prior, prior.usage).is_some())
+        .count()
+}
+
+/// The `Kind::Ap` mode-transition clause every whole-board confirmation and `wh set ap --base`'s
+/// own announcement appends: empty when no key moves off touch nibble 0 ("follow global
+/// travel"), otherwise ", N key(s) move off global travel onto their own actuation point".
+/// Holds `moved_mode_count`, the sentence, and the empty-on-zero rule in one place, since these
+/// four call sites would otherwise be four separate copies of the same wording, only the count
+/// itself shared, free to drift apart one edit at a time with the suite still green: each site
+/// is pinned by its own test with its own literal string, so a wording change at one site alone
+/// passes every gate. Neither rapid trigger clause is this: `confirm_whole_board_remove`'s
+/// `Kind::Rt` branch says something different ("have rapid trigger switched off") and stays
+/// inline there, and a create's own `Kind::Rt` clause is `rt_on_mode_clause`, which splits its
+/// count by origin rather than reporting one.
+pub(crate) fn ap_mode_clause(plan: &keyset::WritePlan) -> String {
+    let moved_modes = moved_mode_count(plan);
+    if moved_modes == 0 {
+        String::new()
+    } else {
+        format!(", {moved_modes} key(s) move off global travel onto their own actuation point")
+    }
+}
+
+/// The `Kind::Rt` mode-transition clause a create's whole-board confirmation appends, split by
+/// what each moving key is coming from, since one sentence cannot honestly cover all of them.
+/// `docs/protocol.md` records as measured that touch nibbles 0 and 1 are rapid trigger off, 2 is
+/// rapid trigger on following the board's global sensitivity, and 3 and 4 are on with the key's
+/// own. So a key leaving 0 or 1 really is having rapid trigger switched on, which changes how it
+/// behaves under a keypress and has to be said; a key leaving 2 had it on already and is only
+/// changing where its sensitivity comes from.
+///
+/// Nibble 5 and above is unmeasured, so it is counted with the second group, whose sentence
+/// claims only the destination: nothing here asserts an unknown nibble was off. Both counts come
+/// off `plan`, and each clause is omitted entirely at zero rather than printed as "0 key(s)".
+fn rt_on_mode_clause(plan: &keyset::WritePlan) -> String {
+    let mut switched_on = 0usize;
+    let mut own_sensitivity = 0usize;
+    for prior in plan.before() {
+        if mode_change(plan, prior, prior.usage).is_none() {
+            continue;
+        }
+        match prior.mode.touch {
+            TouchMode::Global | TouchMode::Single => switched_on += 1,
+            // RtGlobal, and any unmeasured nibble. `Rt` and `RtContinuous` never reach here at
+            // all: `Change::rt_on` leaves both exactly where they are, so `mode_change` reports
+            // nothing for them and the `continue` above has already skipped them.
+            _ => own_sensitivity += 1,
+        }
+    }
+    let mut clause = String::new();
+    if switched_on > 0 {
+        clause.push_str(&format!(
+            ", {switched_on} key(s) have rapid trigger switched on"
+        ));
+    }
+    if own_sensitivity > 0 {
+        clause.push_str(&format!(
+            ", {own_sensitivity} key(s) move onto their own rapid trigger sensitivity"
+        ));
+    }
+    clause
+}
+
 /// Whether the value `kind` reports (AP for `Kind::Ap`, press/release for `Kind::Rt`) actually
 /// differs from `prior`, read off the record `plan` sent for it rather than assumed from whether
 /// a record exists at all: `plan` always echoes a key's unchanged value back in the same bundle
@@ -921,6 +1414,20 @@ fn value_moves(kind: Kind, plan: &keyset::WritePlan, prior: &ops::KeySettings, u
                 || sent(layout::RT_RELEASE).is_some_and(|v| v != prior.rt_release.0)
         }
     }
+}
+
+/// How many keys in `plan` actually have a new actuation point value, per `value_moves`, not
+/// merely a count of keys `plan` sent an AP record for: `plan` echoes a key's own value back
+/// unchanged in the same bundle as an unrelated change, most often a touch mode promotion off
+/// nibble 0, so a record existing is not the same claim as the value moving. `wh set ap --base`'s
+/// own announcement uses this so it can never report movement a mixed board did not actually
+/// make: reporting `free.len()` unconditionally was exactly that defect, caught on a board where
+/// every free key already held the target value and the write sent nothing at all.
+pub(crate) fn ap_value_moved_count(plan: &keyset::WritePlan) -> usize {
+    plan.before()
+        .iter()
+        .filter(|prior| value_moves(Kind::Ap, plan, prior, prior.usage))
+        .count()
 }
 
 /// One key's current value, formatted the way `kind` reports it: `Kind::Ap`'s bare millimetres,
@@ -949,8 +1456,9 @@ fn mode_rt_on(mode_raw: u16) -> bool {
 /// The one fault line a mode mismatch contributes, or `None` when the board agrees, annotated
 /// with rapid trigger state on both sides. Split out from `verify_write_as` so a test can read it
 /// back directly: `report_verification` writes fault lines to real process stderr, which a test
-/// cannot capture. `run.rs`'s `verify_rt`/`verify_rt_off` build their own mode-fault wording
-/// inline and so cannot be pinned this precisely; this function is what makes that possible here.
+/// cannot capture. `run.rs`'s `verify_rt`, the one write path left that does not go through
+/// `verify_write_as`, builds its own mode-fault wording inline and so cannot be pinned this
+/// precisely; this function is what makes that possible here.
 fn mode_fault(got: u16, want: u16) -> Option<String> {
     if got == want {
         return None;
@@ -978,10 +1486,43 @@ pub(crate) fn verify_write<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
-    op: &str,
+    op: KeysetOp,
     plan: &keyset::WritePlan,
 ) -> Result<()> {
-    verify_write_as(out, s, &format!("{} keyset {op}", kind_name(kind)), plan)
+    verify_write_as(
+        out,
+        s,
+        &format!("{} keyset {}", kind_name(kind), op.verb()),
+        plan,
+    )
+}
+
+/// Which keyset subcommand a verification report belongs to. The label was a `&str` before, so
+/// any word at all could be reported, and a delete could label itself a create. Nothing here
+/// selects what is checked, so the entire cost of the wrong word was what the operator is told a
+/// write did, which is the half no readback catches. Each of the four labels is now pinned by an
+/// end-to-end test, so a call site passing the wrong variant fails as well.
+///
+/// The kind is not folded in, unlike `WholeBoardOp::KeysetRemove`'s: all four of these run over
+/// either kind, so no variant determines one.
+#[derive(Clone, Copy)]
+pub(crate) enum KeysetOp {
+    Create,
+    Set,
+    Delete,
+    Remove,
+}
+
+impl KeysetOp {
+    /// The verb in "<kind> keyset <verb>: N keys verified".
+    fn verb(self) -> &'static str {
+        match self {
+            KeysetOp::Create => "create",
+            KeysetOp::Set => "set",
+            KeysetOp::Delete => "delete",
+            KeysetOp::Remove => "remove",
+        }
+    }
 }
 
 /// The body of `verify_write`, taking the exact label to report rather than assembling one from
@@ -1011,6 +1552,10 @@ pub(crate) fn verify_write_as<T: Transport>(
         let sent_value = |layout_id: u8| sent(plan.value_records(), layout_id);
         let sent_membership = |layout_id: u8| sent(plan.membership_records(), layout_id);
 
+        // Each fallback assumes the other layout is untouched by this operation: an ap change
+        // never moves 0xFE and an rt change never moves 0xFF. A hardware assumption, made right
+        // by the separate-counters finding in docs/keysets.md, and the only one of the six checks
+        // here that rests on the firmware not coupling two layouts.
         let want_ap_keyset = sent_membership(layout::KEYSET_AP).unwrap_or(before.ap_keyset);
         if ks.ap_keyset != want_ap_keyset {
             faults.push(format!(
@@ -1126,25 +1671,39 @@ mod tests {
     #[test]
     fn confirm_whole_board_remove_names_the_value_and_the_keysets_lost() {
         use wh_device::replay::ReplayTransport;
-        let sets = [ks(1, &[0x1A]), ks(3, &[0x04])];
-        // A plan with no mode transition in it: this test is only about the value and keyset
-        // clauses, which `keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide`
-        // (an end-to-end test) covers on its own.
-        let lines = settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0);
+        // A two-key board, `w` in ap keyset 1 and `a` in keyset 3, selected whole. A plan with no
+        // mode transition in it: this test is only about the value and keyset clauses, which
+        // `keyset_remove_whole_board_prompt_names_a_mode_transition_a_no_op_value_would_hide` (an
+        // end-to-end test) covers on its own.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 3));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 1, 0));
+        lines.extend(settings_script(0x04, 2000, 0x18, 100, 150, 3, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let plan = keyset::plan(&mut s, &[0x1A], &keyset::Change::ap(Um(2000)), None).unwrap();
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(2000)), None).unwrap();
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
-            Kind::Ap,
-            &sets,
+            WholeBoardOp::KeysetRemove(Kind::Ap),
+            &m,
+            &usages,
             Target::Ap(Um(2000)),
+            TargetSource::InventedBase,
             &plan,
             &mut "yes\n".as_bytes(),
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("every key moves to 2.00mm"), "got: {text}");
+        assert!(
+            text.contains(
+                "every key moves to 2.00mm (no key outside a keyset to read a base from, using \
+                 the default)"
+            ),
+            "got: {text}"
+        );
         assert!(
             text.contains("ap keyset(s) 1, 3 will cease to exist"),
             "got: {text}"
@@ -1159,15 +1718,21 @@ mod tests {
     #[test]
     fn confirm_whole_board_remove_names_the_value_when_no_keysets_exist() {
         use wh_device::replay::ReplayTransport;
-        let lines = settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0);
+        let mut lines = matrix_lines(&[0x1A]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0));
         let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
-        let plan = keyset::plan(&mut s, &[0x1A], &keyset::Change::ap(Um(1800)), None).unwrap();
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8];
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1800)), None).unwrap();
         let mut out = Vec::new();
         confirm_whole_board_remove(
             &mut out,
-            Kind::Ap,
-            &[],
+            WholeBoardOp::KeysetRemove(Kind::Ap),
+            &m,
+            &usages,
             Target::Ap(Um(1800)),
+            TargetSource::InventedBase,
             &plan,
             &mut "yes\n".as_bytes(),
         )
@@ -1175,6 +1740,42 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("every key moves to 1.80mm"), "got: {text}");
         assert!(text.contains("no ap keysets exist to lose"), "got: {text}");
+    }
+
+    /// The trigger this guard did not own. Its two siblings each decide from `m` and `usages`
+    /// whether the selection covers the matrix; this one prompted whenever it was called and
+    /// trusted both call sites to have checked, so a third caller, or a moved check, could put
+    /// "this selects every key on the board" in front of an operator who had selected one key.
+    /// Empty input: a prompt here would read it and refuse, so printing nothing unread is the
+    /// point.
+    #[test]
+    fn confirm_whole_board_remove_does_not_prompt_over_a_partial_selection() {
+        use wh_device::replay::ReplayTransport;
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 1, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8]; // only one of the board's two keys
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(2000)), None).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_remove(
+            &mut out,
+            WholeBoardOp::KeysetRemove(Kind::Ap),
+            &m,
+            &usages,
+            Target::Ap(Um(2000)),
+            TargetSource::InventedBase,
+            &plan,
+            &mut "".as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing for a partial selection: {out:?}"
+        );
     }
 
     // -- verify_write: a membership-drift acceptance case --
@@ -1223,6 +1824,88 @@ mod tests {
         lines
     }
 
+    /// What `describe_member`'s deleted fourth line rested on, measured rather than reasoned: a
+    /// key whose own value and touch mode both already sit where the change wants them gets no
+    /// value bundle at all, so "index only" is the truth about the wire and not an assumption.
+    /// Each kind has its own half of the claim and one constructor cannot stand for another:
+    /// `Change::ap` carries no sensitivities, `Change::rt_on` and `Change::rt_off` no actuation
+    /// point, so none of them can move the other kind's fields and leave a bundle whose own value
+    /// stayed put. Giving any of the three a second kind's value fails here, which is the warning
+    /// that the deleted line has to come back.
+    ///
+    /// The board's values are deliberately none of the constants this tree reaches for (2000,
+    /// which is both `NO_SIGNAL_BASE` and the commonest fixture actuation point, and 100, 150 and
+    /// 500 for the sensitivities), because that is what the guard rests on: an injected second
+    /// value escapes only by coinciding with what the board already holds. An earlier draft used
+    /// 2000 and let exactly that happen. It is not the
+    /// whole net either. `ap_keeping_touch`, which has no production caller today, and
+    /// `membership_only`, which carries no value at all, are outside it, and for those the guard
+    /// is `ReplayTransport`'s byte-for-byte matching, which fails every fixture whose frames move.
+    ///
+    /// Only the rapid trigger halves are new cover. The actuation point half repeats what
+    /// `keyset_create_announces_a_kept_value_differently_from_a_lost_one` already pins end to end,
+    /// and is kept so the three constructors are checked in one place against one board.
+    #[test]
+    fn plan_writes_no_bundle_when_nothing_the_change_carries_moves() {
+        let usage = 0x1Au8;
+        // MODE 0x10 is touch nibble 1 (`Single`), which `Change::ap` and `Change::rt_off` both
+        // leave alone, and 0x38 is nibble 3 (`Rt`), which `Change::rt_on` leaves alone. 0x10
+        // rather than this file's usual 0x18: it is the value a real board was measured holding
+        // on all 68 keys.
+        let mut lines = settings_script(usage, 1230, 0x10, 140, 210, 0, 0);
+        lines.extend(settings_script(usage, 1230, 0x38, 140, 210, 0, 0));
+        lines.extend(settings_script(usage, 1230, 0x10, 140, 210, 0, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+
+        let ap_plan = keyset::plan(&mut s, &[usage], &keyset::Change::ap(Um(1230)), None).unwrap();
+        assert!(
+            ap_plan.value_records().is_empty(),
+            "got: {:?}",
+            ap_plan.value_records()
+        );
+        assert_eq!(
+            describe_member(Kind::Ap, &ap_plan, usage),
+            "w (keeps 1.23mm, index only)"
+        );
+
+        let rt_plan = keyset::plan(
+            &mut s,
+            &[usage],
+            &keyset::Change::rt_on(Um(140), Um(210)),
+            None,
+        )
+        .unwrap();
+        assert!(
+            rt_plan.value_records().is_empty(),
+            "got: {:?}",
+            rt_plan.value_records()
+        );
+        assert_eq!(
+            describe_member(Kind::Rt, &rt_plan, usage),
+            "w (keeps 0.14/0.21mm, index only)"
+        );
+
+        // `wh keyset delete rt` reaches `describe_member` through this constructor, so it is a
+        // live path and not a spare one. Touch nibble 1 is already off, which is what leaves the
+        // mode still and lets the no-bundle case exist for it at all.
+        let off_plan = keyset::plan(
+            &mut s,
+            &[usage],
+            &keyset::Change::rt_off(Um(140), Um(210)),
+            None,
+        )
+        .unwrap();
+        assert!(
+            off_plan.value_records().is_empty(),
+            "got: {:?}",
+            off_plan.value_records()
+        );
+        assert_eq!(
+            describe_member(Kind::Rt, &off_plan, usage),
+            "w (keeps 0.14/0.21mm, index only)"
+        );
+    }
+
     /// The scenario `wh keyset set` builds in practice: a plan that writes no membership record
     /// at all, over a key whose `ap_keyset` drifts between the pre-write read and the readback.
     /// Nothing in the plan asked for that field to move, so the fallback to `before` is what
@@ -1245,7 +1928,7 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        let err = verify_write(&mut out, &mut s, Kind::Ap, "create", &plan).unwrap_err();
+        let err = verify_write(&mut out, &mut s, Kind::Ap, KeysetOp::Create, &plan).unwrap_err();
         assert!(
             err.to_string().contains("readback mismatch on 1 key(s)"),
             "got: {err}"
@@ -1366,6 +2049,218 @@ mod tests {
             err.to_string()
                 .contains("requires an actuation point membership"),
             "got: {err}"
+        );
+    }
+
+    // -- confirm_whole_board_ap_set: guards `wh set ap --keys all` --
+
+    /// Pins the exact wording the operator ruled on: the new index, every losing keyset in
+    /// ascending order, the mode count `plan` alone knows (`w` starts at touch nibble 0, "follow
+    /// global travel", and `Change::ap` promotes it), and the `--base` alternative. Does not say
+    /// `--keys all`: the selection here is the raw usages, not that spelling, and the wording
+    /// must not claim it was.
+    #[test]
+    fn confirm_whole_board_ap_set_names_the_new_index_the_losing_keysets_the_mode_count_and_the_base_alternative(
+    ) {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 2));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 7));
+        lines.extend(settings_script(0x1A, 1200, 0x00, 100, 150, 2, 0)); // w: Global, promotes
+        lines.extend(settings_script(0x04, 1300, 0x18, 100, 150, 7, 0)); // a: already pinned
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let index = match ap_membership_for(&m, &usages).unwrap() {
+            ApMembership::Split { index, .. } => index,
+            ApMembership::Keep => panic!("two distinct keysets must split"),
+        };
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1500)), Some(index)).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(
+            &mut out,
+            &m,
+            &usages,
+            &plan,
+            Um(1500),
+            &mut "yes\n".as_bytes(),
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("ap: this selection moves every key into one new keyset, keyset 8"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("ap keyset(s) 2, 7 will cease to exist, their members absorbed"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("1 key(s) move off global travel onto their own actuation point"),
+            "got: {text}"
+        );
+        assert!(text.contains("wh set ap --base 1.50"), "got: {text}");
+    }
+
+    /// The branch a whole-board selection reaches when no ap keysets exist yet: nothing is lost,
+    /// but every free key still moves into the new one, so the prompt must still fire and must
+    /// not read as though nothing is about to happen.
+    #[test]
+    fn confirm_whole_board_ap_set_names_no_keysets_when_none_exist() {
+        let mut lines = matrix_lines(&[0x1A]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(settings_script(0x1A, 1800, 0x18, 100, 150, 0, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8];
+        let index = match ap_membership_for(&m, &usages).unwrap() {
+            ApMembership::Split { index, losing } => {
+                assert!(
+                    losing.is_empty(),
+                    "a free-only board loses nothing: {losing:?}"
+                );
+                index
+            }
+            ApMembership::Keep => panic!("a free key must allocate, not keep"),
+        };
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1800)), Some(index)).unwrap();
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(
+            &mut out,
+            &m,
+            &usages,
+            &plan,
+            Um(1800),
+            &mut "yes\n".as_bytes(),
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("no ap keysets exist to lose"), "got: {text}");
+    }
+
+    /// Declining refuses, through the same `crate::confirm::confirm` acceptance rule `remove`
+    /// uses, not a second copy of it.
+    #[test]
+    fn confirm_whole_board_ap_set_refuses_on_no() {
+        // Two distinct keysets, so `ap_membership_for` must `Split`, not `Keep`: a single key
+        // that is already the whole of its own keyset would keep its index instead, and this
+        // test needs a real hazard to decline.
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 2));
+        lines.extend(settings_script(0x1A, 1200, 0x18, 100, 150, 1, 0));
+        lines.extend(settings_script(0x04, 1300, 0x18, 100, 150, 2, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let index = match ap_membership_for(&m, &usages).unwrap() {
+            ApMembership::Split { index, .. } => index,
+            ApMembership::Keep => panic!("two distinct keysets must split"),
+        };
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1500)), Some(index)).unwrap();
+        let mut out = Vec::new();
+        let err = confirm_whole_board_ap_set(
+            &mut out,
+            &m,
+            &usages,
+            &plan,
+            Um(1500),
+            &mut "no\n".as_bytes(),
+        )
+        .unwrap_err();
+        // The full sentence, subject included: three other commands end a refusal with "was not
+        // confirmed", so the tail alone cannot tell this one's from theirs.
+        assert!(
+            err.to_string()
+                .contains("ap set over the whole board was not confirmed"),
+            "got: {err}"
+        );
+    }
+
+    /// `create`'s own sibling: a selection short of the whole matrix must never reach the prompt
+    /// even when a caller hands it one directly, since both "this selects every key on the board"
+    /// and the list of keysets ceasing to exist would be false of a partial selection. The trigger
+    /// lives inside the function rather than at its one call site, so this pins it structurally
+    /// rather than trusting the caller to keep checking first. Empty input: a prompt here would
+    /// read it and hang or refuse; printing nothing and returning `Ok(())` unread is the point.
+    #[test]
+    fn confirm_whole_board_create_does_not_prompt_over_a_partial_selection() {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 1, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8]; // only one of the board's two keys
+        let index = keyset::next_index(&m).unwrap();
+        let plan =
+            keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1200)), Some(index)).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_create(
+            &mut out,
+            &m,
+            &usages,
+            index.value(),
+            Target::Ap(Um(1200)),
+            &plan,
+            &mut "".as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing for a partial selection: {out:?}"
+        );
+    }
+
+    /// A selection short of the whole matrix must never reach the prompt: the function decides
+    /// its own trigger from `m`/`usages` now, rather than trusting a caller's own pre-computed
+    /// check, so this pins that decision directly rather than only through `run.rs`'s own
+    /// end-to-end test. Empty input: a prompt here would read it and hang or refuse; printing
+    /// and returning `Ok(())` unread is the whole point.
+    #[test]
+    fn confirm_whole_board_ap_set_does_not_prompt_over_a_partial_selection() {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 0));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 0));
+        lines.extend(settings_script(0x1A, 2000, 0x18, 100, 150, 0, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8]; // only one of the board's two keys
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1200)), None).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(&mut out, &m, &usages, &plan, Um(1200), &mut "".as_bytes())
+            .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing for a partial selection: {out:?}"
+        );
+    }
+
+    /// The `Keep` mirror of the test above: the whole board is already exactly one keyset, so
+    /// nothing ceases to exist and no new keyset is named, and the prompt must stay silent.
+    #[test]
+    fn confirm_whole_board_ap_set_does_not_prompt_when_the_whole_board_already_keeps_its_index() {
+        let mut lines = matrix_lines(&[0x1A, 0x04]);
+        lines.extend(read_reply(0x1A, layout::KEYSET_AP, 1));
+        lines.extend(read_reply(0x04, layout::KEYSET_AP, 1));
+        lines.extend(settings_script(0x1A, 1200, 0x18, 100, 150, 1, 0));
+        lines.extend(settings_script(0x04, 1200, 0x18, 100, 150, 1, 0));
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines.join("\n")).unwrap());
+        let m = keyset::read_membership(&mut s, Kind::Ap).unwrap();
+        let usages = [0x1Au8, 0x04];
+        let plan = keyset::plan(&mut s, &usages, &keyset::Change::ap(Um(1500)), None).unwrap();
+
+        let mut out = Vec::new();
+        confirm_whole_board_ap_set(&mut out, &m, &usages, &plan, Um(1500), &mut "".as_bytes())
+            .unwrap();
+        assert!(
+            out.is_empty(),
+            "must print nothing when Keep applies: {out:?}"
         );
     }
 

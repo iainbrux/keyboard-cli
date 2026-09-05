@@ -1,6 +1,7 @@
 //! Command dispatch. Every command in the `wh` tree, read and write alike, runs through here.
 
 use crate::cli::{BackupsWhat, Cli, Cmd, KeysWhat, SetWhat};
+use crate::keyset::KeysetOp;
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -24,7 +25,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Get { what } => get(what, &store),
         Cmd::Set { what } => set(what, &store),
         Cmd::Backup { to } => backup(to, &store),
-        Cmd::Restore { file, last, force } => restore(file, last, force, &store),
+        Cmd::Restore { file, last } => restore(file, last, &store),
         Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
         Cmd::Keyset { what } => keyset_cmd(what, &store),
@@ -82,6 +83,18 @@ pub(crate) fn key_label(usage: u8) -> String {
         .unwrap_or_else(|| format!("0x{usage:02X}"))
 }
 
+/// "key" for 1, "keys" for anything else, so a count-carrying sentence never reads "1 keys".
+/// Shared rather than three separate inline copies (`report_verification`, `restore`'s summary
+/// line, and `wh set ap --base`'s own announcement), the same reason `ap_mode_clause` was
+/// extracted in `keyset.rs`.
+fn key_or_keys(n: usize) -> &'static str {
+    if n == 1 {
+        "key"
+    } else {
+        "keys"
+    }
+}
+
 /// Renders a raw keyset value for display: `0`, the value read outside any keyset, as `-`,
 /// anything else as its decimal index verbatim, since whether the wire value is a boolean or an
 /// index is unmeasured.
@@ -106,26 +119,11 @@ fn keyset_suffix(v: u16) -> String {
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
-    // `ops::profile` returns a validated `ProfileNumber`; an index outside the four measured
-    // profiles surfaces as `DeviceError::ProfileOutOfRange` and degrades to `None` here (the
-    // same "provenance unknown" case as an old pre-recording snapshot) rather than aborting
-    // `dump`, `backup`, or `set`'s auto-backup. Any other failure still propagates via `?`.
-    // `restore` reads the board's profile through its own separate call and keeps a hard
-    // refusal on every failure instead.
-    let profile = match ops::profile(s) {
-        Ok(p) => Some(p),
-        Err(wh_device::transport::DeviceError::ProfileOutOfRange(idx)) => {
-            // Worded to stay true for `dump` (records no snapshot) as well as `backup` and
-            // every write command's auto-backup: describes this read's profile as unrecorded,
-            // not a snapshot.
-            best_effort_eprintln(&format!(
-                "warning: board reported profile index {idx}, but the board only has 4 profiles \
-                 (wire index 0..=3); this read's profile is unrecorded (unknown provenance)"
-            ));
-            None
-        }
-        Err(e) => return Err(e.into()),
-    };
+    // The profile is a value in `0..=3` on the wire and nothing else, so an index outside that
+    // is an error and every caller stops: `dump`, `backup` and every write command's
+    // auto-backup alike. This is the only place `wh` could ever have produced a snapshot with
+    // no profile, and it no longer does; `Snapshot::profile` stays `Option` for files on disk.
+    let profile = Some(ops::profile(s).context("reading the board's active profile")?);
     let global = ops::global_travel(s)?;
     let matrix = ops::read_matrix(s)?;
     let mut keys = Vec::new();
@@ -154,7 +152,7 @@ fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::s
         // `auto_backup`); `dump` never assigns one, since it saves nothing to disk.
         origin: None,
         global: wh_config::snapshot::GlobalToml {
-            travel_mm: global.travel.to_mm(),
+            custom_value_mm: global.travel.to_mm(),
             press_dead_mm: global.press_dead.to_mm(),
             release_dead_mm: global.release_dead.to_mm(),
         },
@@ -214,17 +212,19 @@ fn dump(table: bool) -> Result<()> {
             writeln!(out, "{}", snap.to_json()?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
-            // `snapshot_from_device` degrades to `None` (warning already printed to stderr)
-            // rather than aborting the dump on an out-of-range profile index, so print it
-            // plainly instead of erroring.
+            // `snapshot_from_device` a few lines up always records a profile, since an index
+            // outside `0..=3` stops the read, so `None` cannot be reached from here. Matched
+            // rather than unwrapped so a future caller cannot turn this into a panic.
             match snap.profile {
                 Some(profile) => writeln!(out, "profile {profile}")?,
-                None => writeln!(out, "profile unknown (unrecognised index reported)")?,
+                None => writeln!(out, "profile unrecorded")?,
             }
+            // "custom value", not "travel": this is the configurator's `"MM" CUSTOM VALUE`, the
+            // step size for its controls, and the global actuation point is not in this record.
             writeln!(
                 out,
-                "global: travel {:.2}mm, dead {:.2}/{:.2}mm",
-                snap.global.travel_mm, snap.global.press_dead_mm, snap.global.release_dead_mm
+                "global: custom value {:.2}mm, dead {:.2}/{:.2}mm",
+                snap.global.custom_value_mm, snap.global.press_dead_mm, snap.global.release_dead_mm
             )?;
             writeln!(
                 out,
@@ -548,13 +548,53 @@ fn resolve_rt_override(
     Ok(Some((p, r)))
 }
 
-/// Takes and saves an auto-backup, recording `command` (e.g. `set rt`) as its origin. `restore`
+/// Why a backup was taken, one variant per command family that takes one plus the manual `wh
+/// backup`. The reason was a `&str` before, so a copy-pasted call site could label a `restore`
+/// backup a `keyset delete`, and nothing failed: the label is only ever written and displayed,
+/// never acted on, so no readback can catch it.
+#[derive(Clone, Copy)]
+enum BackupReason {
+    SetAp,
+    SetRt,
+    KeysetCreate,
+    KeysetSet,
+    KeysetDelete,
+    KeysetRemove,
+    Restore,
+    /// `wh backup`, the only one an operator asks for directly, hence no `auto: ` prefix.
+    Manual,
+}
+
+impl BackupReason {
+    /// The `Snapshot::origin` this reason writes, verbatim. These strings are already on disk in
+    /// operators' existing backups and are what `wh backups list` and `--last` print, so they are
+    /// a compatibility surface: changing one would make old and new backups of the same command
+    /// read as different things.
+    fn origin(self) -> &'static str {
+        match self {
+            BackupReason::SetAp => "auto: set ap",
+            BackupReason::SetRt => "auto: set rt",
+            BackupReason::KeysetCreate => "auto: keyset create",
+            BackupReason::KeysetSet => "auto: keyset set",
+            BackupReason::KeysetDelete => "auto: keyset delete",
+            BackupReason::KeysetRemove => "auto: keyset remove",
+            BackupReason::Restore => "auto: restore",
+            BackupReason::Manual => "manual",
+        }
+    }
+}
+
+/// Takes and saves an auto-backup, recording `reason` (e.g. `SetRt`) as its origin. `restore`
 /// reads the board's profile through its own separate `ops::profile` call rather than off this
 /// function's returned snapshot, so a future `--no-backup` flag or a best-effort backup here
 /// cannot silently drop the profile safety check.
-fn auto_backup<T: Transport>(s: &mut Session<T>, store: &Store, command: &str) -> Result<()> {
+fn auto_backup<T: Transport>(
+    s: &mut Session<T>,
+    store: &Store,
+    reason: BackupReason,
+) -> Result<()> {
     let mut snap = snapshot_from_device(s)?;
-    snap.origin = Some(format!("auto: {command}"));
+    snap.origin = Some(reason.origin().to_string());
     let path = store.save_backup(&snap.to_json()?)?;
     best_effort_eprintln(&format!("(backed up to {})", path.display()));
     Ok(())
@@ -582,8 +622,7 @@ pub(crate) fn report_verification(
 ) -> Result<()> {
     if bad.is_empty() {
         let n = usages.len();
-        let key_or_keys = if n == 1 { "key" } else { "keys" };
-        writeln!(out, "{what}: {n} {key_or_keys} verified")?;
+        writeln!(out, "{what}: {n} {} verified", key_or_keys(n))?;
         return Ok(());
     }
     for line in bad {
@@ -648,43 +687,20 @@ fn verify_rt<T: Transport>(
     )
 }
 
-/// Sibling of `verify_rt`: `records` (from `ops::rt_off_records`) is the sole source of the
-/// key list and wanted MODE value. `rt_off_records` skips a key with nothing to change, so the
-/// reported count reflects keys actually changed, not how many `--keys` selected.
-fn verify_rt_off<T: Transport>(
-    out: &mut impl Write,
-    s: &mut Session<T>,
-    records: &[KeyRecord],
-) -> Result<()> {
-    let mut bad = Vec::new();
-    let mut usages = Vec::new();
-    for r in records {
-        let u = r.key;
-        let want_mode = r.value;
-        usages.push(u);
-        let ks = ops::read_key_settings(s, u)?;
-        // The exact MODE value, advanced nibble and high byte included, mirroring the check
-        // `verify_rt` does on the enable path.
-        if ks.mode.value() != want_mode {
-            bad.push(format!(
-                "{}: board reports mode {:#06x} (rt {}), wanted mode {:#06x} (rt off, \
-                 advanced nibble and high byte preserved)",
-                key_label(u),
-                ks.mode.value(),
-                if ks.rt_enabled() { "on" } else { "off" },
-                want_mode,
-            ));
-        }
-    }
-    report_verification(out, "rt off", &usages, &bad)
-}
-
 /// What `wh set rt` asked for, resolved once up front into a shape where "on" and "off"
 /// cannot disagree with themselves, unlike a bare `off: bool` plus a separate
 /// `Option<(Um, Um)>` could.
 enum RtAction {
-    Off,
-    On { press: Um, release: Um },
+    /// `--off`, carrying the `--press`/`--release` the keys are reset to. `None` means read the
+    /// board's base instead, from the keys outside every rapid trigger keyset that the selection
+    /// leaves behind, which `crate::keyset::rt_off` does and refuses over.
+    Off {
+        rt: Option<(Um, Um)>,
+    },
+    On {
+        press: Um,
+        release: Um,
+    },
 }
 
 fn set(what: SetWhat, store: &Store) -> Result<()> {
@@ -700,12 +716,24 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             // Validated before a session opens, like `Ap`'s `mm(set)?` below: a malformed
             // value is refused before `resolve_keys` sends any DEFKEY roundtrips.
             let action = if off {
-                RtAction::Off
+                // Both or neither, never one: `--off` resets both sensitivities together, and a
+                // half-given override would have to read the other half from the very base
+                // reading whose disagreement is the reason these flags were reached for.
+                let rt = match (press, release) {
+                    (None, None) => None,
+                    (Some(p), Some(r)) => Some((mm(p)?, mm(r)?)),
+                    _ => bail!(
+                        "--off resets both sensitivities, so pass --press and --release together \
+                         or neither; with neither, both come from the keys outside every rapid \
+                         trigger keyset that this selection leaves behind"
+                    ),
+                };
+                RtAction::Off { rt }
             } else {
                 let base = set.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "--set is required unless --off is given; --press and --release only \
-                         override a --set base and cannot be used alone"
+                        "--set is required unless --off is given; --press and --release override \
+                         a --set base, or name the value --off resets to, and cannot be used alone"
                     )
                 })?;
                 RtAction::On {
@@ -715,61 +743,194 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
             };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for `--off`'s whole-board confirmation, matching
+            // `KeysetWhat::Remove`'s own split: the per-key announcement stays on stdout since it
+            // is data someone may pipe, while the prompt is a diagnostic.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
             with_session(|s| {
                 // `resolve_keys` always reads the live matrix, dry run or not: a preview
                 // against keys the board lacks would be meaningless, and `--pick` needs a
                 // live board regardless. Only writes are skipped below.
                 let usages = resolve_keys(s, &keys, store)?;
                 match action {
-                    RtAction::Off => {
+                    RtAction::Off { rt } => {
+                        // Routed through `keyset::plan`, like every other write but `set rt`'s
+                        // own enable path: the vendor's per-key rapid trigger off resets the
+                        // sensitivities and clears `0xFE` as well as moving the touch nibble, and
+                        // `ops::rt_off_records`, which sends MODE alone, is the divergent one.
+                        // `rt_off` only reads, so a dry run can build the same plan and stop.
+                        // `!dry_run` is what tells it whether to run the whole-board
+                        // confirmation, the same argument `keyset::remove` takes.
+                        let plan = crate::keyset::rt_off(
+                            &mut out,
+                            &mut prompt_out,
+                            s,
+                            &usages,
+                            rt,
+                            !dry_run,
+                            &mut input,
+                        )?;
                         if dry_run {
-                            // rt_off_records reads each key's current MODE to preserve the
-                            // advanced nibble; a read, so it's fine for a dry run to send.
-                            let records = ops::rt_off_records(s, &usages)?;
-                            return print_frames(&mut out, &cmds::write_key_records(&records));
+                            return print_frames(&mut out, &plan.frames());
                         }
-                        auto_backup(s, store, "set rt")?;
-                        let records = ops::set_rt_off(s, &usages)?;
-                        verify_rt_off(&mut out, s, &records)
+                        auto_backup(s, store, BackupReason::SetRt)?;
+                        wh_device::keyset::apply(s, &plan)?;
+                        crate::keyset::verify_write_as(&mut out, s, "rt off", &plan)
                     }
                     RtAction::On { press, release } => {
                         if dry_run {
                             let records = ops::rt_records(s, &usages, press, release)?;
                             return print_frames(&mut out, &cmds::write_key_records(&records));
                         }
-                        auto_backup(s, store, "set rt")?;
+                        auto_backup(s, store, BackupReason::SetRt)?;
                         let records = ops::set_rt(s, &usages, press, release)?;
                         verify_rt(&mut out, s, press, release, &records)
                     }
                 }
             })
         }
-        SetWhat::Ap { keys, set, dry_run } => {
-            let depth = mm(set)?;
+        SetWhat::Ap {
+            keys,
+            pick,
+            set,
+            base,
+            dry_run,
+        } => {
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
-            with_session(|s| {
-                let usages = resolve_keys(s, &keys, store)?;
-                // `kind` is taken from `change`, the same binding that builds the plan below, and
-                // threaded from nowhere else: `announce_steal`'s `kind` picks what it reads back,
-                // so a caller-supplied constant could drift from what the plan actually touches.
-                let change = wh_device::keyset::Change::ap(depth);
-                let kind = change.kind();
-                let m = wh_device::keyset::read_membership(s, kind)?;
-                let membership = crate::keyset::ap_membership_for(&m, &usages)?;
-                let index = match &membership {
-                    crate::keyset::ApMembership::Keep => None,
-                    crate::keyset::ApMembership::Split { index, .. } => Some(*index),
-                };
-                let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
-                let what = ap_write_label(&mut out, kind, &membership, &plan, depth)?;
-                if dry_run {
-                    return print_frames(&mut out, &plan.frames());
+            match base {
+                Some(base_mm) => {
+                    // `--base` names the board, not a selection: it never touches `keys`/`pick`,
+                    // never reads or writes a `0xFF` membership record, and so never reaches
+                    // `confirm_whole_board_ap_set` at all, unlike `--keys all` below.
+                    let depth = mm(base_mm)?;
+                    with_session(|s| {
+                        let m = wh_device::keyset::read_membership(s, wh_device::keyset::Kind::Ap)?;
+                        let free: Vec<u8> = m
+                            .entries()
+                            .iter()
+                            .filter(|&&(_, v)| v == 0)
+                            .map(|&(u, _)| u)
+                            .collect();
+                        if free.is_empty() {
+                            bail!(
+                                "every key on the board is in a keyset, so there is no key \
+                                 outside a keyset to write; use `wh keyset set ap` to change a \
+                                 keyset's own value instead"
+                            );
+                        }
+                        let plan = wh_device::keyset::plan(
+                            s,
+                            &free,
+                            &wh_device::keyset::Change::ap(depth),
+                            None,
+                        )?;
+                        // Every branch names the actuation point explicitly, so "already
+                        // there" never reads as a claim about the whole write; `ap_mode_clause`
+                        // says what else moved. "Nothing written" is `plan.is_empty()`, never
+                        // `moved_values == 0`: a mode-only promotion still sends a full bundle.
+                        let moved_values = crate::keyset::ap_value_moved_count(&plan);
+                        let total = free.len();
+                        let mode_clause = crate::keyset::ap_mode_clause(&plan);
+                        let target_mm = depth.to_mm();
+                        let n_keys = key_or_keys(total);
+                        let move_clause = if plan.is_empty() {
+                            // No key gets any record at all: every free key already sits at the
+                            // target and none of them was on touch nibble 0 to promote, so
+                            // `mode_clause` is always empty here too.
+                            format!(
+                                "the actuation point outside every keyset already matches \
+                                 {target_mm:.2}mm on {total} {n_keys}, nothing written"
+                            )
+                        } else if moved_values == total {
+                            format!(
+                                "the actuation point outside every keyset moves to \
+                                 {target_mm:.2}mm on {total} {n_keys}"
+                            )
+                        } else if moved_values == 0 {
+                            // `plan` is not empty (checked above), so every key that got a
+                            // record here got one because its touch mode moved, not its AP:
+                            // `mode_clause` below is guaranteed non-empty in this branch.
+                            "no key outside a keyset changes its actuation point".to_string()
+                        } else {
+                            format!(
+                                "the actuation point outside every keyset moves to \
+                                 {target_mm:.2}mm on {moved_values} of {total} {n_keys}; the \
+                                 actuation point on the rest already matches {target_mm:.2}mm"
+                            )
+                        };
+                        writeln!(
+                            out,
+                            "ap base: {move_clause}, keysets untouched{mode_clause}"
+                        )?;
+                        if dry_run {
+                            return print_frames(&mut out, &plan.frames());
+                        }
+                        auto_backup(s, store, BackupReason::SetAp)?;
+                        wh_device::keyset::apply(s, &plan)?;
+                        crate::keyset::verify_write_as(
+                            &mut out,
+                            s,
+                            &format!("ap base {:.2}mm", depth.to_mm()),
+                            &plan,
+                        )
+                    })
                 }
-                auto_backup(s, store, "set ap")?;
-                wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write_as(&mut out, s, &what, &plan)
-            })
+                None => {
+                    // clap enforces `required_unless_present = "base"` on `set`, so reaching
+                    // this branch (`base` absent) guarantees `set` is `Some`.
+                    let depth = mm(set.expect("clap requires --set whenever --base is absent"))?;
+                    let keys = crate::cli::KeysArg { keys, pick };
+                    // A separate locked stderr for the whole-board confirmation, matching
+                    // `KeysetWhat::Remove`'s own split: the per-key announcement below stays on
+                    // stdout since it is data someone may pipe, while the prompt is a diagnostic.
+                    let stderr = std::io::stderr();
+                    let mut prompt_out = stderr.lock();
+                    let stdin = std::io::stdin();
+                    let mut input = stdin.lock();
+                    with_session(|s| {
+                        let usages = resolve_keys(s, &keys, store)?;
+                        // `kind` is taken from `change`, the same binding that builds the plan
+                        // below, rather than written out again as `Kind::Ap`: the membership read
+                        // and the plan then cannot end up on different layouts. `announce_steal`
+                        // takes no kind at all now, reading it off the `Target` it prints.
+                        let change = wh_device::keyset::Change::ap(depth);
+                        let kind = change.kind();
+                        let m = wh_device::keyset::read_membership(s, kind)?;
+                        let membership = crate::keyset::ap_membership_for(&m, &usages)?;
+                        let index = match &membership {
+                            crate::keyset::ApMembership::Keep => None,
+                            crate::keyset::ApMembership::Split { index, .. } => Some(*index),
+                        };
+                        let plan = wh_device::keyset::plan(s, &usages, &change, index)?;
+                        // Built after `plan`, matching `remove`: only `plan` knows how many keys
+                        // the promotion off touch nibble 0 actually moves. Decides its own
+                        // whole-board and `Keep` triggers from `m`/`usages` rather than trusting
+                        // this arm's own `membership`, and no-ops for anything but a whole-board
+                        // `Split`.
+                        if !dry_run {
+                            crate::keyset::confirm_whole_board_ap_set(
+                                &mut prompt_out,
+                                &m,
+                                &usages,
+                                &plan,
+                                depth,
+                                &mut input,
+                            )?;
+                        }
+                        let what = ap_write_label(&mut out, &membership, &plan, depth)?;
+                        if dry_run {
+                            return print_frames(&mut out, &plan.frames());
+                        }
+                        auto_backup(s, store, BackupReason::SetAp)?;
+                        wh_device::keyset::apply(s, &plan)?;
+                        crate::keyset::verify_write_as(&mut out, s, &what, &plan)
+                    })
+                }
+            }
         }
     }
 }
@@ -782,7 +943,6 @@ fn set(what: SetWhat, store: &Store) -> Result<()> {
 /// only correct on its own.
 fn ap_write_label(
     out: &mut impl Write,
-    kind: wh_device::keyset::Kind,
     membership: &crate::keyset::ApMembership,
     plan: &wh_device::keyset::WritePlan,
     depth: Um,
@@ -799,7 +959,6 @@ fn ap_write_label(
         crate::keyset::ApMembership::Split { index, losing } => {
             crate::keyset::announce_steal(
                 out,
-                kind,
                 losing,
                 index.value(),
                 crate::keyset::Target::Ap(depth),
@@ -883,15 +1042,35 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for the whole-board confirmation prompt, matching
+            // `KeysetWhat::Remove`'s own split: the per-key announcement stays on stdout since it
+            // is data someone may pipe, while the prompt is a diagnostic.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::create(&mut out, s, kind, &usages, value, rt)?;
+                // `!dry_run` is what keeps the confirmation off a preview: this arm calls
+                // `create` before its own `dry_run` check, so the flag travels in rather than
+                // guarding the call, the same shape `remove`'s `will_write` uses.
+                let plan = crate::keyset::create(
+                    &mut out,
+                    &mut prompt_out,
+                    s,
+                    kind,
+                    &usages,
+                    value,
+                    rt,
+                    !dry_run,
+                    &mut input,
+                )?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset create")?;
+                auto_backup(s, store, BackupReason::KeysetCreate)?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "create", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Create, &plan)
             })
         }
         KeysetWhat::Set {
@@ -927,9 +1106,9 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset set")?;
+                auto_backup(s, store, BackupReason::KeysetSet)?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "set", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Set, &plan)
             })
         }
         KeysetWhat::Delete {
@@ -963,9 +1142,9 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset delete")?;
+                auto_backup(s, store, BackupReason::KeysetDelete)?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "delete", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Delete, &plan)
             })
         }
         KeysetWhat::Remove {
@@ -976,17 +1155,30 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             let kind = crate::keyset::kind_of(kind);
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for the whole-board confirmation prompt: the per-key
+            // announcement above stays on stdout since it is data someone may pipe, while the
+            // prompt is a diagnostic, matching this binary's own `transport:` line.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
             let stdin = std::io::stdin();
             let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::remove(&mut out, s, kind, &usages, !dry_run, &mut input)?;
+                let plan = crate::keyset::remove(
+                    &mut out,
+                    &mut prompt_out,
+                    s,
+                    kind,
+                    &usages,
+                    !dry_run,
+                    &mut input,
+                )?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }
-                auto_backup(s, store, "keyset remove")?;
+                auto_backup(s, store, BackupReason::KeysetRemove)?;
                 wh_device::keyset::apply(s, &plan)?;
-                crate::keyset::verify_write(&mut out, s, kind, "remove", &plan)
+                crate::keyset::verify_write(&mut out, s, kind, KeysetOp::Remove, &plan)
             })
         }
     }
@@ -997,7 +1189,7 @@ fn backup(to: Option<std::path::PathBuf>, store: &Store) -> Result<()> {
     let mut out = stdout.lock();
     with_session(|s| {
         let mut snap = snapshot_from_device(s)?;
-        snap.origin = Some("manual".into());
+        snap.origin = Some(BackupReason::Manual.origin().to_string());
         let text = snap.to_json()?;
         match to {
             Some(p) => {
@@ -1131,11 +1323,22 @@ fn restore_records(keys: &[RestoreKey]) -> Vec<KeyRecord> {
     records
 }
 
+/// The dead zones every measured vendor `cmd 0x29` write carries. Measured 2026-09-05 over every
+/// `cmd 0x29` frame in `captures/`: three vendor writes, at three different travel values, all
+/// carrying 200 and 200, against 14 read requests whose replies all report `0` for both. Whether
+/// 200 is a fixed constant or a user setting sitting at its default is **not** established, see
+/// `docs/backlog.md`. We send it because it is the only value the vendor has been seen to write.
+const VENDOR_PRESS_DEAD: Um = Um(200);
+const VENDOR_RELEASE_DEAD: Um = Um(200);
+
+/// The record's first value comes from the snapshot's `custom_value_mm`; the dead zones do not, and
+/// are the two values above. The snapshot's own recorded dead zones stay a faithful record of what
+/// the board reported, read by nothing.
 fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTravel> {
     Ok(cmds::GlobalTravel {
-        travel: mm(snap.global.travel_mm).context("global travel")?,
-        press_dead: mm(snap.global.press_dead_mm).context("global press dead zone")?,
-        release_dead: mm(snap.global.release_dead_mm).context("global release dead zone")?,
+        travel: mm(snap.global.custom_value_mm).context("global custom value")?,
+        press_dead: VENDOR_PRESS_DEAD,
+        release_dead: VENDOR_RELEASE_DEAD,
     })
 }
 
@@ -1147,6 +1350,10 @@ fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTr
 /// snapshot had no recorded membership (`RestoreKey::ap_keyset` or `rt_keyset` is `None`) gets no
 /// membership comparison at all: comparing it against a fabricated `0` is exactly the defect
 /// `restore_membership_records` avoids by not writing one.
+///
+/// It re-reads the **snapshot's** usages, not the board's, which only verifies anything because
+/// `check_restore_matrix` has already refused any snapshot carrying a usage the board does not
+/// have. Drop that refusal and this function reports a phantom usage verified.
 fn verify_restore<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -1216,18 +1423,16 @@ fn verify_restore<T: Transport>(
 /// profile, both `wh_proto::cmds::ProfileNumber` rather than a bare `u8`, since the wire's
 /// zero-based index and the UI's one-based number are different things.
 ///
-/// Three cases, deliberately not collapsed into one flag:
+/// Three cases, and the two refusals are worded apart rather than sharing a tail, so an
+/// operator (and a test) can tell which one fired:
 /// - recorded and matching: proceed.
-/// - recorded and differing: refuse unconditionally. `force` does not rescue this case; a
-///   single flag covering both this and the case below would let the more dangerous mistake
-///   through.
-/// - not recorded (an older snapshot, or one whose board reported a profile index outside the
-///   known range): refuse, but `force` rescues it, since the caller is asserting something
-///   the snapshot itself cannot vouch for, not overriding a known mismatch.
+/// - recorded and differing: refuse. Restoring would overwrite the profile in front of you
+///   with another one's settings, which is the more dangerous mistake of the two.
+/// - not recorded: refuse. Nothing can establish which profile the settings belong to, and
+///   asserting one on the operator's behalf is the same mistake with the blame moved.
 fn check_restore_profile(
     snap_profile: Option<wh_proto::cmds::ProfileNumber>,
     board_profile: wh_proto::cmds::ProfileNumber,
-    force: bool,
 ) -> Result<()> {
     match snap_profile {
         Some(p) if p == board_profile => Ok(()),
@@ -1237,20 +1442,62 @@ fn check_restore_profile(
              {p}'s. Switch the board to profile {p} first, or restore to the profile you \
              actually intend; there is no override for this refusal"
         ),
-        None if force => Ok(()),
         None => bail!(
-            "snapshot has no recorded profile: either it predates profile recording, or the \
-             board it was taken from reported a profile index this build does not recognise \
-             (in which case the settings really do belong to some profile, just not one this \
-             build can name). Either way, whether it belongs to the board's current profile \
-             (profile {board_profile}) cannot be verified; pass --force to restore anyway, \
-             asserting it belongs to profile {board_profile}, which may overwrite a different \
-             profile's settings if that assertion is wrong"
+            "snapshot has no recorded profile, so whether it belongs to the board's current \
+             profile (profile {board_profile}) cannot be verified. This build never writes such \
+             a snapshot: a board reporting a profile index it does not recognise fails the read \
+             outright. Take a fresh snapshot on this board"
         ),
     }
 }
 
-fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &Store) -> Result<()> {
+/// How many missing key names the refusal below lists before it starts counting instead. A
+/// snapshot from a foreign matrix can miss all 68 keys, and 68 names is not a message.
+const MISSING_KEY_LIST_CAP: usize = 8;
+
+/// The restore-time matrix safety check: every usage the snapshot carries must be a key the
+/// board actually has. A snapshot from a different matrix would otherwise write values and
+/// membership to usages this board has no key for, and `verify_restore` would then read those
+/// same usages back and report them verified, since it re-reads exactly what it wrote. The harm
+/// is that second part, not the write: `wh` would be telling the operator it checked something
+/// it did not.
+///
+/// The converse is not a fault: a snapshot covering fewer keys than the board leaves the rest
+/// alone, which is what `restore` has always done.
+fn check_restore_matrix(keys: &[RestoreKey], board: &[u8]) -> Result<()> {
+    // Deduped, in the snapshot's own order, the same shape `ops::read_matrix` uses: a
+    // hand-edited file can list one key twice, and counting entries rather than keys would both
+    // miscount and name the key twice. `wh backup` cannot produce that, since it builds from
+    // `read_matrix`, which dedupes already.
+    let mut missing: Vec<u8> = Vec::new();
+    for u in keys.iter().map(|k| k.usage) {
+        if !board.contains(&u) && !missing.contains(&u) {
+            missing.push(u);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let n = missing.len();
+    let mut list = missing
+        .iter()
+        .take(MISSING_KEY_LIST_CAP)
+        .map(|&u| key_label(u))
+        .collect::<Vec<String>>()
+        .join(", ");
+    if n > MISSING_KEY_LIST_CAP {
+        list.push_str(&format!(", and {} more", n - MISSING_KEY_LIST_CAP));
+    }
+    bail!(
+        "snapshot has {n} {} this board does not have ({list}), so it does not belong to this \
+         board's key matrix; restoring it would write to usages this board has no key for and \
+         then report them verified, having read back exactly what it wrote. Take a fresh \
+         snapshot on this board",
+        key_or_keys(n)
+    )
+}
+
+fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Result<()> {
     if file.is_some() && last {
         bail!("pass a snapshot file or --last, not both");
     }
@@ -1289,7 +1536,13 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // `auto_backup`'s own returned snapshot would let a future `--no-backup` flag or a
         // best-effort backup silently drop this safety check with nothing failing to compile.
         let board_profile = ops::profile(s).context("reading the board's active profile")?;
-        check_restore_profile(snap.profile, board_profile, force)?;
+        check_restore_profile(snap.profile, board_profile)?;
+        // Three roundtrips on every restore that did not cost them before. Worth it because the
+        // failure it catches is not the bad write but the false verification: `verify_restore`
+        // reads back the snapshot's own usages, so without this it can report keys verified on a
+        // board that does not have them.
+        let board_matrix = ops::read_matrix(s).context("reading the board's key matrix")?;
+        check_restore_matrix(&keys, &board_matrix)?;
         // Past every refusal that stops this restore before it writes anything: only from here
         // is it true that a key's membership is (about to be) left as the board already has it,
         // rather than describing a restore that never ran.
@@ -1304,16 +1557,16 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // Unlike `set`, scoped to selected keys, `restore` overwrites every key in the
         // snapshot: this auto-backup is the only way back if the named file turns out to be
         // the wrong one.
-        auto_backup(s, store, "restore")?;
+        auto_backup(s, store, BackupReason::Restore)?;
         ops::restore_all(s, &global, &records, &membership)?;
         // Printed only after verification passes, so stdout never claims success on a run
         // where stderr reports a mismatch.
         verify_restore(&mut out, s, &keys)?;
         let n = snap.keys.len();
-        let key_or_keys = if n == 1 { "key" } else { "keys" };
         writeln!(
             out,
-            "restored {n} {key_or_keys} from snapshot ({})",
+            "restored {n} {} from snapshot ({})",
+            key_or_keys(n),
             snap.taken_at
         )?;
         Ok(())
@@ -1329,12 +1582,13 @@ fn selftest() -> Result<()> {
         let g = ops::global_travel(s)?;
         writeln!(
             out,
-            "global travel: {:.2}mm, rewriting identical value",
+            "global custom value: {:.2}mm, rewriting the record with the values just read",
             g.travel.to_mm()
         )?;
-        // Deliberately no SAVE: this must be a true no-op on flash, proving only that a
-        // write reaches the device and reads back, not that a save cycle works. Adding one
-        // here would turn every selftest run into an unwanted flash-wear cycle.
+        // Deliberately no SAVE: it would turn every selftest run into a flash-wear cycle, and
+        // this proves only that a write reaches the device and reads back. The two dead zones
+        // go back out as they were read, `0` on every measured read: if they are a user setting
+        // the board does not report (`docs/backlog.md`), that is not the no-op it looks like.
         s.roundtrip(&cmds::write_global_travel(
             g.travel,
             g.press_dead,
@@ -1344,7 +1598,10 @@ fn selftest() -> Result<()> {
         if g2 != g {
             bail!("selftest FAILED: readback {:?} != {:?}", g2, g);
         }
-        writeln!(out, "selftest OK: write path verified with a no-op write")?;
+        writeln!(
+            out,
+            "selftest OK: write path verified by rewriting the values just read"
+        )?;
         Ok(())
     })
 }
@@ -1365,6 +1622,21 @@ mod tests {
             name: name.to_string(),
             selector: selector.to_string(),
         }
+    }
+
+    /// Every origin string, pinned literally. Operators' existing backup files already hold these
+    /// exact words and `wh backups list` prints them, so a rename here would silently split one
+    /// command's history into two labels; this test is what makes that a deliberate act.
+    #[test]
+    fn every_backup_reason_renders_its_persisted_origin_string() {
+        assert_eq!(BackupReason::SetAp.origin(), "auto: set ap");
+        assert_eq!(BackupReason::SetRt.origin(), "auto: set rt");
+        assert_eq!(BackupReason::KeysetCreate.origin(), "auto: keyset create");
+        assert_eq!(BackupReason::KeysetSet.origin(), "auto: keyset set");
+        assert_eq!(BackupReason::KeysetDelete.origin(), "auto: keyset delete");
+        assert_eq!(BackupReason::KeysetRemove.origin(), "auto: keyset remove");
+        assert_eq!(BackupReason::Restore.origin(), "auto: restore");
+        assert_eq!(BackupReason::Manual.origin(), "manual");
     }
 
     #[test]
@@ -1608,34 +1880,135 @@ mod tests {
 
     #[test]
     fn restore_profile_check_proceeds_on_a_match() {
-        check_restore_profile(Some(pn(2)), pn(2), false).unwrap();
+        check_restore_profile(Some(pn(2)), pn(2)).unwrap();
     }
 
-    /// Recorded and differing: `force` must not rescue it, so both calls below are asserted
-    /// to fail, not just the unforced one.
+    /// The two refusals must not converge on one sentence: an operator reading only the tail
+    /// they might share could not tell which one fired, and neither could a test.
     #[test]
-    fn restore_profile_check_refuses_a_mismatch_and_force_does_not_rescue_it() {
-        let err = check_restore_profile(Some(pn(1)), pn(2), false).unwrap_err();
-        let msg = err.to_string();
+    fn restore_profile_check_refuses_a_mismatch_and_an_unrecorded_profile_differently() {
+        let mismatch = check_restore_profile(Some(pn(1)), pn(2))
+            .unwrap_err()
+            .to_string();
         assert!(
-            msg.contains("profile 1") && msg.contains("profile 2"),
-            "error should name both profiles: {msg}"
+            mismatch.contains("snapshot was taken on profile 1 but the board is on profile 2"),
+            "the mismatch refusal should name both profiles: {mismatch}"
         );
 
-        let err_forced = check_restore_profile(Some(pn(1)), pn(2), true).unwrap_err();
-        let msg_forced = err_forced.to_string();
+        let unrecorded = check_restore_profile(None, pn(2)).unwrap_err().to_string();
         assert!(
-            msg_forced.contains("profile 1") && msg_forced.contains("profile 2"),
-            "--force must not rescue a recorded mismatch: {msg_forced}"
+            unrecorded.contains("snapshot has no recorded profile"),
+            "an unrecorded profile is refused in its own words: {unrecorded}"
+        );
+        assert!(
+            !unrecorded.contains("was taken on profile"),
+            "the two refusals must stay distinguishable: {unrecorded}"
         );
     }
 
-    /// Not recorded (an older snapshot): refused without `--force`, rescued with it, the
-    /// opposite of the non-overridable refusal above.
+    /// `--force` is gone, and so are both of the things its message said. "predates profile
+    /// recording" was never true of a released `wh` (the field landed before the first tag),
+    /// and naming a flag the operator cannot pass is a defect in its own right.
     #[test]
-    fn restore_profile_check_refuses_an_unrecorded_profile_but_force_rescues_it() {
-        assert!(check_restore_profile(None, pn(2), false).is_err());
-        check_restore_profile(None, pn(2), true).unwrap();
+    fn restore_profile_refusal_names_neither_the_removed_flag_nor_the_dead_cause() {
+        let msg = check_restore_profile(None, pn(2)).unwrap_err().to_string();
+        assert!(
+            !msg.contains("--force") && !msg.contains("predates"),
+            "unexpected refusal text: {msg}"
+        );
+    }
+
+    fn restore_key(usage: u8) -> RestoreKey {
+        RestoreKey {
+            usage,
+            ap: Um(1200),
+            mode_raw: 0x0010,
+            rt_press: Um(500),
+            rt_release: Um(600),
+            ap_keyset: Some(0),
+            rt_keyset: Some(0),
+        }
+    }
+
+    /// A snapshot covering fewer keys than the board is not a mismatch: the rest are left alone,
+    /// which is what `restore` has always done and what this check must not start refusing.
+    #[test]
+    fn restore_matrix_check_accepts_a_snapshot_covering_part_of_the_board() {
+        let keys = [restore_key(0x1A)];
+        check_restore_matrix(&keys, &[0x1A, 0x04, 0x16]).unwrap();
+    }
+
+    /// A named usage reads as its name, so the operator sees the key rather than a code.
+    #[test]
+    fn restore_matrix_check_names_a_missing_key() {
+        let keys = [restore_key(0x1A), restore_key(0x16)];
+        let msg = check_restore_matrix(&keys, &[0x1A, 0x04])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("snapshot has 1 key this board does not have (s)"),
+            "unexpected refusal: {msg}"
+        );
+        assert!(
+            msg.contains("Take a fresh snapshot on this board"),
+            "the refusal must say what the operator can do: {msg}"
+        );
+        assert!(
+            !msg.contains("--"),
+            "the refusal must not name a flag, there is not one: {msg}"
+        );
+    }
+
+    /// A hand-edited snapshot can list one key twice. `wh backup` cannot produce that, since it
+    /// builds from `read_matrix`, which dedupes, but the refusal still has to count keys rather
+    /// than entries: "2 keys this board does not have (s, s)" is wrong twice over.
+    #[test]
+    fn restore_matrix_check_counts_a_duplicated_missing_usage_once() {
+        let keys = [restore_key(0x16), restore_key(0x16)];
+        let msg = check_restore_matrix(&keys, &[0x1A])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("snapshot has 1 key this board does not have (s)"),
+            "a usage listed twice is still one key: {msg}"
+        );
+    }
+
+    /// An unnamed usage reads as its hex code rather than being dropped from the list, the same
+    /// `key_label` fallback every other listing here uses.
+    #[test]
+    fn restore_matrix_check_renders_an_unnamed_missing_usage_as_hex() {
+        let (unnamed, _) = two_usages_absent_from_table();
+        let keys = [restore_key(unnamed)];
+        let msg = check_restore_matrix(&keys, &[0x1A])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains(&format!("0x{unnamed:02X}")),
+            "unexpected refusal: {msg}"
+        );
+    }
+
+    /// A whole foreign matrix must not print 68 key names: the list is capped and the remainder
+    /// counted, while the total still names every missing key in the count.
+    #[test]
+    fn restore_matrix_check_caps_the_listed_keys_and_counts_the_rest() {
+        // Ten keys, none on a board holding only 'w': two more than the cap.
+        let usages = [0x04u8, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D];
+        let keys: Vec<RestoreKey> = usages.iter().map(|&u| restore_key(u)).collect();
+        let msg = check_restore_matrix(&keys, &[0x1A])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("snapshot has 10 keys this board does not have"),
+            "the count must cover every missing key, not just the listed ones: {msg}"
+        );
+        assert!(msg.contains("and 2 more"), "unexpected refusal: {msg}");
+        // 'a' through 'h' are listed; 'i' and 'j', the ninth and tenth, are counted instead.
+        assert!(
+            msg.contains("(a, b, c, d, e, f, g, h, and 2 more)"),
+            "the cap must list the first eight and count the rest: {msg}"
+        );
     }
 
     #[test]
@@ -1703,14 +2076,7 @@ mod tests {
         let membership = crate::keyset::ApMembership::Keep;
 
         let mut out = Vec::new();
-        let err = ap_write_label(
-            &mut out,
-            wh_device::keyset::Kind::Ap,
-            &membership,
-            &plan,
-            Um(1200),
-        )
-        .unwrap_err();
+        let err = ap_write_label(&mut out, &membership, &plan, Um(1200)).unwrap_err();
         assert!(
             err.to_string()
                 .contains("plan resolved w to 2.50mm, not the 1.20mm requested"),

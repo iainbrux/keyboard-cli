@@ -12,11 +12,14 @@ pub struct Snapshot {
     pub taken_at: String, // RFC3339, informational
     /// The board's active profile when this snapshot was taken. `ProfileNumber`, not a bare
     /// `u8`, so the UI's one-based numbering can never be confused with the wire's zero-based
-    /// index. `None` means the snapshot's profile provenance is unknown (it predates profile
-    /// recording), never that the board had no active profile: every board always has one.
-    /// Missing entirely from a snapshot file, JSON or pre-JSON TOML alike, deserializes to
-    /// `None`, so old backups still parse. Goes through `crate::profile`'s bridge functions since `wh-proto` carries no
-    /// serde dependency.
+    /// index. `None` means the snapshot's profile provenance is unknown, never that the board
+    /// had no active profile: every board always has one. No released `wh` has ever written a
+    /// profile-less snapshot (the field landed before the first tag), and `wh` cannot produce
+    /// one at all now that an out-of-range wire index stops the read, so `None` today means a
+    /// hand-edited file. The field stays `Option` because a file on disk can still lack it:
+    /// missing entirely, JSON or pre-JSON TOML alike, deserializes to `None`, so such a file
+    /// still parses. Goes through `crate::profile`'s bridge functions since `wh-proto` carries
+    /// no serde dependency.
     #[serde(
         default,
         with = "crate::profile",
@@ -33,7 +36,15 @@ pub struct Snapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalToml {
-    pub travel_mm: f64,
+    /// The configurator's `"MM" CUSTOM VALUE`, the step size for its `< >` controls, not the
+    /// global actuation point (`docs/keysets.md`), which is what every key outside a keyset holds
+    /// in layout `0x04`. The alias is the name this field had before it was corrected: real
+    /// backups on disk spell it that way and must keep restoring.
+    #[serde(alias = "travel_mm")]
+    pub custom_value_mm: f64,
+    /// Informational only, the dead zones the board reported when the snapshot was taken, which
+    /// every measured read reports as `0`. `wh restore` sends the 200 every measured vendor write
+    /// carries instead, so editing either of these changes nothing that reaches the wire.
     pub press_dead_mm: f64,
     pub release_dead_mm: f64,
 }
@@ -106,7 +117,7 @@ mod tests {
             profile: Some(ProfileNumber::from_wire_index(0).unwrap()),
             origin: None,
             global: GlobalToml {
-                travel_mm: 2.0,
+                custom_value_mm: 2.0,
                 press_dead_mm: 0.2,
                 release_dead_mm: 0.2,
             },
@@ -129,6 +140,29 @@ mod tests {
         let snap = sample();
         let back = Snapshot::from_json(&snap.to_json().unwrap()).unwrap();
         assert_eq!(back, snap);
+    }
+
+    /// The global record's first field is the configurator's `"MM" CUSTOM VALUE`, not the global
+    /// actuation point, so a new snapshot must spell it `custom_value_mm`.
+    #[test]
+    fn snapshot_json_spells_custom_value_mm() {
+        let text = sample().to_json().unwrap();
+        assert!(
+            text.contains("custom_value_mm") && !text.contains("travel_mm"),
+            "a new snapshot must spell custom_value_mm: {text}"
+        );
+    }
+
+    /// The ruling behind the alias: real backups on the operator's disk spell this field
+    /// `travel_mm`, one of which proved a destroy-and-restore hardware test, so a rename that
+    /// stopped them loading would be a real loss. Asserts the value that arrives, not just that
+    /// the parse succeeded, so the old name has to reach the field rather than merely be tolerated.
+    #[test]
+    fn snapshot_json_spelling_the_old_travel_mm_still_loads() {
+        let old = r#"{"firmware":"V1","serial":"S","taken_at":"t",
+            "global":{"travel_mm":2.0,"press_dead_mm":0.2,"release_dead_mm":0.2},"keys":[]}"#;
+        let snap = Snapshot::from_json(old).unwrap();
+        assert_eq!(snap.global.custom_value_mm, 2.0);
     }
 
     /// A `None` profile is omitted from the JSON rather than written as `null`, so a snapshot with

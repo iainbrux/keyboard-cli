@@ -190,6 +190,32 @@ supports mouse as well as arrows; `crossterm` can capture mouse events, so that 
 to change many settings quickly was the worst place to discover a write bug, and that risk is now
 retired.
 
+**Populate on open, and listen for the board.** Reading the whole board costs about 40ms, measured:
+a nine-layout sweep of 68 keys ran in 28ms and 41ms in two captures. So the TUI reads once at
+startup and holds that model, which is exactly what the configurator does, and needs no polling and
+no cache-invalidation machinery. An earlier draft of this entry worried about staleness; the concern
+was misplaced, because the device is exclusive and nothing else can change the board while the TUI
+holds it.
+
+Except the board itself, and the board says so. Sub-order `0xbe` arrives unsolicited when the
+operator uses the keyboard's own AP or RT keys, `be 00` on entering adjust mode and `be 01` on
+leaving, and the configurator re-reads everything on the second one and ignores the first
+(`docs/protocol.md`). A TUI does the same and is then never stale. This does mean `Transport` needs
+a way to receive an unsolicited report, which is the one genuine architectural addition here: it is
+strictly request-then-response today.
+
+**Two design consequences fall out of one measured fact.** While the board is in adjust mode it
+stops being a keyboard, so a TUI driven from that keyboard becomes unnavigable at the same instant,
+through no fault of its own. Mouse support is therefore load-bearing rather than a nicety, since it
+is the only input that still works. And the TUI should render the locked state explicitly, a banner
+saying the board is being adjusted on the device, because the alternative is an interface that
+silently stops responding to the keys.
+
+**That banner is a deliberate improvement on the target, and the first one.** The vendor UI shows
+nothing at all for this state. Diverging in what is displayed is not the same as diverging in what
+is written: the goal of matching the configurator is about frames on the wire, and a banner sends
+none.
+
 ### A Windows installer with a licence acceptance step
 
 **The idea.** Ship a proper graphical installer, the familiar window with Next, Next, Finish, rather
@@ -359,6 +385,35 @@ The board really is that fast; this is presentation.
 modal spinner would be a different thing from a one-shot CLI flourish. Decide when the TUI exists
 rather than now.
 
+### A write that sends nothing still rotates a backup
+
+**Measured 2026-09-04**, on `wh set ap --base` and confirmed to be repo-wide rather than that
+command's own defect. A run whose plan turns out empty, every free key already at the target and
+none of them on touch nibble 0, still calls `auto_backup`, writes a snapshot, and evicts the oldest
+of the twenty kept by `KEEP_BACKUPS`. Zero frames reach the board. The operator sees
+`(backed up to ...)` on stderr, which is true but reports work that had no subject.
+
+**Why it is parked rather than fixed.** No write path guards on an empty plan. Fixing it in one
+command would make that command inconsistent with every other, and the announcement is honest about
+what it did, so this is noise rather than a false claim.
+
+**What it costs.** One of twenty rollback points per no-op run. A script calling `--base` in a loop
+on an already-correct board would empty the useful history without ever touching the keyboard.
+
+**What to decide, if it is picked up.** Whether the guard belongs in `auto_backup` itself, where it
+would cover every command at once, or at each call site. The first is one change and risks
+suppressing a backup some caller wants; the second is several and will be applied unevenly.
+
+Note that a call-site guard is not uniformly available. `auto_backup` has nine call sites in
+`crates/wh-cli/src/run.rs`, and two of them have nothing to test: `set rt`'s enable path builds its
+records through `ops::set_rt` after the backup is taken, and `restore` goes through
+`ops::restore_all` and never builds a `WritePlan` at all. The other seven do hold a plan before
+backing up, so `plan.is_empty()` is available there and only there. An earlier draft of this entry
+claimed it was available at every call site; that was wrong, and it was the recommendation the entry
+rested on. `set rt --off` moved from the first group to the second when 2.13 routed it through
+`keyset::plan`, which is also why it can no longer send an empty plan: the membership clear always
+goes out.
+
 ## Post 1.0, not necessary
 
 Parked deliberately. Neither of these is needed for the tool to do its job, and both should wait
@@ -468,17 +523,50 @@ operator's report of which key they remapped, corroborated by the four codes sit
 column across four consecutive matrix rows. Good enough to name them; not the same standard as the
 byte-level facts elsewhere in this document.
 
+### The `cmd 0x29` dead zones: fixed constants, or a user setting at its default?
+
+**Measured 2026-09-05**, by parsing every `cmd 0x29` frame in `captures/`: 14 read requests across 7
+files, every reply reporting `press_dead = 0` and `release_dead = 0`, and 3 vendor writes, at three
+different travel values, all carrying `200` and `200`. A reply to a write echoes the write, so the
+three replies showing `200/200` are acknowledgements, not reads.
+
+**Not established: why 200.** Two readings fit the same frames, and the repo's own vendored sources
+pull in opposite directions.
+
+- A fixed constant. `research/proto/package/src/utils/pack.ts` builds `DBDataPack`, but its default
+  argument is `pressDead: 0, releaseDead: 0`, so if there is an SDK template value it is zero, not
+  200. The 200 has to come from the caller.
+- A user setting sitting at its default. `research/aure/src/components/performance/GlobalTravel.vue`
+  is a different app on the same Sparklink SDK, and it exposes both dead zones as sliders over
+  `0.0` to `1.0` with `ref(0.2)` as their initial value. In millimetres that is exactly the 200
+  micrometres every observed write carries.
+
+**What it costs if we have it wrong.** `wh restore` now writes `200, 200` on every restore. If they
+are a user setting, that silently overwrites the operator's choice, and unverifiably: the read path
+reports `0` for both on every measured read, so `wh` cannot tell what it just replaced, and
+`verify_restore` never re-reads the `0x29` record at all. `wh selftest` has the mirror-image
+exposure. It rewrites the record with what it read, which is `0, 0`, so if the board does hold a
+dead zone it does not report, selftest zeroes it. That is the one place `wh` still writes a zero
+dead zone, and the reason its output no longer calls itself a no-op.
+
+**What would settle it, and why it is awkward.** Not a readback: the board answers `0` whatever was
+written, so nothing on the read path can distinguish the two. It needs either the vendor
+configurator observed writing a value other than 200 (move whatever control the configurator
+exposes for these, if it exposes one, and capture the write), or a felt behavioural difference on
+the board between a written `0` and a written `200` at the same travel. Until one of those exists,
+`wh` should keep writing the only value the vendor has been seen to write.
+
 ### Settings a snapshot does not capture
 
-`wh backup` stores global travel plus four layouts per key, and, as of Phase 1, the profile the
+`wh backup` stores the global record plus four layouts per key, and, as of Phase 1, the profile the
 board was on when the snapshot was taken: `Snapshot::profile` records it. `wh restore` checks that
-recorded profile against the board's current one, and the two refusals are not the same and do not
-share an override. When the snapshot's recorded profile differs from the board's, `wh restore`
-refuses unconditionally; there is no `--force` for that case, since restoring would silently
-overwrite the wrong profile's settings. When the snapshot has no recorded profile at all (an older
-snapshot from before this field existed, or one whose board reported a profile index this build does
-not recognise), `wh restore` refuses by default but accepts `--force`, asserting the settings belong
-to the board's current profile. That gap is closed. It still does not capture the base layer key
+recorded profile against the board's current one, and refuses either way it can fail, with no
+override for either. When the snapshot's recorded profile differs from the board's, `wh restore`
+refuses, since restoring would silently overwrite the wrong profile's settings. When the snapshot
+has no recorded profile at all, it refuses too: nothing can establish which profile the settings
+belong to, and `wh` itself never writes such a snapshot, because a board reporting a profile index
+outside `0..=3` on the wire fails the read rather than recording an unknown profile. That gap is
+closed. It still does not capture the base layer key
 mapping (layout `0x00`), the FN layer (layout `0x01`), SOCD, dynamic keystroke, mod tap, gamepad
 configuration, RGB, or polling rate. Those are Phase 2 scope questions, and the README says plainly
 what a snapshot does and does not contain either way.

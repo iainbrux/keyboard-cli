@@ -78,12 +78,37 @@ wh get rt --keys "w,a,s,d"
 wh set rt --keys "w,a,s,d" --set 0.5
 wh set rt --keys "w,a,s,d" --set 0.5 --press 0.4 --release 0.6
 wh set rt --keys "w,a,s,d" --off
+wh set rt --keys "w,a,s,d" --off --press 0.1 --release 0.1
 wh get ap --keys wasd
 wh set ap --keys wasd --set 1.2
 ```
 
 `wh get rt`/`wh get ap` also print the key's raw keyset value as a suffix, `keyset N` or
 `keyset none`.
+
+**`wh set rt --off` does the whole of what the vendor's own per-key rapid trigger off does**, not
+just the mode nibble: it turns rapid trigger off, resets both sensitivities to the board's global,
+and clears the key's rapid trigger keyset membership, which is the order and the content measured in
+`captures/rt-off-w.jsonl`. So a key turned off this way stops being listed in an rt keyset by
+`wh keyset list` and by the vendor configurator, and a keyset whose last member is turned off ceases
+to exist, which the announcement says. The base it resets to is read from the keys outside every
+rt keyset that the selection itself leaves behind, the same rule `wh keyset remove` follows and for
+the same reason: the key you are turning rapid trigger off on is usually the one holding its own
+sensitivity, so counting it would make it its own disagreement. If the keys left behind disagree, or
+if the selection covers every key outside a keyset (which `--keys all` always does), `--off` refuses
+and names each value with how many keys hold it rather than picking a winner. `--press`/`--release`
+are the way past that (`wh set rt --keys w --off --press 0.1 --release 0.1`), and the announcement
+says when a value came from those flags rather than from the board. Pass both or neither: `--off`
+resets both sensitivities together. A key already off and already at the base still has its
+membership rewritten, and the announcement says so rather than claiming nothing was written, since
+a frame really is sent.
+
+**A whole-board `wh set rt --keys all --off` needs a typed `yes`**, like `wh keyset remove --keys
+all` and the two other whole-board routes: it clears `0xFE` on every key, so every rapid trigger
+keyset on the board ceases to exist at once. The prompt names the value, the keysets being lost and
+how many keys have rapid trigger switched off, and goes to stderr so redirecting stdout cannot trap
+it. There is no bypass flag; scripts pipe `yes` on stdin. `--dry-run` never prompts, since it writes
+nothing.
 
 Key selectors accept comma-separated names, contiguous runs typed as one word (`wasd`), ranges
 (`a-f`), negation (`all,!space`), user-defined groups (`wh keys group fps "w,a,s,d,space"`, then
@@ -109,14 +134,15 @@ wh keyset remove ap --keys w
 `wh keyset list` with no kind lists both `ap` and `rt`; naming one lists that kind. Each keyset is
 shown with its index, value, and member keys: one shared value when the members agree
 (`1 1.50mm  u,i,o,p`), or each distinct value with the keys holding it when they do not
-(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt` does not write `0xFE`; running it on part of
-an rt keyset's members can leave that keyset's members holding different values, which
-`wh keyset list` then shows as this kind of disagreement. `wh keyset set` changes an existing
-keyset's value in place. `create`, `delete`, `remove`, `wh set ap` below, and `wh restore` (for keys
-whose snapshot recorded it, see below) each write keyset membership. `create` and `delete` take
-`--value` (or, for `rt`, `--press`/`--release`); it defaults to the board's current global value, and
-passing it is required when the keys outside every keyset disagree, or when none are left outside
-one.
+(`1 disagree: u at 1.50mm, i at 1.20mm`). `wh set rt --set` does not write `0xFE`; running it on
+part of an rt keyset's members can leave that keyset's members holding different values, which
+`wh keyset list` then shows as this kind of disagreement. `wh set rt --off` does write it, clearing
+membership, so it never leaves a keyset in that state. `wh keyset set` changes an existing keyset's
+value in place. `create`, `delete`, `remove`, `wh set ap` and `wh set rt --off` above, and
+`wh restore` (for keys whose snapshot recorded it, see below) each write keyset membership.
+`create` and `delete` take `--value` (or, for `rt`, `--press`/`--release`); it defaults to the
+board's current global value, and passing it is required when the keys outside every keyset
+disagree, or when none are left outside one.
 
 **`wh keyset remove` resets named keys to the board's base value and to no keyset at all**, whether
 or not they were in one: it takes no value flags, since its job is a destination, not a choice. For
@@ -158,11 +184,34 @@ move to, every keyset that will cease to exist, and, if any key's touch mode is 
 (rapid trigger switching off, or a key coming off "follow global travel"), a count of how many:
 otherwise a board where every key already holds the target value and no keyset exists to lose reads
 as a complete no-op right up until the write that pins every key's actuation point. `--dry-run`
-never prompts, since it writes nothing.
+never prompts, since it writes nothing. The prompt itself goes to stderr, not stdout: redirecting
+`wh keyset remove ap --keys all > log.txt` still shows it on screen and still reads the typed
+answer from stdin, rather than trapping it in the file with nothing left to answer.
 
 **Creating a keyset writes the same value to every member.** It writes the board's current global
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
 --keys u,i,o,p --value 1.5` sets all four to 1.50mm.
+
+**A create whose selection covers every key in the board's matrix asks for a typed `yes` first**,
+for both kinds: every key moves into the one new index, so every existing keyset of that kind
+loses all its members and ceases to exist, the same destruction `wh keyset remove --keys all` and
+`wh set ap --keys all` already guard by a different route. Like those two, the prompt is built
+after computing what the write actually contains, so it names the new keyset's index and value,
+every keyset that will cease to exist (or says there are none to lose), and, if any key's touch
+mode is about to move too, a count of how many. For `ap` that is keys coming off "follow global
+travel" onto their own actuation point. For `rt` it is two separate counts, because one sentence
+cannot honestly cover both cases: keys that had rapid trigger **off** are told it is being
+switched on, which changes how they behave under a keypress, while keys that already had it on
+following the board's global sensitivity are only moving onto their own, and are counted and
+described separately. A touch mode `wh` has never measured is counted with the second group,
+whose wording claims only where the key ends up, so nothing ever asserts an unmeasured mode was
+off. Without these counts a board with no keysets of that kind reads as though nothing much is
+about to happen, right up until the write that pins every key permanently. It fires on the
+resolved selection covering the matrix, however it is spelled, not on the literal word `all`.
+`--dry-run` never prompts, since it writes nothing, and there is no bypass flag, so a script that
+used to run `wh keyset create ap --keys all` unattended now needs a `yes` on its stdin. The prompt
+goes to stderr, not stdout, so redirecting the command's output still shows it on screen and still
+reads the typed answer from stdin.
 
 **`wh set ap` over a selection that is not exactly one existing keyset's members moves the whole
 selection into one new keyset, and says so.** Four shapes: a selection that is part of a keyset
@@ -181,6 +230,36 @@ board (the value written still changes); on any board where that is not so, incl
 where every key is already free, it creates one new keyset holding every key, and every keyset
 that existed before ends with no members. See `docs/keysets.md`, "Changing a value over a selection
 that is not exactly one keyset", for what evidence supports each shape.
+
+**Selecting the whole board now asks for a typed `yes` first**, the one case above that is not the
+"leaves membership as it is" one: every existing `ap` keyset loses all its members, so every one of
+them ceases to exist. The same guard as `wh keyset remove`'s own whole-board prompt, built after
+computing what the write actually contains, so it names the new keyset's index, every keyset that
+will cease to exist, and, if any key's touch mode is about to move too (a key coming off "follow
+global travel"), a count of how many: otherwise a board with no `ap` keysets at all reads as though
+nothing is about to happen right up until the write that pins every key's actuation point. It fires
+on the resolved selection covering the board's matrix, however it is spelled, not on the literal
+word `all`, and not when the whole board already is exactly one keyset, since nothing would be lost
+in that case. `--dry-run` never prompts, since it writes nothing, and there is no bypass flag. A
+script that used to run `wh set ap --keys all --set <mm>` unattended now needs a `yes` on its stdin,
+the same way a script driving `wh keyset remove ap --keys all` already does. The prompt itself goes
+to stderr, not stdout, so redirecting the command's output still shows it on screen and still reads
+the typed answer from stdin.
+
+**`wh set ap --base <mm>` changes the board's base actuation point instead, and is not the same
+thing as `--keys all --set <mm>` above.** The base is not a stored setting: it is what every key
+outside a keyset already holds in layout `0x04`. `--base` writes that value to every free key and
+touches no keyset at all, so every existing keyset keeps its own value untouched, while `--keys all
+--set <mm>` enrols every key, keyset members included, into one brand new keyset holding `<mm>`,
+destroying every keyset that existed before. `--base` takes no `--keys`, since it names the board
+rather than a selection, and refuses alongside `--set`, which names a selection's value instead of
+the board's. It refuses outright, rather than writing nothing and reporting success, when every key
+on the board is already in a keyset. Measured 2026-09-04 against the vendor's own GLOBAL ACTUATION
+POINT field, which writes exactly this shape; see `docs/keysets.md` for the frame counts.
+
+```
+wh set ap --base 1.95
+```
 
 Manage stored groups:
 
@@ -219,7 +298,9 @@ wh profile
 wh profile 2
 ```
 
-A self-test that exercises a real write/read round trip without changing anything on the board:
+A self-test that exercises a real write/read round trip, rewriting the board's global record with
+the values it just read (see the read-modify-write note below for the one part of that which is not
+provably a no-op):
 
 ```
 wh selftest
@@ -264,10 +345,24 @@ line of defence for exactly that if the first one is ever wrong.
 ## What a backup does and does not contain, stated plainly
 
 A snapshot recorded by `wh backup` (or the automatic backup every write command takes first)
-contains: global travel and its press/release dead zones, actuation point and rapid trigger
-press/release depth for every physical key, the raw per-key mode value, each key's raw actuation
-point and rapid trigger keyset value, and, since Phase 1, the profile the board was on when the
-snapshot was taken. Snapshots are written as JSON; older TOML backups are still read.
+contains: the board's global record (`custom_value_mm` and its press/release dead zones), actuation
+point and rapid trigger press/release depth for every physical key, the raw per-key mode value, each
+key's raw actuation point and rapid trigger keyset value, and, since Phase 1, the profile the board
+was on when the snapshot was taken. Snapshots are written as JSON; older TOML backups are still
+read, including those written before `custom_value_mm` was called that.
+
+`custom_value_mm` is **not** the global actuation point, whatever an older backup's `travel_mm`
+spelling suggests. It is the vendor configurator's `"MM" CUSTOM VALUE`, the step size for its `< >`
+controls. The global actuation point is not in that record at all: it is simply what every key
+outside a keyset holds, which is what `wh set ap --base` reads and writes.
+
+The two dead zone fields are informational only, a record of what the board reported when the
+snapshot was taken, which is `0` for both on every read measured. `wh restore` does not send them:
+it writes 200um for each, the value every measured vendor write carries, so hand-editing either
+field changes nothing that reaches the board. Whether that 200 is a fixed constant or a user setting
+sitting at its default is **not** established, and if it is the latter then a restore overwrites
+your choice with no way to tell, since the board reports zero for both however they were set.
+`docs/backlog.md` records the open question and what would settle it.
 
 Each key's `rt` field in the snapshot file is informational only, a human-readable summary of the
 raw mode value at the moment the snapshot was taken. `wh restore` never reads it; it writes the raw
@@ -295,19 +390,23 @@ stderr, rather than asserting the `0` the missing fields would otherwise default
 - Polling rate.
 
 **`wh restore` is not a factory-reset recovery path.** It restores exactly the settings listed above,
-and nothing more, and it guards the profile they were recorded on with two separate refusals that do
-not share an override:
+and nothing more, and it refuses outright, before writing anything, in three cases. None of them has
+an override:
 
 - If the snapshot recorded a profile and the board is currently on a different one, `wh restore`
-  refuses unconditionally. There is no `--force` for this case: restoring would silently overwrite
-  the wrong profile's settings, which `wh` will not do even if asked. Switch the board to the
-  recorded profile first, or restore only when you actually mean to overwrite the profile you are
-  currently on.
-- If the snapshot has no recorded profile at all (it predates profile recording, or the board it
-  came from reported a profile index this build does not recognise), `wh restore` also refuses by
-  default, since it cannot verify which profile the settings belong to. `--force` rescues only this
-  case, asserting the settings belong to the board's current profile; it does nothing for the
-  mismatch case above.
+  refuses: restoring would silently overwrite the wrong profile's settings, which `wh` will not do
+  even if asked. Switch the board to the recorded profile first, or restore only when you actually
+  mean to overwrite the profile you are currently on.
+- If the snapshot has no recorded profile at all, `wh restore` refuses, since nothing can establish
+  which profile the settings belong to. `wh` never writes such a snapshot: the board reports its
+  profile as a zero-based wire index, and one outside `0..=3` (the four profiles the board has)
+  fails the read outright rather than being recorded as an unknown profile.
+- If the snapshot carries a key the board in front of you does not have, `wh restore` refuses and
+  names the keys. A snapshot taken on a different key matrix is unrestorable rather than partly
+  restorable, deliberately: restoring it would write to keys this board does not have and then
+  report them verified, because the readback re-reads exactly the keys it wrote to.
+
+In all three cases, take a fresh snapshot on the board you are restoring to.
 
 If you need to undo a change to remapping, SOCD, lighting, or anything else in the list above, use
 the board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
@@ -322,12 +421,15 @@ cached to go stale.
 Two things look like exceptions and are not:
 
 - `set rt`, `set ap`, and `keyset create`/`set`/`delete`/`remove` each read a key's current
-  settings, then write back a change built from that read (the last four through the same
+  settings, then write back a change built from that read (all but `set rt --set` through the same
   `keyset::plan`).
-  `selftest` does the same at the board level, not a key's: it reads the global travel and dead
-  zones and writes back the identical values, a no-op write that proves the path rather than
-  changing anything. Between a read and its write, the board could in principle be changed by hand
-  (or by another tool); that is a real read-modify-write window, not `wh` caching anything.
+  `selftest` does the same at the board level, not a key's: it reads the global custom value and
+  both dead zones and writes back exactly what it read, to prove the write path works. That is a
+  no-op for the custom value. For the dead zones it is only a no-op if the board really does hold
+  the zeros it reports for them, which is unestablished (`docs/backlog.md`): `selftest` is the one
+  place `wh` still writes a zero dead zone. Between a read and its write, the board could in
+  principle be changed by hand (or by another tool); that is a real read-modify-write window, not
+  `wh` caching anything.
 - A snapshot is a point-in-time copy by definition. `wh restore` writing it back is the snapshot
   doing its job, not drift.
 

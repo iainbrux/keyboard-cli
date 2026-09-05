@@ -11,7 +11,7 @@ BIN="$BIN_DIR/../target/x86_64-pc-windows-gnu/release/wh.exe"
 # WH_REPLAY is the only escape hatch from real hardware: set it to a capture script and every
 # command reads a scripted conversation instead of opening the keyboard. If WSLENV does not carry
 # WH_REPLAY across the WSL/Windows boundary, wh.exe sees it unset and silently drives the real
-# device instead, which has actually turned a replay run into a real `wh restore --force` against
+# device instead, which has actually turned a replay run into a real `wh restore` against
 # an operator's board. Fail closed here: this shell is the only place that can check before the
 # crossing happens.
 if [ -n "${WH_REPLAY:-}" ]; then

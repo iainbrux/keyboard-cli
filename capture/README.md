@@ -3,13 +3,17 @@
 This is the procedure for recording real HID traffic between the vendor web
 configurator and a Wallhack K-001 keyboard, so `cargo test -p wh-proto --test
 golden` has something real to check the codec against. It has been run five
-times: task 19's hardware session (ten scenarios, 1224 frames), two keyset sittings
-on 2026-08-29, and two sittings on 2026-09-04, one verifying keyset semantics and
-one measuring keyset member removal. The corpus now
-stands at thirty-six files and 5860 frames, with zero framing or checksum
-failures in any of them. The results are
-recorded in `docs/protocol-inventory.md`, `docs/protocol.md` and
-`docs/keysets.md`. This document describes the procedure so it can be run
+times: task 19's hardware session (ten scenarios, 1224 frames), two keyset
+sittings on 2026-08-29, and two sittings on 2026-09-04, one verifying keyset
+semantics and one measuring keyset member removal. Three further files were
+taken on 2026-09-04 outside that enumeration and belong to the corpus too:
+`board-side-ap-change` and `board-side-rt-change`, the only captures of the
+operator using the keyboard's own AP and RT keys instead of the configurator,
+and `ks-set-global-ap`, a GLOBAL ACTUATION POINT change. Whether those three
+were their own sitting is not recorded. The corpus now stands at thirty-nine
+files and 6280 frames, with zero framing or checksum failures in any of them.
+The results are recorded in `docs/protocol-inventory.md`, `docs/protocol.md`
+and `docs/keysets.md`. This document describes the procedure so it can be run
 again, for a firmware update, a second board, or a new scenario, not as a
 first-time exercise still to be proven out.
 
@@ -25,12 +29,16 @@ repository will do that for you.
 
 Before you start, note which profile is active on the keyboard, somewhere
 outside this repository (your own notes, not a comment in the capture
-file). Nothing in the capture itself records which profile was active, and
-it matters: per-key state is per profile. `layout-16-by-profile` measures the profile 1 side of
-   that; the other side rests on the operator's note.
-Not recording it cost real work. The 2026-08-29 captures are profile 1 and
-the 2026-09-04 keyset captures are profile 2, which was not noticed until a
-difference between them had already been written up as a change over time.
+file). Most captures record nothing about which profile was active, five of
+the thirty-nine being the exception, and it matters: per-key state is per
+profile. `layout-16-by-profile` measures the profile 1 side of that; the other
+side rests on the operator's note. Not recording it cost real work. The
+2026-08-29 captures are profile 1 and those 2026-09-04 keyset captures that
+select a profile at all are profile 2, which was not noticed until a difference
+between them had already been written up as a change over time. The scoping is
+not pedantry: `ks-set-global-ap` is a 2026-09-04 keyset capture with no `70`
+frame in either direction, so its own profile is unestablished, as
+`docs/keysets.md` already records.
 A capture whose profile is unknown cannot be compared with any other.
 
 1. Close any running `wh` process. Open Chrome on Windows.
