@@ -59,6 +59,34 @@ Key remapping and the RGB build (3.6 and 3.7) can swap freely; 3.4 must land bef
 - [ ] **3.7 RGB/LED, from 3.2's captures.** Investigation then build. Nothing is known today
   beyond the suspected `cmd 0x18`.
 
+### Phase 3 exit criteria: what "beta" means
+
+Agreed with the operator on 2026-09-05. Beta is not literal 1:1 with terminal.wallhack.com; it is
+**every control the configurator exposes being either supported or explicitly refused, with nothing
+unknown.**
+
+- The TUI and CLI cover everything measured: the performance core, keysets, profiles, MM, SOCD,
+  remapping, and RGB if 3.2's captures crack it.
+- Whatever remains (dynamic keystroke, mod tap, gamepad mode, polling rate) is a documented "not
+  supported" with a measured reason, in the README, the way the snapshot docs already state what a
+  snapshot does not capture. A stated limit is fine; an unstated one is a defect.
+- `0xbe` handling works: a long-running interface that goes stale when the operator touches the
+  knob is below the bar.
+
+The beta phase then carries stability commitments, not only bugfixes:
+
+- **Snapshot format stability.** Old backups keep restoring; any format change carries a serde
+  alias or a migration, as the `custom_value_mm` rename already does.
+- **CLI surface stability.** No breaking flag changes without a deprecation cycle. Alpha allowed
+  removing `--force` overnight; beta gives that up.
+- **Invariants frozen.** New commands are fine. Changing what an existing command writes to the
+  board needs the same measured justification a protocol claim needs.
+
+The beta announcement must say plainly: verified against one board on one firmware
+(`WALLHACK K-001` / `App_V1.1.046000`), hardware results measured on profile 2. A beta label
+implies it works on the next K-001 that is not the operator's; the first external bug report is
+the thing beta exists to collect.
+
 ## Phase 2
 
 Numbered 2.0 to 2.9 from `docs/superpowers/specs/2026-08-29-phase-2-design.md`, plus 2.10 to 2.16
