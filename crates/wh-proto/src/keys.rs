@@ -130,6 +130,15 @@ pub fn name_for_usage(usage: u8) -> Option<&'static str> {
     TABLE.iter().find(|&&(_, u)| u == usage).map(|&(k, _)| k)
 }
 
+/// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
+/// `TABLE`. Every layer that names a key to the operator goes through this, so an unnamed usage
+/// reads the same in a `wh-device` error as in `wh dump`.
+pub fn label(usage: u8) -> String {
+    name_for_usage(usage)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("0x{usage:02X}"))
+}
+
 /// The names `builtin_group` recognizes. Kept as the single source of truth so a caller
 /// that needs to list, print, or check membership against the builtin groups never has to
 /// maintain a second copy that can drift the moment a group is added or renamed.

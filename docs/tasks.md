@@ -57,7 +57,7 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   `profile-select-3` establish profiles 4 and 3 from their own frames; the other fourteen files
   are attributed by sitting continuity, not frames.
 
-- [ ] **3.3 SOCD, now fully unblocked.** The wire model, measured 2026-09-05, is in
+- [x] ~~**3.3 SOCD, now fully unblocked.**~~ The wire model, measured 2026-09-05, is in
   `docs/protocol.md` under "SOCD": pair writes are one `cmd 0x2c` frame carrying both directions
   plus a priority enum (`0` last-input, `1` first key, `2` second key, and the board normalises
   replies per queried key, so reads must normalise before comparing), participation is MODE's
@@ -69,6 +69,24 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   Open questions carried from the captures: whether an orphaned pairing survives a remove on the
   board, and the two further priority modes the vendored docs name but the corpus never reached
   (`3` neutral, `4` depth-based).
+
+  Closed 2026-09-05 as `wh socd list | pair | unpair`. A pairing is modelled as an unordered pair
+  plus a winner (`wh_proto::socd::Pairing`), never as the wire's priority byte, which is what
+  makes the board's per-key normalisation a non-problem: the two spellings of one pairing compare
+  equal, and `list` shows each pairing once even though both members are queried. The codec
+  reproduces every captured `cmd 0x2c` frame byte for byte, checksum included. Participation is
+  `Mode::is_socd`, the one place the advanced nibble is compared, and it compares `== 8`; a
+  fixture at nibble `9` (RS, from the vendored docs, never observed on this board) pins that a bit
+  test would be wrong. `pair` sends one frame and no MODE record, since the board sets the flag
+  itself, and verifies by re-reading both keys' MODE and re-querying both rows. `unpair` writes
+  MODE with the advanced nibble cleared on both keys and no `cmd 0x2c`, matching the vendor, and
+  preserves each key's touch nibble; every captured vendor remove was on touch nibble 0, so that
+  last part is `wh`'s own read-modify-write rule applied past the measurement, and it says so.
+  A key may sit in one pair only, which the UI's model implies and the operator confirmed;
+  whether the board would accept an overlap stays unmeasured, because `pair` refuses rather than
+  finding out by accident. The two open questions above are unchanged by this work: nothing here
+  can see an orphaned pairing, since discovery only queries flagged keys, and priority `3` and `4`
+  are refused by their own decode error rather than silently read as last-input.
 
 - [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
   architectural blocker for any long-running interface. The board announces entering and leaving
@@ -707,7 +725,8 @@ rather than as settings it recognises.
   are already in the operator's backup files on disk and are what `wh backups list` and `--last`
   print. This is a type change, not a wording change, and
   `every_backup_reason_renders_its_persisted_origin_string` pins all eight verbatim so a rename
-  has to be deliberate. A ninth, `SetMm`, joined in 3.1, pinned the same way.
+  has to be deliberate. A ninth, `SetMm`, joined in 3.1, pinned the same way, and a tenth and
+  eleventh, `SocdPair` and `SocdUnpair`, in 3.3.
 
   The missing end-to-end tie is now two tests that drive a real command and read the file it
   wrote: `set_ap_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs` and
@@ -716,13 +735,16 @@ rather than as settings it recognises.
   The task's claim is measured: swapping the `set ap` and `keyset create` literals before the
   change failed exactly those two new tests and nothing else in the workspace.
 
-  Six of the nine variants (`set rt`, `keyset set`, `keyset delete`, `keyset remove`, `restore`
+  Six of the eleven variants (`set rt`, `keyset set`, `keyset delete`, `keyset remove`, `restore`
   and the manual backup) still have no end-to-end test tying a run to its label, and `set ap
   --base`'s own call site is untied as well even though its variant is pinned through the plain
   `--set` path. A wrong variant at one of those sites would still persist quietly: the enum makes
   the label visible at the call site, it does not make the wrong one impossible. `SetMm` is not
   among the six: unlike every variant recorded here, it was born with its own end-to-end tie,
   `set_mm_end_to_end_records_its_own_command_as_the_backup_origin` in `tests/dump.rs`, from 3.1.
+  `SocdPair` and `SocdUnpair` are not among them either, born tied the same way by
+  `socd_pair_end_to_end_records_its_own_command_as_the_backup_origin` and its `unpair` twin in
+  `tests/socd.rs`.
 
 - [x] ~~**2.31 `confirm_whole_board_create` still takes a `kind` beside its `Target`.**~~ The last
   kind-beside-target in `crates/wh-cli/src/keyset.rs`, left deliberately when 2.18 closed: its
@@ -1032,7 +1054,10 @@ rather than as settings it recognises.
   `docs/backlog.md`.
 - [ ] **Widen what a snapshot captures.** It currently records the `cmd 0x29` global record, four
   layouts per key, and the profile. It does not record key mappings, the FN layer, SOCD, dynamic
-  keystroke, mod tap, gamepad configuration, RGB, or polling rate.
+  keystroke, mod tap, gamepad configuration, RGB, or polling rate. SOCD is the one of those that
+  can diverge rather than merely be absent, now that 3.3 can change pairs: the mode value a
+  snapshot does store carries the SOCD participation flag, so a restore can set that flag on a key
+  whose pairing is gone. `docs/backlog.md` has what closing it would take.
 
 ## Done
 

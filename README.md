@@ -274,6 +274,42 @@ write, it sends the new value with the vendor's own dead-zone constants (`200`/`
 wh set mm --value 1.5
 ```
 
+Manage SOCD pairs, two keys whose opposing inputs resolve to one:
+
+```
+wh socd list
+wh socd pair a d
+wh socd pair a d --priority d
+wh socd unpair a
+```
+
+`wh socd list` prints one line per pair with the winner named, `a + d, priority: d` or
+`q + e, priority: last-input`, never the wire's own priority byte: the board answers a query on one
+member with the two records reordered and the byte re-based, so the same setting has two spellings
+and only the winner is meaningful on its own. `wh` normalises both spellings to the same pair, which
+is also why each pair is listed once although both members are queried.
+
+`--priority` names one of the two keys, or `last-input` (the default), matching the configurator's
+own PRIORITY selector. It takes exactly two different keys, and the order they are given in is the
+order that reaches the wire, which changes the priority byte but not the setting.
+
+**A key may sit in one pair only.** `wh socd pair` refuses if either key is already paired, names
+the pair that holds it, and points at `wh socd unpair`. That is the vendor UI's model; whether the
+board would accept a key in two pairs is unmeasured, and refusing means `wh` never finds out by
+accident. `wh socd unpair` takes any member of a pair and removes the whole pair, both keys;
+naming both members of one pair removes it once. A key that is in no pair is refused by name before
+anything is written.
+
+Participation is a flag in each key's mode value, and **the board sets that flag itself** on a pair
+write, so `wh socd pair` sends one frame and no mode record, and says so. `wh socd unpair` is the
+mirror: it clears the flag on both keys and sends no pair frame at all, which is what the vendor
+does too. It preserves each key's own touch mode while clearing the flag, so unpairing a key that
+holds its own actuation point does not quietly return it to the global one; every vendor removal
+that was captured happened to be on a key with no touch mode set, so that preservation is `wh`'s
+own rule rather than a measured one, and the announcement names the modes it is keeping.
+
+A snapshot does not carry pairs, only the mode value that flags them; see the backup section below.
+
 Manage stored groups:
 
 ```
@@ -396,7 +432,11 @@ stderr, rather than asserting the `0` the missing fields would otherwise default
 
 - The base layer key mapping (which physical key produces which keystroke).
 - The FN layer mapping.
-- SOCD (simultaneous opposing cursor direction key pairing).
+- SOCD pairings and their priorities, which `wh socd` reads and writes but a snapshot does not
+  carry. This one can diverge rather than simply be missing: the raw mode value a snapshot does
+  store carries the SOCD participation flag in its advanced nibble, so restoring an old snapshot
+  can set that flag on a key whose pairing is gone. `wh socd list` refuses on such a board and
+  names the key, rather than showing half a pair. Take a fresh snapshot after changing pairs.
 - Dynamic keystroke, mod tap, or any other advanced-key behaviour beyond the raw mode value.
 - Gamepad configuration.
 - RGB lighting.

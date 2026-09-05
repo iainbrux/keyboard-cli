@@ -6,4 +6,5 @@ pub mod keyset;
 pub mod ops;
 pub mod replay;
 pub mod session;
+pub mod socd;
 pub mod transport;
