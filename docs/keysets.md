@@ -160,7 +160,11 @@ frames carrying 462 write records in total.
 
 **`0x16` and `0x17` are rewritten at the key's current value like any other non-owned layout.** They
 are not a constant, and the corpus measures the vendor writing two different values into them, each
-matching what the board read back at the time. Grouped by capture group:
+matching what the board read back at the time. As of 2026-09-05 the values themselves are
+identified: these layouts are the per-key safety-zone margins, written `100` per key by the vendor
+UI's SAFETY ZONE toggle switching on and `0` switching off (`safety-zone-on`/`-off`, profile 3), so
+the per-profile difference in the table below was that toggle's state per profile, not drift.
+Grouped by capture group:
 
 | Captures | What they read | What the vendor wrote |
 |---|---|---|
@@ -712,9 +716,10 @@ layout neither `wh` nor the configurator reads would not show up here.
 
 ## Corpus
 
-Thirty-nine capture files, 6280 frames, all decoding with correct framing and checksums and no hard
-failures. Up from ten files and 1224 frames after Phase 1, and twenty-seven after the 2026-08-29
-sittings.
+Fifty-five capture files, 7126 frames, all decoding with correct framing and checksums and no hard
+failures. Up from ten files and 1224 frames after Phase 1, twenty-seven after the 2026-08-29
+sittings, and thirty-nine before the 2026-09-05 sitting (SOCD, lighting, safety zone, the analog
+output toggle and the profile export/import, written up in `docs/protocol.md`).
 
 **The corpus spans two profiles and mostly does not say which.** Only five files record a profile at
 all, and one of them, `profile-switch`, is profile 2 despite being a Phase 1 capture. Any statistic

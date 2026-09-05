@@ -9,57 +9,33 @@ capture files from the hardware session (local only, gitignored, backed up outsi
 
 ## Hardware questions
 
-### The LEDs beside the knob, and setting their colour
+### The LEDs beside the knob: what is measured and what is left
 
-**What we know.** The top plate carries a printed scale reading 0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 1.5,
-2.0, 2.5, 3.0, 3.5 with a red mark at the end, and a row of LEDs above it. It reads as a travel
-indicator. **The operator reports these LEDs do change colour, so they are RGB rather than
-single-colour indicators.** That makes them a target for features, not just a thing to decode.
+**Measured 2026-09-05** (see `docs/protocol.md`, "The lighting record"). `cmd 0x18` is the lighting
+record: brightness (a level out of twelve), sleep timer (minutes), a mode and a speed byte, all
+named from the vendor's own export schema and two of them changed through the UI and captured on
+the wire. The knob-side strip itself displays per-press depth in red when Show Analog Output is on
+(sub-order `0xc0`, also identified), and shows the active profile as a coloured LED batch on a
+profile switch: red, green, blue and yellow for profiles 1 to 4, with no host traffic accompanying
+either behaviour, so those colours are firmware-driven.
 
-**What we do not know.** What drives them, whether the colour is host-controlled or firmware-driven,
-and whether the row also tracks the actuation point, the rapid trigger sensitivity, or live key
-depth. Colour and function may be independent: a travel indicator that happens to be RGB is a
-different thing from a strip we can drive freely.
-
-**Candidate.** Command `0x18` is unmodelled, appeared 6 times in the captures, and carries a payload
-with a `7f7f` and `ff00ff00` shape. `ff00ff00` reads like a colour triple, and `7f7f` like a pair of
-half-scale values. That is a guess from byte patterns and nothing stronger, and the same guess has
-been wrong before on this project.
-
-**How to find out.** Two captures, in this order.
-
-1. Change the LED colour in the vendor configurator and capture. If `0x18` carries the colour, the
-   payload should track the picker in an obvious way, and a pure red, pure green and pure blue in
-   sequence would make the byte order unmistakable.
-2. Change an actuation point, then a rapid trigger sensitivity, watching the row each time. If it
-   tracks one and not the other, that is the function question answered separately from the colour
-   one.
-
-**What it unlocks.** If the colour is host-writable per LED, the row becomes a usable output surface:
-a live actuation-point readout, a profile indicator, or anything else `wh` wants to show. That is the
-reason this is worth more than curiosity.
+**Still open: the colour table.** Every `0x18` frame in either direction carries the same constant
+block of colour-looking triples (`ffff00`, `ff00ff`, and so on). Whether writing different values
+into that block changes anything visible is untested; no UI control edits it. If it is writable,
+the strip becomes a host-drivable output surface, which is the reason this stays on the backlog
+rather than closing. The experiment is one write with one triple changed, watched on the board,
+and it should wait for a `wh` implementation of the `0x18` write rather than a hand-built frame.
 
 ### Are the key backlights colour-programmable, or white only?
 
-**What we know.** The board has a LIGHT key, usage `0xFC`, confirmed by measurement (remapped in the
-vendor UI and read back from the matrix). So lighting is a first-class board function with its own
-key. The board lights up.
-
-**What we do not know.** Whether the key backlights are RGB, per-key addressable, or a single-colour
-backlight with brightness and effect control only. This is genuinely open: plenty of boards in this
-class ship white-only backlighting with an RGB accent strip, which would match the knob LEDs being
-colour-capable while the keys are not.
-
-**How to find out.** Cheapest first, and most of this is looking rather than capturing.
-
-1. Look at the board with the lighting on. A white-only backlight is obvious on sight.
-2. Look at the vendor configurator's lighting section. A colour picker means RGB; brightness and
-   effect sliders alone mean it is not.
-3. Only then capture, changing colour or effect and watching for `0x18` or another unmodelled
-   command.
-
-**Why it is worth knowing before the TUI.** The planned TUI mirrors the vendor configurator one to
-one. If lighting is a tab there, we need to know what it can express before designing the tab.
+**Answered 2026-09-05, by looking, per this entry's own step 1 and 2.** The key backlights are
+white only, the configurator has no lighting page and no colour control anywhere (the operator
+searched it while capturing the 2026-09-05 sitting), and the only per-key lighting behaviour
+observed is a firmware pulse of the FN key when AP or RT is pressed without FN. What the UI does
+expose is LED BRIGHTNESS and LED SLEEP TIMER in its GENERAL panel, both captured and modelled in
+`cmd 0x18` (see `docs/protocol.md`). Under the beta definition this becomes a documented
+"colour: not supported, and the vendor does not support it either"; brightness and sleep are
+buildable features. Kept for the record rather than as an open question.
 
 ### How the knob is programmed
 
@@ -552,12 +528,20 @@ dead zone, and the reason its output no longer calls itself a no-op. `wh set mm`
 unlike `restore` it is a routine, operator-initiated command with no whole-board framing to signal
 the exposure, so it is the largest instance of this risk.
 
-**What would settle it, and why it is awkward.** Not a readback: the board answers `0` whatever was
-written, so nothing on the read path can distinguish the two. It needs either the vendor
-configurator observed writing a value other than 200 (move whatever control the configurator
-exposes for these, if it exposes one, and capture the write), or a felt behavioural difference on
-the board between a written `0` and a written `200` at the same travel. Until one of those exists,
-`wh` should keep writing the only value the vendor has been seen to write.
+**Narrowed 2026-09-05: the configurator exposes no control for these fields.** The operator
+searched the whole UI (`WH_TERMINAL V1.0.0`) during the capture sitting. The only "zone" control
+anywhere is SAFETY ZONE, an on/off toggle, and it was captured both ways: it writes layouts
+`0x16`/`0x17` per key and never touches `cmd 0x29` (`safety-zone-on`/`-off`). The vendor's profile
+export carries no dead-zone field either. So whatever the 200 is, it is not operator-reachable
+state in this configurator version: `wh` writing `200, 200` cannot be overwriting a choice made
+through the UI, which retires the practical half of the risk above. `wh` keeps writing the only
+value the vendor has been seen to write.
+
+**Still not established: why 200**, and the exposure returns if a future configurator version grows
+the sliders `GlobalTravel.vue` shows the SDK supports. What would settle the remainder: the vendor
+observed writing any value other than 200, or a felt behavioural difference between a written `0`
+and a written `200` at the same travel. A readback can never settle it, since the board answers `0`
+whatever was written.
 
 ### Settings a snapshot does not capture
 

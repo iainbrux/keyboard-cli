@@ -10,8 +10,13 @@ taken on 2026-09-04 outside that enumeration and belong to the corpus too:
 `board-side-ap-change` and `board-side-rt-change`, the only captures of the
 operator using the keyboard's own AP and RT keys instead of the configurator,
 and `ks-set-global-ap`, a GLOBAL ACTUATION POINT change. Whether those three
-were their own sitting is not recorded. The corpus now stands at thirty-nine
-files and 6280 frames, with zero framing or checksum failures in any of them.
+were their own sitting is not recorded. A sixth sitting on 2026-09-05 added
+sixteen files (SOCD, the analog output and safety zone toggles, lighting, a
+profile select, and the profile export/import experiment): every file up to
+and including `socd-reload-read` is profile 4, `profile-select-3` records the
+switch (`70 02`) in its own frames, and every file after it is profile 3. The
+corpus now stands at fifty-five files and 7126 frames, with zero framing or
+checksum failures in any of them.
 The results are recorded in `docs/protocol-inventory.md`, `docs/protocol.md`
 and `docs/keysets.md`. This document describes the procedure so it can be run
 again, for a firmware update, a second board, or a new scenario, not as a
