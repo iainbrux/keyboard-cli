@@ -103,13 +103,14 @@ cargo test -p wh-device ap_records                     # by name substring
 cargo test -p wh-proto --test golden -- --nocapture    # decodes captures/, prints its summary
 cargo test -p wh-cli --test dump                       # end-to-end CLI over replay scripts
 cargo test -p wh-cli --test keyset                     # the wh keyset tree, the largest suite
+cargo test -p wh-cli --test socd                       # the wh socd tree
 ```
 
 `--nocapture` matters for `golden`: without it cargo swallows the summary on a passing run and you
-see only `ok`. There are three integration suites: `wh-proto/tests/golden.rs`, which decodes real
-captured traffic; `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays; and
-`wh-cli/tests/keyset.rs`, the largest of the three and the only end-to-end cover of the `wh keyset`
-command tree.
+see only `ok`. There are four integration suites: `wh-proto/tests/golden.rs`, which decodes real
+captured traffic; `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays;
+`wh-cli/tests/keyset.rs`, the largest and the only end-to-end cover of the `wh keyset` tree; and
+`wh-cli/tests/socd.rs`, the same for `wh socd`.
 
 **A `--test <name>` run is not evidence the crate compiles.** It does not build the bin target's
 unit tests, so a change breaking one of those leaves `cargo test -p wh-cli --test dump` green while
