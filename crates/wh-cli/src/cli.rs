@@ -22,7 +22,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: GetWhat,
     },
-    /// Write a setting for selected keys
+    /// Write a setting
     Set {
         #[command(subcommand)]
         what: SetWhat,
@@ -125,6 +125,17 @@ pub enum SetWhat {
         /// configurator's "MM" CUSTOM VALUE, a different setting.
         #[arg(long)]
         base: Option<f64>,
+        /// Print the exact reports without sending
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The configurator's "MM" CUSTOM VALUE: the step size for its steppers, not an actuation
+    /// point. Takes no --keys or --pick: this is a board-global setting, like --base but with no
+    /// selection to make at all.
+    Mm {
+        /// Value in mm, 0 to 4
+        #[arg(long)]
+        value: f64,
         /// Print the exact reports without sending
         #[arg(long)]
         dry_run: bool,

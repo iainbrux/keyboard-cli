@@ -9,6 +9,7 @@
 use std::process::Command;
 use wh_device::replay::hex;
 use wh_proto::cmds::{self, layout, KeyRecord};
+use wh_proto::value::Um;
 
 fn out_line(bytes: &[u8; 64]) -> String {
     format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(bytes))
@@ -5188,6 +5189,228 @@ fn set_ap_base_does_not_prompt() {
     assert!(
         !stderr.contains("moves every key into one new keyset"),
         "the whole-board ap-set prompt reached stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+// --- write path: `set mm` -------------------------------------------------------------------
+
+/// The full script for `wh set mm --value <mm>` against the two-key board: the standalone
+/// pre-write read the announcement is built from, the auto-backup phase, the single write frame
+/// and its ack, then the post-write readback `verify_write_as`'s sibling inside `set mm` sends.
+/// `old_um`/`target_um`/`readback_um` let the happy-path and mismatch tests below share this
+/// builder and diverge only on those three numbers.
+fn set_mm_script(old_um: u16, target_um: u16, readback_um: u16) -> Vec<String> {
+    let mut lines = Vec::new();
+    // The pre-write read reports 0/0 for the dead zones, matching every measured board, so a
+    // mutant that writes the read dead zones back instead of the vendor constants sends a frame
+    // this script never scripted and fails on `ReplayTransport`'s own send mismatch.
+    lines.extend(global_travel_lines(old_um, 0, 0));
+    lines.extend(auto_backup_lines(0));
+
+    let write = cmds::write_global_travel(Um(target_um), Um(200), Um(200));
+    lines.push(out_line(&write));
+    lines.push(in_line(&reply(cmds::cmd::DB, &[0x01, 0, 0])));
+
+    // The dead zones read back as 0 on every measured board regardless of what was written, so
+    // the readback fixture carries 0/0 here rather than echoing 200/200.
+    lines.extend(global_travel_lines(readback_um, 0, 0));
+    lines
+}
+
+/// `set mm --value 1.5` end to end against a board reading 0.90mm: the pre-write read, the
+/// auto-backup, the write, and a readback that matches (1500um = 1.50mm). Exit 0, the whole
+/// announcement line naming both values, "verified" in stdout, and a real backup file on disk.
+#[test]
+fn set_mm_end_to_end_backs_up_writes_and_verifies() {
+    let path = write_script("set-mm-ok", &set_mm_script(900, 1500, 1500));
+    let config_home = scratch_config_dir("set-mm-ok");
+
+    let out = run_wh(&["set", "mm", "--value", "1.5"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l == "mm custom value: 0.90mm -> 1.50mm"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("mm custom value: verified"),
+        "unexpected stdout: {stdout}"
+    );
+
+    let backups = std::fs::read_dir(config_home.join("wh").join("backups"))
+        .unwrap()
+        .count();
+    assert_eq!(backups, 1, "expected exactly one auto-backup file on disk");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The mismatch twin of the test above: the board reads back 1400um (1.40mm) where 1500um
+/// (1.50mm) was written. Non-zero exit, and the failure names both values, not just the word
+/// "mismatch": `ReplayTransport`'s own violation wording also contains "mismatch", so a bare
+/// `contains("mismatch")` cannot tell a real readback mismatch from a broken fixture.
+#[test]
+fn set_mm_end_to_end_reports_mismatch_on_readback() {
+    let path = write_script("set-mm-mismatch", &set_mm_script(900, 1500, 1400));
+    let config_home = scratch_config_dir("set-mm-mismatch");
+
+    let out = run_wh(&["set", "mm", "--value", "1.5"], &path, &config_home);
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1.40mm") && stderr.contains("1.50mm"),
+        "the failure must name both mm values, got: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh set mm --value 1.5 --dry-run` prints the exact write frame and sends nothing: the script
+/// carries only the standalone pre-write read, and any attempt to send the write itself or the
+/// auto-backup's own board sweep would hit `ReplayTransport`'s own send mismatch.
+#[test]
+fn set_mm_dry_run_prints_the_frame_and_sends_no_write() {
+    let lines = global_travel_lines(900, 0, 0);
+    let path = write_script("set-mm-dry", &lines);
+    let config_home = scratch_config_dir("set-mm-dry");
+
+    let out = run_wh(
+        &["set", "mm", "--value", "1.5", "--dry-run"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l == "mm custom value: 0.90mm -> 1.50mm"),
+        "unexpected stdout: {stdout}"
+    );
+    let expected = vec![hex(&cmds::write_global_travel(Um(1500), Um(200), Um(200)))];
+    assert_eq!(
+        frame_lines(&stdout),
+        expected,
+        "unexpected frame sequence: {stdout}"
+    );
+    assert!(
+        stdout.contains("dry run, no writes sent"),
+        "unexpected stdout: {stdout}"
+    );
+
+    let backups_dir = config_home.join("wh").join("backups");
+    assert!(
+        !backups_dir.exists() || std::fs::read_dir(&backups_dir).unwrap().count() == 0,
+        "dry run must not create a backup"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// An out-of-range value (the record tops out at 4.00mm, this one asks for 4.5) must be refused
+/// before a session ever opens, against a genuinely empty replay script: if the command sent
+/// anything at all before finishing validation, `ReplayTransport` would reject the unexpected
+/// send. Asserts the exact text `wh_proto::value::Um::from_mm`'s error produces, not a bare
+/// "out of range", which a different refusal elsewhere in the codebase could also satisfy.
+#[test]
+fn set_mm_refuses_an_out_of_range_value_before_any_session_opens() {
+    let path = write_script("set-mm-out-of-range", &[]);
+    let config_home = scratch_config_dir("set-mm-out-of-range");
+
+    let out = run_wh(&["set", "mm", "--value", "4.5"], &path, &config_home);
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("4.5mm is out of range (0mm to 4mm)"),
+        "unexpected stderr: {stderr}"
+    );
+    // Refused before anything opens a transport, so the run never even names one.
+    assert!(
+        !stderr.contains("transport:"),
+        "a malformed invocation must be refused before a session opens: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The label a real `wh set mm` run writes into the backup file it takes, read back off disk.
+/// `every_backup_reason_renders_its_persisted_origin_string` (`run.rs`) only proves the string is
+/// built correctly, not that this command's own call site reaches it: `BackupReason::SetMm` is
+/// born with this tie, unlike the six variants `docs/tasks.md`'s closed 2.30 entry still lists
+/// as untied.
+#[test]
+fn set_mm_end_to_end_records_its_own_command_as_the_backup_origin() {
+    let path = write_script("set-mm-origin", &set_mm_script(900, 1500, 1500));
+    let config_home = scratch_config_dir("set-mm-origin");
+
+    let out = run_wh(&["set", "mm", "--value", "1.5"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(only_backup_origin(&config_home), "auto: set mm");
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// A no-op `set mm`, the board already at the target value, skips the write entirely: no backup,
+/// no write frame, no readback, only the pre-write read the announcement needs. The script carries
+/// nothing past that read, so a build that still takes a backup or sends the write would hit
+/// `ReplayTransport`'s own send mismatch, not merely a wrong message.
+#[test]
+fn set_mm_skips_the_write_when_the_board_already_holds_the_target() {
+    let path = write_script("set-mm-noop", &global_travel_lines(1500, 0, 0));
+    let config_home = scratch_config_dir("set-mm-noop");
+
+    let out = run_wh(&["set", "mm", "--value", "1.5"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l == "mm custom value already matches 1.50mm, nothing written"),
+        "unexpected stdout: {stdout}"
+    );
+
+    let backups_dir = config_home.join("wh").join("backups");
+    assert!(
+        !backups_dir.exists() || std::fs::read_dir(&backups_dir).unwrap().count() == 0,
+        "a no-op set mm must not take a backup"
     );
 
     std::fs::remove_file(path).unwrap();

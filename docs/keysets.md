@@ -545,6 +545,9 @@ reading. `docs/backlog.md` carries the open question and what would settle it.
 the vendor writes, and the snapshot's dead zones are informational only. **If they turn out to be a
 user setting, that overwrites the operator's choice unverifiably**: the board reports both as `0` on
 read, so no readback can tell what was replaced, and `verify_restore` never re-reads this record.
+`wh set mm` sends the same two constants on every value it actually changes, and is the larger
+exposure of the two: it is a routine command an operator reaches for on purpose, not `restore`'s
+occasional whole-board write.
 
 `custom-value-nudge-after-restore` writes travel 150 with `200/200`, and `layout-16-by-profile`
 later reads travel 150 back with `0/0`, which would say the board keeps the travel and not the dead
