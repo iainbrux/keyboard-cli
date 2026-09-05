@@ -4323,6 +4323,11 @@ fn keyset_remove_uses_the_base_constant_when_no_free_key_is_left() {
 /// 0x15 = 2000`, a pair no capture has ever shown written. Pins the "no key is outside" wording
 /// specifically, since that is only true of a board shaped exactly like this one: every key really
 /// is in a keyset here, which the mirror test below is not.
+///
+/// This is also `remove rt`'s half of the divergence from `delete`, which `reset_change` must
+/// never collapse: `delete` in the same situation refuses too, but names `--press and --release`
+/// as the way out, flags `wh keyset remove` does not have. See
+/// `keyset_delete_ap_refuses_where_remove_would_invent_a_base` for `delete`'s half.
 #[test]
 fn keyset_remove_rt_refuses_when_no_free_key_is_left_to_read_a_sensitivity_from() {
     let mut lines = matrix_lines();
@@ -4741,6 +4746,11 @@ fn keyset_remove_whole_board_prompt_omits_the_mode_clause_when_only_the_value_mo
 /// `wh keyset remove ap --keys w` reaches `NoneOutsideAKeyset` from a single-key selection, no
 /// whole-board confirmation gate in the way, and the announcement must say the value was invented
 /// rather than let `2.00mm` print indistinguishably from a value the board actually held.
+///
+/// This is also `remove ap`'s half of the divergence from `delete`, which `reset_change` must
+/// never collapse: `delete` on this same board refuses outright and names `--value`, a flag
+/// `wh keyset remove` does not have, rather than inventing anything. See
+/// `keyset_delete_ap_refuses_where_remove_would_invent_a_base` for `delete`'s half.
 #[test]
 fn keyset_remove_ap_names_the_base_as_invented_when_every_key_is_already_in_a_keyset() {
     let mut lines = matrix_lines(); // resolve_keys
@@ -4901,19 +4911,25 @@ fn keyset_remove_ap_orders_the_invented_suffix_beside_the_value_not_the_mode_cla
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The first of three tests over one board shape, pinning where `delete` and `remove` deliberately
-/// part company. `delete` and `remove` build the same per-key template from an already-resolved
-/// value, and they resolve that value differently; only the first of those is shared code. On a
-/// board where every key sits in a keyset there is no global to read, and each command answers
-/// that differently on purpose. Collapsing either resolution into the other fails one of these
-/// three.
+/// `delete` and `remove` build the same per-key template from an already-resolved value, and they
+/// resolve that value differently. Only the first of those is shared code (`reset_change`); the
+/// second must stay apart, and this pins `delete`'s half of the divergence. On a board where every
+/// key sits in a keyset there is no global to read, and `delete` refuses and names `--value`, its
+/// escape hatch. It must not reach for `remove`'s `NO_SIGNAL_BASE`, which would write 2.00mm over
+/// both members with nobody having asked for it.
 ///
-/// Here: `delete` refuses and names `--value`, its escape hatch, and must not reach for `remove`'s
-/// `NO_SIGNAL_BASE`, which would write 2.00mm over both members with nobody having asked for it.
-/// The script carries the member reads a fallback would go on to make, so that a `delete` which
-/// fell back succeeds and is caught by the value it announces, rather than dying on an exhausted
-/// script the way any broken run would. The exact refusal sentence is asserted alongside, never a
-/// bare non-zero status.
+/// The two `remove` halves are pinned by
+/// `keyset_remove_ap_names_the_base_as_invented_when_every_key_is_already_in_a_keyset` and
+/// `keyset_remove_rt_refuses_when_no_free_key_is_left_to_read_a_sensitivity_from`.
+///
+/// The work here is done by the status and the refusal sentence: a `delete` resolving through
+/// `remove_base_ap` succeeds, and emits neither that sentence nor any other. The script carries
+/// the two member reads such a `delete` would go on to make, which changes no detection, only the
+/// failure message: without them the run dies on an exhausted script, and with them the failing
+/// assertion prints the announcement and the frames the operator would have got. That padding is
+/// latent rather than safe. Nothing on the CLI path asserts `ReplayTransport::finished()` today;
+/// if `run_wh` ever gained that check, a natural strengthening here, this test would fail on its
+/// passing path for a reason unrelated to what it guards, and the script is the reason.
 #[test]
 fn keyset_delete_ap_refuses_where_remove_would_invent_a_base() {
     let mut lines = matrix_lines(); // read_membership's own matrix read
@@ -4922,9 +4938,8 @@ fn keyset_delete_ap_refuses_where_remove_would_invent_a_base() {
     }
     // No free-key read at all: every key is in keyset 1 or 2, so `global_ap` finds nothing
     // outside a keyset to read and refuses before any further frame goes out. The two member
-    // reads below are what `plan` would send next, present so that a `delete` wrongly falling
-    // back reaches its announcement and fails on the value it prints rather than on running out
-    // of script, which any broken run would do.
+    // reads below are the ones a `delete` wrongly falling back would send next, present only so
+    // that such a run reaches its announcement and fails with it on screen.
     lines.extend(key_settings_lines(0x1A, 1200, 0x18, 100, 150, 1, 0));
     lines.extend(key_settings_lines(0x04, 1200, 0x18, 100, 150, 1, 0));
 
@@ -4947,109 +4962,6 @@ fn keyset_delete_ap_refuses_where_remove_would_invent_a_base() {
              read; pass --value to say which value to use"
         ),
         "got: {err}"
-    );
-    // `delete` inheriting `remove`'s fallback would announce a move to 2.00mm nobody asked for.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stdout.contains("2.00mm"),
-        "the invented base must never reach a delete: {stdout}"
-    );
-    assert!(
-        !stdout.contains("ap: keyset 1"),
-        "a refused delete announces nothing: {stdout}"
-    );
-    assert!(
-        frame_lines(&stdout).is_empty(),
-        "a refused delete prints no reports, dry run or not: {stdout}"
-    );
-
-    std::fs::remove_file(script).unwrap();
-    let _ = std::fs::remove_dir_all(&config_home);
-}
-
-/// The second of the three: the same unreadable-global board, and `remove ap` does the opposite of
-/// the test above. It has no `--value` to be told to pass, so it falls back to the chosen `2000`
-/// default and says in the announcement that the value was invented rather than read. A `remove`
-/// that inherited `delete`'s refusal would name a flag that does not exist on this command.
-#[test]
-fn keyset_remove_ap_invents_a_base_where_delete_refuses() {
-    let mut lines = matrix_lines(); // resolve_keys
-    lines.extend(matrix_lines()); // read_membership's own matrix read
-    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
-        lines.extend(layout_read_lines(usage, layout::KEYSET_AP, ks));
-    }
-    // Same board as the delete test above: no key outside a keyset, so no free-key read.
-    lines.extend(key_settings_lines(0x1A, 300, 0x18, 100, 150, 1, 0)); // plan's read of w
-
-    let script = write_script("keyset-remove-ap-no-global", &lines);
-    let config_home = scratch_config_dir("keyset-remove-ap-no-global");
-    let out = run_wh(
-        &["keyset", "remove", "ap", "--keys", "w", "--dry-run"],
-        &script,
-        &config_home,
-    );
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("ap: removing w from keyset 1, 0.30mm to 2.00mm (no key outside a keyset to read a base from, using the default)"),
-        "got: {stdout}"
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !err.contains("pass --value to say which value to use"),
-        "remove has no --value to pass; that is delete's refusal, not this one: {err}"
-    );
-
-    std::fs::remove_file(script).unwrap();
-    let _ = std::fs::remove_dir_all(&config_home);
-}
-
-/// The third of the three, and the one that stops the fallback above being read as a general rule.
-/// `2000` is a measured actuation point reading with no rapid trigger equivalent, so `remove rt`
-/// on the same shape of board refuses instead of inventing a sensitivity pair. It must also not
-/// borrow `delete`'s refusal, which would tell the operator to pass `--press and --release`, flags
-/// `wh keyset remove` does not have.
-#[test]
-fn keyset_remove_rt_refuses_where_remove_ap_invents_a_base() {
-    let mut lines = matrix_lines(); // resolve_keys
-    lines.extend(matrix_lines()); // read_membership's own matrix read
-    for (usage, ks) in [(0x1Au8, 1u16), (0x04, 1), (0x16, 2), (0x07, 2)] {
-        lines.extend(layout_read_lines(usage, layout::KEYSET_RT, ks));
-    }
-    // No free-key read at all, and no `plan` read either: the refusal comes first.
-
-    let script = write_script("keyset-remove-rt-no-global", &lines);
-    let config_home = scratch_config_dir("keyset-remove-rt-no-global");
-    let out = run_wh(
-        &["keyset", "remove", "rt", "--keys", "w"],
-        &script,
-        &config_home,
-    );
-    assert!(
-        !out.status.success(),
-        "remove rt invented a sensitivity: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains(
-            "no key is outside a rapid trigger keyset, so there is no global sensitivity to \
-             reset these to, and no default is measured for one"
-        ),
-        "got: {err}"
-    );
-    assert!(
-        !err.contains("pass --press and --release to say which value to use"),
-        "remove has no such flags; that is delete's refusal, not this one: {err}"
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stdout.contains("rt: removing w"),
-        "a refused remove announces nothing: {stdout}"
     );
 
     std::fs::remove_file(script).unwrap();

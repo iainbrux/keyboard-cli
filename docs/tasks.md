@@ -323,14 +323,19 @@ rather than as settings it recognises.
   `remove_base_ap`/`remove_base_rt`, each building its own `Target` first. `create` is not a
   caller: its rapid trigger arm needs `Change::rt_on`.
 
-  Three tests in `crates/wh-cli/tests/keyset.rs` pin the divergence over one board shape where
-  every key sits in a keyset, so no global exists to read: `delete ap` refuses and names `--value`,
-  `remove ap` falls back to `NO_SIGNAL_BASE` and says the value was invented, `remove rt` refuses
-  because no measured rapid trigger equivalent exists. Each was proved by collapsing the two
-  resolutions in turn. Wiring `delete` through `remove_base_ap` made a `--dry-run` delete announce
-  "returning members to 2.00mm" and emit three write frames for a value nobody passed; wiring
-  `remove` through `global_ap_or_bail`/`global_rt_or_bail` made both `remove` cases refuse while
-  naming `--value` and `--press and --release`, flags `wh keyset remove` does not have.
+  One test was added, `keyset_delete_ap_refuses_where_remove_would_invent_a_base`, the only test in
+  the repo pinning `delete`'s `NoneOutsideAKeyset` refusal. On a board where every key sits in a
+  keyset, `delete ap` must refuse and name `--value` rather than reach for `NO_SIGNAL_BASE`.
+  Proved by wiring `delete` through `remove_base_ap`, which made a `--dry-run` delete announce
+  "returning members to 2.00mm" and emit three write frames for a value nobody passed.
+
+  `remove`'s two halves were already pinned, by
+  `keyset_remove_ap_names_the_base_as_invented_when_every_key_is_already_in_a_keyset` and
+  `keyset_remove_rt_refuses_when_no_free_key_is_left_to_read_a_sensitivity_from`; a first draft
+  added a duplicate of each and they were dropped, since wiring `remove` through
+  `global_ap_or_bail`/`global_rt_or_bail` is caught by twenty pre-existing tests. Both now carry a
+  pointer saying they are also `remove`'s half of the divergence, so the three read as a set
+  without a test that guards nothing.
 
 - [x] ~~**2.27 `wh keyset create --keys all` is a third unguarded route to destroying every
   keyset.**~~ Found by a reviewer probing the guard added for `wh set ap --keys all`, and measured:

@@ -224,11 +224,15 @@ impl Target {
 /// back to `NO_SIGNAL_BASE` for the actuation point and refuses for rapid trigger. A helper that
 /// resolved the value as well would hand one command the other's behaviour.
 ///
-/// `Change::ap`, not `Change::ap_keeping_touch`: a reset promotes touch nibble 0 ("follow global
-/// travel") to nibble 1, a per-key pinned actuation point, matching the vendor's own measured
-/// behaviour on an actuation point change (`ks-value-ap`). `ap_keeping_touch` exists for an
-/// operation that must never move a key off global travel; resetting a key to the base is not
-/// that operation.
+/// The two arms do different things to touch nibble 0, and only the actuation point arm moves it.
+/// `Target::Ap` uses `Change::ap`, not `Change::ap_keeping_touch`, so a key at nibble 0 ("follow
+/// global travel") is promoted to nibble 1, a per-key pinned actuation point, matching the
+/// vendor's own measured behaviour on an actuation point change (`ks-value-ap`);
+/// `ap_keeping_touch` exists for an operation that must never move a key off global travel, and
+/// resetting a key to the base is not that operation. `Target::Rt` uses `Change::rt_off`, whose
+/// `TouchChange::Off` sends nibbles 2, 3 and 4 to 1 and leaves a key at nibble 0 exactly where it
+/// is: a key following global travel with rapid trigger already off has no rapid trigger to turn
+/// off, and `plan` emits no MODE record for it.
 fn reset_change(target: Target) -> keyset::Change {
     match target {
         Target::Ap(v) => keyset::Change::ap(v),
