@@ -1007,9 +1007,29 @@ fn keyset_cmd(what: crate::cli::KeysetWhat, store: &Store) -> Result<()> {
             };
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            // A separate locked stderr for the whole-board confirmation prompt, matching
+            // `KeysetWhat::Remove`'s own split: the per-key announcement stays on stdout since it
+            // is data someone may pipe, while the prompt is a diagnostic.
+            let stderr = std::io::stderr();
+            let mut prompt_out = stderr.lock();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
             with_session(|s| {
                 let usages = resolve_keys(s, &keys, store)?;
-                let plan = crate::keyset::create(&mut out, s, kind, &usages, value, rt)?;
+                // `!dry_run` is what keeps the confirmation off a preview: this arm calls
+                // `create` before its own `dry_run` check, so the flag travels in rather than
+                // guarding the call, the same shape `remove`'s `will_write` uses.
+                let plan = crate::keyset::create(
+                    &mut out,
+                    &mut prompt_out,
+                    s,
+                    kind,
+                    &usages,
+                    value,
+                    rt,
+                    !dry_run,
+                    &mut input,
+                )?;
                 if dry_run {
                     return print_frames(&mut out, &plan.frames());
                 }

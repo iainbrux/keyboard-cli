@@ -216,13 +216,24 @@ impl Target {
 /// Creates a keyset over `usages` at the global value, or at an explicit one. Announces which
 /// existing keysets lose members first: a create overwrites its members' values with the global
 /// rather than carrying them in, so the operator sees what is about to go.
+///
+/// `will_write` must agree with whether the caller goes on to send the returned plan to the
+/// device: pass `false` only when the caller's own next step is printing the plan and stopping,
+/// since the whole-matrix confirmation below is skipped whenever it is `false`. `prompt_out` is
+/// separate from `out`, the announcement writer, for the reason `remove`'s own signature splits
+/// them: the prompt is a diagnostic and belongs on stderr, while the announcement is data
+/// someone may pipe.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create<T: Transport>(
     out: &mut impl Write,
+    prompt_out: &mut impl Write,
     s: &mut Session<T>,
     kind: Kind,
     usages: &[u8],
     value: Option<Um>,
     rt: Option<(Um, Um)>,
+    will_write: bool,
+    input: &mut impl BufRead,
 ) -> Result<keyset::WritePlan> {
     let m = keyset::read_membership(s, kind)?;
     let index = keyset::next_index(&m)?;
@@ -247,8 +258,79 @@ pub(crate) fn create<T: Transport>(
     // each stolen member's own pre-write value, and it costs no extra reads since `plan` sends
     // them anyway. `plan` itself only reads; nothing here has written to the board yet.
     let plan = keyset::plan(s, usages, &change, Some(index))?;
+    if will_write && usages.len() == m.entries().len() {
+        confirm_whole_board_create(
+            prompt_out,
+            kind,
+            &losing,
+            index.value(),
+            target,
+            &plan,
+            input,
+        )?;
+    }
     announce_steal(out, kind, &losing, index.value(), target, &plan)?;
     Ok(plan)
+}
+
+/// The typed confirmation guarding a create whose resolved selection covers every key in the
+/// board's matrix: every key moves into the one freshly allocated index, so every existing keyset
+/// of this kind loses all of its members and ceases to exist. The same destruction
+/// `confirm_whole_board_remove` and `confirm_whole_board_ap_set` guard, reached by a third route,
+/// so this reuses `crate::confirm::confirm` rather than a third acceptance check.
+///
+/// Called after `plan` is built and before `announce_steal`, matching `remove`: the mode clause
+/// is read off the plan, which is the only thing that knows how many touch nibbles actually move,
+/// and a refusal announces nothing at all. `--dry-run` never reaches here, since it writes
+/// nothing to confirm.
+///
+/// The trigger is the resolved selection covering the matrix, decided by `create` against the
+/// membership read it already performed, never the literal `--keys all`: spelling every key out
+/// destroys just as much.
+///
+/// `out` is a caller-supplied stderr rather than stdout, for the reason
+/// `confirm_whole_board_remove`'s own doc sets out at length: a redirected stdout would trap the
+/// prompt in the file with nothing on screen, and no terminal check is needed once the prompt
+/// goes to stderr, since stdin answers it either way.
+fn confirm_whole_board_create(
+    out: &mut impl Write,
+    kind: Kind,
+    losing: &[(u16, Vec<u8>)],
+    new_index: u16,
+    target: Target,
+    plan: &keyset::WritePlan,
+    input: &mut impl BufRead,
+) -> Result<()> {
+    let keysets = if losing.is_empty() {
+        format!("no {} keysets exist to lose", kind_name(kind))
+    } else {
+        let indices: Vec<String> = losing.iter().map(|(i, _)| i.to_string()).collect();
+        format!(
+            "{} keyset(s) {} will cease to exist, their members absorbed",
+            kind_name(kind),
+            indices.join(", ")
+        )
+    };
+    // A count, not a per-key list, the same reason the two sibling prompts read one off `plan`:
+    // the board this guards is 68 keys wide, and on a board with no keysets yet the keyset
+    // clause reads as a no-op while every key's touch mode still moves permanently.
+    let mode_clause = match kind {
+        Kind::Ap => ap_mode_clause(plan),
+        Kind::Rt => rt_on_mode_clause(plan),
+    };
+    let prompt = format!(
+        "{}: this selects every key on the board: every key moves into the new keyset \
+         {new_index} at {}\n    {keysets}{mode_clause}",
+        kind_name(kind),
+        target.display()
+    );
+    if !crate::confirm::confirm(out, &prompt, input)? {
+        bail!(
+            "{} keyset creation over the whole board was not confirmed",
+            kind_name(kind)
+        );
+    }
+    Ok(())
 }
 
 /// Changes an existing keyset's value across every member. Membership is untouched: the keyset
@@ -987,6 +1069,20 @@ pub(crate) fn ap_mode_clause(plan: &keyset::WritePlan) -> String {
         String::new()
     } else {
         format!(", {moved_modes} key(s) move off global travel onto their own actuation point")
+    }
+}
+
+/// The `Kind::Rt` mode-transition clause a create's whole-board confirmation appends.
+/// `Change::rt_on` sends every counted key to touch nibble 3 alike, whether it was on Global
+/// ("follow global travel"), Single, or RtGlobal ("rapid trigger, following the global
+/// sensitivity"), so this names the destination rather than saying rapid trigger was switched
+/// on, which would be false of a key already on RtGlobal.
+fn rt_on_mode_clause(plan: &keyset::WritePlan) -> String {
+    let moved_modes = moved_mode_count(plan);
+    if moved_modes == 0 {
+        String::new()
+    } else {
+        format!(", {moved_modes} key(s) move onto their own rapid trigger sensitivity")
     }
 }
 

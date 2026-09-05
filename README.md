@@ -166,6 +166,21 @@ answer from stdin, rather than trapping it in the file with nothing left to answ
 value by default, or an explicit `--value`/`--press`/`--release` if given: `wh keyset create ap
 --keys u,i,o,p --value 1.5` sets all four to 1.50mm.
 
+**A create whose selection covers every key in the board's matrix asks for a typed `yes` first**,
+for both kinds: every key moves into the one new index, so every existing keyset of that kind
+loses all its members and ceases to exist, the same destruction `wh keyset remove --keys all` and
+`wh set ap --keys all` already guard by a different route. Like those two, the prompt is built
+after computing what the write actually contains, so it names the new keyset's index and value,
+every keyset that will cease to exist (or says there are none to lose), and, if any key's touch
+mode is about to move too, a count of how many: off "follow global travel" onto its own actuation
+point for `ap`, onto its own rapid trigger sensitivity for `rt`. Otherwise a board with no keysets
+of that kind reads as though nothing much is about to happen, right up until the write that pins
+every key permanently. It fires on the resolved selection covering the matrix, however it is
+spelled, not on the literal word `all`. `--dry-run` never prompts, since it writes nothing, and
+there is no bypass flag, so a script that used to run `wh keyset create ap --keys all` unattended
+now needs a `yes` on its stdin. The prompt goes to stderr, not stdout, so redirecting the
+command's output still shows it on screen and still reads the typed answer from stdin.
+
 **`wh set ap` over a selection that is not exactly one existing keyset's members moves the whole
 selection into one new keyset, and says so.** Four shapes: a selection that is part of a keyset
 moves the selected members into a new index, leaving the rest of that keyset in place (`wh set ap

@@ -315,8 +315,8 @@ rather than as settings it recognises.
   construction shape, parameterised over an already-resolved value each caller keeps producing its
   own way.
 
-- [ ] **2.27 `wh keyset create --keys all` is a third unguarded route to destroying every keyset.**
-  Found by a reviewer probing the guard added for `wh set ap --keys all`, and measured:
+- [x] ~~**2.27 `wh keyset create --keys all` is a third unguarded route to destroying every
+  keyset.**~~ Found by a reviewer probing the guard added for `wh set ap --keys all`, and measured:
   `wh keyset create ap --keys all --value 1.50` on a board holding keysets 1 and 2 ran straight
   through the membership sweep into `plan`'s reads with stdin closed and no prompt on either stream.
   Every key moves into the new index, so every existing keyset loses all its members and ceases to
@@ -334,6 +334,19 @@ rather than as settings it recognises.
   `crates/wh-cli/src/confirm.rs`'s module doc has already been narrowed to say the routes it lists
   are "only the ones guarded so far", so it no longer implies the list is complete. This task need
   only add the third route to it.
+
+  **Done 2026-09-05.** `keyset::create` now takes the same two extra parameters `remove` already
+  carried, a `prompt_out` writer and a `will_write` flag, plus the input reader, and calls
+  `confirm_whole_board_create` after `plan` exists and before `announce_steal`, so the prompt is
+  built from the plan and a refusal announces nothing at all. `run.rs`'s `KeysetWhat::Create` arm
+  passes a locked stderr, a locked stdin, and `!dry_run`, which is what keeps the guard off a
+  preview without moving the call past that arm's own `dry_run` check. Both kinds prompt: the
+  `rt` mode clause is its own wording (`rt_on_mode_clause`), since `Change::rt_on` moves a key
+  already on `RtGlobal` onto its own sensitivity rather than switching rapid trigger on, so
+  reusing `ap_mode_clause`'s or `remove`'s wording would have been false on that board. Seven
+  end-to-end tests in `crates/wh-cli/tests/dump.rs`, covering `ap` decline and accept, `rt`,
+  the prompt's absence from stdout, a partial selection, `--dry-run`, a whole-board selection
+  spelled key by key, and a board with no keysets where the mode count is the only warning.
 
 - [ ] **2.26 Two regression-guard gaps in `wh keyset remove`'s announcement, each one fixture.**
   Found by a cold reviewer that built its own replay generator and drove the binary, after the
