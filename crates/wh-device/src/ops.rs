@@ -349,8 +349,8 @@ pub fn global_travel<T: Transport>(s: &mut Session<T>) -> Result<cmds::GlobalTra
 ///
 /// A reply naming an index the board's four profiles can't produce surfaces as
 /// `DeviceError::ProfileOutOfRange`, kept distinct from `Decode` (a reply that isn't shaped
-/// like a profile reply at all), so callers can degrade gracefully on the former while still
-/// hard-failing on the latter.
+/// like a profile reply at all). Both stop the caller; the split is what lets each say which
+/// happened, since an impossible index and a garbled reply need different words.
 pub fn profile<T: Transport>(s: &mut Session<T>) -> Result<cmds::ProfileNumber, DeviceError> {
     let payload = s.roundtrip(&cmds::read_profile())?;
     cmds::parse_profile(&payload).map_err(|e| match e {
@@ -1492,8 +1492,8 @@ mod tests {
     }
 
     /// A reply that parses fine but names an index the board's four profiles could never
-    /// produce must surface as `ProfileOutOfRange`, not `Decode`, so a caller can degrade only
-    /// for the impossible-profile case, not a genuinely garbled reply.
+    /// produce must surface as `ProfileOutOfRange`, not `Decode`, so a caller can tell the
+    /// impossible-profile case from a genuinely garbled reply and name it to the operator.
     #[test]
     fn profile_maps_an_out_of_range_index_to_profile_out_of_range_not_decode() {
         let lines = [

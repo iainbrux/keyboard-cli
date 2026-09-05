@@ -678,12 +678,15 @@ rather than as settings it recognises.
     `ap`, `rt_press`, `rt_release`, `mode`, and both keyset memberships (`0xFF` and `0xFE`), is now
     its own fixture-backed fault, confirmed by disabling each one at a time against the full
     workspace and finding exactly one failing test per row.
-  - `wh restore` never checks the snapshot's key usages against the board's live matrix, so a
+  - ~~`wh restore` never checks the snapshot's key usages against the board's live matrix, so a
     snapshot from a different matrix writes values and membership to usages the board may not have.
     Worse than cosmetic, because `verify_restore` reads back the snapshot's usages rather than the
-    board's, so a phantom usage the firmware echoes is reported as verified rather than refused.
-    Fixing it needs a policy decision (refuse, skip, or gate on a flag), a live matrix read inside
-    the session, and a restructure of restore's build-everything-before-sending order.
+    board's, so a phantom usage the firmware echoes is reported as verified rather than refused.~~
+    Closed: the operator ruled refuse, on 2026-09-05. `check_restore_matrix` compares the
+    snapshot's usages against a live `ops::read_matrix` inside the session, after the profile
+    check and before `auto_backup`, and refuses naming the absent keys. The cost is accepted and
+    stated in the refusal: a snapshot from a different matrix is unrestorable, not partly
+    restorable. Three roundtrips added to every restore.
   - ~~The cross-layout membership check is a new hardware assumption stated nowhere: an actuation
     point create now asserts that `0xFE` is untouched, and the converse.~~ Closed: one line added
     in `verify_write_as` naming the assumption and the separate-counters finding that makes it right.

@@ -560,13 +560,13 @@ the board between a written `0` and a written `200` at the same travel. Until on
 
 `wh backup` stores the global record plus four layouts per key, and, as of Phase 1, the profile the
 board was on when the snapshot was taken: `Snapshot::profile` records it. `wh restore` checks that
-recorded profile against the board's current one, and the two refusals are not the same and do not
-share an override. When the snapshot's recorded profile differs from the board's, `wh restore`
-refuses unconditionally; there is no `--force` for that case, since restoring would silently
-overwrite the wrong profile's settings. When the snapshot has no recorded profile at all (an older
-snapshot from before this field existed, or one whose board reported a profile index this build does
-not recognise), `wh restore` refuses by default but accepts `--force`, asserting the settings belong
-to the board's current profile. That gap is closed. It still does not capture the base layer key
+recorded profile against the board's current one, and refuses either way it can fail, with no
+override for either. When the snapshot's recorded profile differs from the board's, `wh restore`
+refuses, since restoring would silently overwrite the wrong profile's settings. When the snapshot
+has no recorded profile at all, it refuses too: nothing can establish which profile the settings
+belong to, and `wh` itself never writes such a snapshot, because a board reporting a profile index
+outside `0..=3` on the wire fails the read rather than recording an unknown profile. That gap is
+closed. It still does not capture the base layer key
 mapping (layout `0x00`), the FN layer (layout `0x01`), SOCD, dynamic keystroke, mod tap, gamepad
 configuration, RGB, or polling rate. Those are Phase 2 scope questions, and the README says plainly
 what a snapshot does and does not contain either way.

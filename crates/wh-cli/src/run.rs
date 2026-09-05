@@ -24,7 +24,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Get { what } => get(what, &store),
         Cmd::Set { what } => set(what, &store),
         Cmd::Backup { to } => backup(to, &store),
-        Cmd::Restore { file, last, force } => restore(file, last, force, &store),
+        Cmd::Restore { file, last } => restore(file, last, &store),
         Cmd::Profile { number } => profile_cmd(number),
         Cmd::Selftest => selftest(),
         Cmd::Keyset { what } => keyset_cmd(what, &store),
@@ -118,26 +118,11 @@ fn keyset_suffix(v: u16) -> String {
 
 fn snapshot_from_device<T: Transport>(s: &mut Session<T>) -> Result<wh_config::snapshot::Snapshot> {
     let info = ops::device_info(s)?;
-    // `ops::profile` returns a validated `ProfileNumber`; an index outside the four measured
-    // profiles surfaces as `DeviceError::ProfileOutOfRange` and degrades to `None` here (the
-    // same "provenance unknown" case as an old pre-recording snapshot) rather than aborting
-    // `dump`, `backup`, or `set`'s auto-backup. Any other failure still propagates via `?`.
-    // `restore` reads the board's profile through its own separate call and keeps a hard
-    // refusal on every failure instead.
-    let profile = match ops::profile(s) {
-        Ok(p) => Some(p),
-        Err(wh_device::transport::DeviceError::ProfileOutOfRange(idx)) => {
-            // Worded to stay true for `dump` (records no snapshot) as well as `backup` and
-            // every write command's auto-backup: describes this read's profile as unrecorded,
-            // not a snapshot.
-            best_effort_eprintln(&format!(
-                "warning: board reported profile index {idx}, but the board only has 4 profiles \
-                 (wire index 0..=3); this read's profile is unrecorded (unknown provenance)"
-            ));
-            None
-        }
-        Err(e) => return Err(e.into()),
-    };
+    // The profile is a value in `0..=3` on the wire and nothing else, so an index outside that
+    // is an error and every caller stops: `dump`, `backup` and every write command's
+    // auto-backup alike. This is the only place `wh` could ever have produced a snapshot with
+    // no profile, and it no longer does; `Snapshot::profile` stays `Option` for files on disk.
+    let profile = Some(ops::profile(s).context("reading the board's active profile")?);
     let global = ops::global_travel(s)?;
     let matrix = ops::read_matrix(s)?;
     let mut keys = Vec::new();
@@ -226,12 +211,12 @@ fn dump(table: bool) -> Result<()> {
             writeln!(out, "{}", snap.to_json()?)?;
         } else {
             writeln!(out, "{} (fw {})", snap.serial, snap.firmware)?;
-            // `snapshot_from_device` degrades to `None` (warning already printed to stderr)
-            // rather than aborting the dump on an out-of-range profile index, so print it
-            // plainly instead of erroring.
+            // `snapshot_from_device` a few lines up always records a profile, since an index
+            // outside `0..=3` stops the read, so `None` cannot be reached from here. Matched
+            // rather than unwrapped because the field is `Option` for snapshots read off disk.
             match snap.profile {
                 Some(profile) => writeln!(out, "profile {profile}")?,
-                None => writeln!(out, "profile unknown (unrecognised index reported)")?,
+                None => writeln!(out, "profile unrecorded")?,
             }
             // "custom value", not "travel": this is the configurator's `"MM" CUSTOM VALUE`, the
             // step size for its controls, and the global actuation point is not in this record.
@@ -1326,6 +1311,10 @@ fn snap_to_global(snap: &wh_config::snapshot::Snapshot) -> Result<cmds::GlobalTr
 /// snapshot had no recorded membership (`RestoreKey::ap_keyset` or `rt_keyset` is `None`) gets no
 /// membership comparison at all: comparing it against a fabricated `0` is exactly the defect
 /// `restore_membership_records` avoids by not writing one.
+///
+/// It re-reads the **snapshot's** usages, not the board's, which only verifies anything because
+/// `check_restore_matrix` has already refused any snapshot carrying a usage the board does not
+/// have. Drop that refusal and this function reports a phantom usage verified.
 fn verify_restore<T: Transport>(
     out: &mut impl Write,
     s: &mut Session<T>,
@@ -1395,18 +1384,16 @@ fn verify_restore<T: Transport>(
 /// profile, both `wh_proto::cmds::ProfileNumber` rather than a bare `u8`, since the wire's
 /// zero-based index and the UI's one-based number are different things.
 ///
-/// Three cases, deliberately not collapsed into one flag:
+/// Three cases, and the two refusals are worded apart rather than sharing a tail, so an
+/// operator (and a test) can tell which one fired:
 /// - recorded and matching: proceed.
-/// - recorded and differing: refuse unconditionally. `force` does not rescue this case; a
-///   single flag covering both this and the case below would let the more dangerous mistake
-///   through.
-/// - not recorded (an older snapshot, or one whose board reported a profile index outside the
-///   known range): refuse, but `force` rescues it, since the caller is asserting something
-///   the snapshot itself cannot vouch for, not overriding a known mismatch.
+/// - recorded and differing: refuse. Restoring would overwrite the profile in front of you
+///   with another one's settings, which is the more dangerous mistake of the two.
+/// - not recorded: refuse. Nothing can establish which profile the settings belong to, and
+///   asserting one on the operator's behalf is the same mistake with the blame moved.
 fn check_restore_profile(
     snap_profile: Option<wh_proto::cmds::ProfileNumber>,
     board_profile: wh_proto::cmds::ProfileNumber,
-    force: bool,
 ) -> Result<()> {
     match snap_profile {
         Some(p) if p == board_profile => Ok(()),
@@ -1416,20 +1403,57 @@ fn check_restore_profile(
              {p}'s. Switch the board to profile {p} first, or restore to the profile you \
              actually intend; there is no override for this refusal"
         ),
-        None if force => Ok(()),
         None => bail!(
-            "snapshot has no recorded profile: either it predates profile recording, or the \
-             board it was taken from reported a profile index this build does not recognise \
-             (in which case the settings really do belong to some profile, just not one this \
-             build can name). Either way, whether it belongs to the board's current profile \
-             (profile {board_profile}) cannot be verified; pass --force to restore anyway, \
-             asserting it belongs to profile {board_profile}, which may overwrite a different \
-             profile's settings if that assertion is wrong"
+            "snapshot has no recorded profile, so whether it belongs to the board's current \
+             profile (profile {board_profile}) cannot be verified. This build never writes such \
+             a snapshot: a board reporting a profile index it does not recognise fails the read \
+             outright. Take a fresh snapshot on this board"
         ),
     }
 }
 
-fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &Store) -> Result<()> {
+/// How many missing key names the refusal below lists before it starts counting instead. A
+/// snapshot from a foreign matrix can miss all 68 keys, and 68 names is not a message.
+const MISSING_KEY_LIST_CAP: usize = 8;
+
+/// The restore-time matrix safety check: every usage the snapshot carries must be a key the
+/// board actually has. A snapshot from a different matrix would otherwise write values and
+/// membership to usages this board has no key for, and `verify_restore` would then read those
+/// same usages back and report them verified, since it re-reads exactly what it wrote. The harm
+/// is that second part, not the write: `wh` would be telling the operator it checked something
+/// it did not.
+///
+/// The converse is not a fault: a snapshot covering fewer keys than the board leaves the rest
+/// alone, which is what `restore` has always done.
+fn check_restore_matrix(keys: &[RestoreKey], board: &[u8]) -> Result<()> {
+    let missing: Vec<u8> = keys
+        .iter()
+        .map(|k| k.usage)
+        .filter(|u| !board.contains(u))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let n = missing.len();
+    let mut list = missing
+        .iter()
+        .take(MISSING_KEY_LIST_CAP)
+        .map(|&u| key_label(u))
+        .collect::<Vec<String>>()
+        .join(", ");
+    if n > MISSING_KEY_LIST_CAP {
+        list.push_str(&format!(", and {} more", n - MISSING_KEY_LIST_CAP));
+    }
+    bail!(
+        "snapshot has {n} {} this board does not have ({list}), so it does not belong to this \
+         board's key matrix; restoring it would write to usages this board has no key for and \
+         then report them verified, having read back exactly what it wrote. Take a fresh \
+         snapshot on this board",
+        key_or_keys(n)
+    )
+}
+
+fn restore(file: Option<std::path::PathBuf>, last: bool, store: &Store) -> Result<()> {
     if file.is_some() && last {
         bail!("pass a snapshot file or --last, not both");
     }
@@ -1468,7 +1492,13 @@ fn restore(file: Option<std::path::PathBuf>, last: bool, force: bool, store: &St
         // `auto_backup`'s own returned snapshot would let a future `--no-backup` flag or a
         // best-effort backup silently drop this safety check with nothing failing to compile.
         let board_profile = ops::profile(s).context("reading the board's active profile")?;
-        check_restore_profile(snap.profile, board_profile, force)?;
+        check_restore_profile(snap.profile, board_profile)?;
+        // Three roundtrips on every restore that did not cost them before. Worth it because the
+        // failure it catches is not the bad write but the false verification: `verify_restore`
+        // reads back the snapshot's own usages, so without this it can report keys verified on a
+        // board that does not have them.
+        let board_matrix = ops::read_matrix(s).context("reading the board's key matrix")?;
+        check_restore_matrix(&keys, &board_matrix)?;
         // Past every refusal that stops this restore before it writes anything: only from here
         // is it true that a key's membership is (about to be) left as the board already has it,
         // rather than describing a restore that never ran.
@@ -1791,34 +1821,120 @@ mod tests {
 
     #[test]
     fn restore_profile_check_proceeds_on_a_match() {
-        check_restore_profile(Some(pn(2)), pn(2), false).unwrap();
+        check_restore_profile(Some(pn(2)), pn(2)).unwrap();
     }
 
-    /// Recorded and differing: `force` must not rescue it, so both calls below are asserted
-    /// to fail, not just the unforced one.
+    /// The two refusals must not converge on one sentence: an operator reading only the tail
+    /// they might share could not tell which one fired, and neither could a test.
     #[test]
-    fn restore_profile_check_refuses_a_mismatch_and_force_does_not_rescue_it() {
-        let err = check_restore_profile(Some(pn(1)), pn(2), false).unwrap_err();
-        let msg = err.to_string();
+    fn restore_profile_check_refuses_a_mismatch_and_an_unrecorded_profile_differently() {
+        let mismatch = check_restore_profile(Some(pn(1)), pn(2))
+            .unwrap_err()
+            .to_string();
         assert!(
-            msg.contains("profile 1") && msg.contains("profile 2"),
-            "error should name both profiles: {msg}"
+            mismatch.contains("snapshot was taken on profile 1 but the board is on profile 2"),
+            "the mismatch refusal should name both profiles: {mismatch}"
         );
 
-        let err_forced = check_restore_profile(Some(pn(1)), pn(2), true).unwrap_err();
-        let msg_forced = err_forced.to_string();
+        let unrecorded = check_restore_profile(None, pn(2)).unwrap_err().to_string();
         assert!(
-            msg_forced.contains("profile 1") && msg_forced.contains("profile 2"),
-            "--force must not rescue a recorded mismatch: {msg_forced}"
+            unrecorded.contains("snapshot has no recorded profile"),
+            "an unrecorded profile is refused in its own words: {unrecorded}"
+        );
+        assert!(
+            !unrecorded.contains("was taken on profile"),
+            "the two refusals must stay distinguishable: {unrecorded}"
         );
     }
 
-    /// Not recorded (an older snapshot): refused without `--force`, rescued with it, the
-    /// opposite of the non-overridable refusal above.
+    /// `--force` is gone, and so are both of the things its message said. "predates profile
+    /// recording" was never true of a released `wh` (the field landed before the first tag),
+    /// and naming a flag the operator cannot pass is a defect in its own right.
     #[test]
-    fn restore_profile_check_refuses_an_unrecorded_profile_but_force_rescues_it() {
-        assert!(check_restore_profile(None, pn(2), false).is_err());
-        check_restore_profile(None, pn(2), true).unwrap();
+    fn restore_profile_refusal_names_neither_the_removed_flag_nor_the_dead_cause() {
+        let msg = check_restore_profile(None, pn(2)).unwrap_err().to_string();
+        assert!(
+            !msg.contains("--force") && !msg.contains("predates"),
+            "unexpected refusal text: {msg}"
+        );
+    }
+
+    fn restore_key(usage: u8) -> RestoreKey {
+        RestoreKey {
+            usage,
+            ap: Um(1200),
+            mode_raw: 0x0010,
+            rt_press: Um(500),
+            rt_release: Um(600),
+            ap_keyset: Some(0),
+            rt_keyset: Some(0),
+        }
+    }
+
+    /// A snapshot covering fewer keys than the board is not a mismatch: the rest are left alone,
+    /// which is what `restore` has always done and what this check must not start refusing.
+    #[test]
+    fn restore_matrix_check_accepts_a_snapshot_covering_part_of_the_board() {
+        let keys = [restore_key(0x1A)];
+        check_restore_matrix(&keys, &[0x1A, 0x04, 0x16]).unwrap();
+    }
+
+    /// A named usage reads as its name, so the operator sees the key rather than a code.
+    #[test]
+    fn restore_matrix_check_names_a_missing_key() {
+        let keys = [restore_key(0x1A), restore_key(0x16)];
+        let msg = check_restore_matrix(&keys, &[0x1A, 0x04])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("snapshot has 1 key this board does not have (s)"),
+            "unexpected refusal: {msg}"
+        );
+        assert!(
+            msg.contains("Take a fresh snapshot on this board"),
+            "the refusal must say what the operator can do: {msg}"
+        );
+        assert!(
+            !msg.contains("--"),
+            "the refusal must not name a flag, there is not one: {msg}"
+        );
+    }
+
+    /// An unnamed usage reads as its hex code rather than being dropped from the list, the same
+    /// `key_label` fallback every other listing here uses.
+    #[test]
+    fn restore_matrix_check_renders_an_unnamed_missing_usage_as_hex() {
+        let (unnamed, _) = two_usages_absent_from_table();
+        let keys = [restore_key(unnamed)];
+        let msg = check_restore_matrix(&keys, &[0x1A])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains(&format!("0x{unnamed:02X}")),
+            "unexpected refusal: {msg}"
+        );
+    }
+
+    /// A whole foreign matrix must not print 68 key names: the list is capped and the remainder
+    /// counted, while the total still names every missing key in the count.
+    #[test]
+    fn restore_matrix_check_caps_the_listed_keys_and_counts_the_rest() {
+        // Ten keys, none on a board holding only 'w': two more than the cap.
+        let usages = [0x04u8, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D];
+        let keys: Vec<RestoreKey> = usages.iter().map(|&u| restore_key(u)).collect();
+        let msg = check_restore_matrix(&keys, &[0x1A])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("snapshot has 10 keys this board does not have"),
+            "the count must cover every missing key, not just the listed ones: {msg}"
+        );
+        assert!(msg.contains("and 2 more"), "unexpected refusal: {msg}");
+        // 'a' through 'h' are listed; 'i' and 'j', the ninth and tenth, are counted instead.
+        assert!(
+            msg.contains("(a, b, c, d, e, f, g, h, and 2 more)"),
+            "the cap must list the first eight and count the rest: {msg}"
+        );
     }
 
     #[test]

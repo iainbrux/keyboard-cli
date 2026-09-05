@@ -5137,8 +5137,18 @@ fn set_ap_base_does_not_prompt() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
+/// `restore`'s own preamble inside the session, before `auto_backup`: its independent profile
+/// read, then the live matrix read whose usages the snapshot's keys are checked against. Every
+/// restore fixture that gets past both refusals starts with these, so the two reads cannot drift
+/// apart across the dozen scripts below.
+fn restore_preamble_lines(profile_idx: u8) -> Vec<String> {
+    let mut lines = profile_lines(profile_idx);
+    lines.extend(matrix_lines());
+    lines
+}
+
 /// A snapshot's JSON text for one key, 'w', with a caller-chosen `ap_mm` and `profile` (one-based,
-/// or `None` for a snapshot that predates profile recording), so the out-of-range, happy-path,
+/// or `None` for a snapshot with no recorded profile at all), so the out-of-range, happy-path,
 /// and profile-safety restore tests below can all share it and diverge only on those two values.
 fn restore_snapshot_json(ap_mm: f64, profile: Option<u8>) -> String {
     restore_snapshot_json_with_globals(ap_mm, profile, 2.0, 0.2, 0.1)
@@ -5313,6 +5323,11 @@ fn restore_write_and_verify_lines_at(membership: bool, custom_value_um: u16) -> 
 /// (pinned by a real backup file existing on disk afterwards, not just the printed message),
 /// the board's profile (1) matches the snapshot's recorded profile (1), the global travel and
 /// per-key writes land, and the readback verifies. Exit 0, "verified" in stdout.
+///
+/// Also the accept side of the matrix refusal for a snapshot covering fewer keys than the board:
+/// it holds only 'w', the board has 'w' and 'a', and a check demanding the snapshot cover the
+/// whole matrix would refuse here. 'a' is left alone, which `ReplayTransport` enforces rather
+/// than an assertion: no frame addressing 'a' appears after the auto-backup's own reads.
 #[test]
 fn restore_happy_path_backs_up_and_verifies() {
     let config_home = scratch_config_dir("restore-happy");
@@ -5321,7 +5336,7 @@ fn restore_happy_path_backs_up_and_verifies() {
     // `restore` reads the board's profile as its own, independent roundtrip before ever calling
     // `auto_backup`, whose own `snapshot_from_device` pipeline reads it again internally; both
     // replies report the same board profile index 0 (UI profile 1), matching the snapshot.
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines(true));
 
@@ -5373,7 +5388,7 @@ fn assert_restore_sends_the_vendor_dead_zones(tag: &str, press_dead_mm: f64, rel
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines(true));
     let path = write_script(tag, &lines);
@@ -5435,7 +5450,7 @@ fn restore_sends_the_custom_value_the_snapshot_recorded() {
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines_at(true, 100));
     let path = write_script("restore-custom-value", &lines);
@@ -5491,7 +5506,7 @@ fn restore_from_a_snapshot_spelling_the_old_travel_mm_still_works() {
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines(true));
     let path = write_script("restore-old-travel-mm", &lines);
@@ -5552,7 +5567,7 @@ mode_raw = 544
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines(false));
     let path = write_script("restore-toml-explicit", &lines);
@@ -5618,7 +5633,7 @@ mode_raw = 544
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines(false));
     let path = write_script("restore-last-toml", &lines);
@@ -5660,8 +5675,11 @@ fn restore_refuses_when_the_boards_profile_differs_from_the_snapshots() {
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The mismatch refusal's own full sentence, not a tail it shares with the no-recorded-profile
+    // refusal below: matching only the profile numbers cannot tell the two refusals apart, and a
+    // wrong-refusal defect would then pass.
     assert!(
-        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        stderr.contains("snapshot was taken on profile 1 but the board is on profile 2"),
         "unexpected stderr: {stderr}"
     );
 
@@ -5670,41 +5688,11 @@ fn restore_refuses_when_the_boards_profile_differs_from_the_snapshots() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// `--force` must not rescue a recorded mismatch: identical fixture to the test above, `--force`
-/// added, same refusal expected. The script still ends right after restore's own direct profile
-/// read, so a write reaching the wire would fail against the unscripted send.
+/// The other refusal case: no recorded profile at all. Refused unconditionally, before
+/// `auto_backup` or `ops::restore_all` ever run; same "script ends right after restore's own
+/// direct profile read" reasoning as the mismatch test above.
 #[test]
-fn restore_force_does_not_rescue_a_profile_mismatch() {
-    let config_home = scratch_config_dir("restore-profile-mismatch-force");
-    let snap_path = write_snapshot("restore-profile-mismatch-force", 1.2, Some(1));
-    let path = write_script("restore-profile-mismatch-force", &profile_lines(1));
-
-    let out = run_wh(
-        &["restore", snap_path.to_str().unwrap(), "--force"],
-        &path,
-        &config_home,
-    );
-    assert!(
-        !out.status.success(),
-        "expected a non-zero exit even with --force, got success with stdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("profile 1") && stderr.contains("profile 2"),
-        "unexpected stderr: {stderr}"
-    );
-
-    std::fs::remove_file(snap_path).unwrap();
-    std::fs::remove_file(path).unwrap();
-    let _ = std::fs::remove_dir_all(&config_home);
-}
-
-/// The other refusal case: no recorded profile at all (an older snapshot). Refused without
-/// `--force`, before `auto_backup` or `ops::restore_all` ever run; same "script ends right after
-/// restore's own direct profile read" reasoning as the mismatch tests above.
-#[test]
-fn restore_refuses_an_unrecorded_profile_without_force() {
+fn restore_refuses_a_snapshot_with_no_recorded_profile() {
     let config_home = scratch_config_dir("restore-profile-unrecorded");
     let snap_path = write_snapshot("restore-profile-unrecorded", 1.2, None);
     let path = write_script("restore-profile-unrecorded", &profile_lines(0));
@@ -5720,21 +5708,24 @@ fn restore_refuses_an_unrecorded_profile_without_force() {
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // `stderr.contains("--force")` alone would pass on an unrelated clap usage dump; matching
-    // the actual refusal text (profile number and "no recorded profile" phrasing) discriminates.
+    // This refusal's own full sentence, for the same reason the mismatch test asserts its own:
+    // the two must stay distinguishable, and a bare "profile 1" matches both.
     assert!(
-        stderr.contains("no recorded profile") && stderr.contains("profile 1"),
+        stderr.contains(
+            "snapshot has no recorded profile, so whether it belongs to the board's current \
+             profile (profile 1) cannot be verified"
+        ),
         "unexpected stderr: {stderr}"
     );
-    // `None` covers two causes, an older pre-recording snapshot and one whose board reported an
-    // unrecognised index, and the message must name both rather than only the first.
     assert!(
-        stderr.contains("does not recognise"),
-        "message must also cover the unrecognised-index cause, not just predates-recording: {stderr}"
+        !stderr.contains("was taken on profile"),
+        "the mismatch refusal's wording must not reach the no-recorded-profile case: {stderr}"
     );
+    // Neither dead cause survives: `--force` no longer exists, and no released `wh` ever wrote a
+    // snapshot from before the profile field existed (it landed before the first release).
     assert!(
-        stderr.to_lowercase().contains("--force"),
-        "unexpected stderr: {stderr}"
+        !stderr.contains("--force") && !stderr.contains("predates"),
+        "the refusal must name neither the removed flag nor the dead cause: {stderr}"
     );
 
     std::fs::remove_file(snap_path).unwrap();
@@ -5742,45 +5733,46 @@ fn restore_refuses_an_unrecorded_profile_without_force() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The rescue half of the unrecorded-profile case: identical fixture to the test above,
-/// `--force` added, and this time the restore actually proceeds all the way through the write
-/// and verification, unlike the mismatch case's `--force`, which never rescues anything.
+/// `--force` is gone, so `wh restore --force` must fail to parse rather than reach any of `wh`'s
+/// own code. Asserts clap's unknown-argument wording, which only that path emits, and that none
+/// of `restore`'s refusals ran: a bare non-zero exit would also be produced by the empty replay
+/// script, and "--force" alone appears in a clap usage dump for a flag that still exists.
 #[test]
-fn restore_force_rescues_an_unrecorded_profile() {
-    let config_home = scratch_config_dir("restore-profile-unrecorded-force");
-    let snap_path = write_snapshot("restore-profile-unrecorded-force", 1.2, None);
-
-    // Same shape as the happy path above: restore's own direct profile read first, then the
-    // full auto-backup pipeline (which reads the profile again, internally), then the write and
-    // verify tail, all the way through since `--force` rescues the unrecorded-profile case.
-    let mut lines = profile_lines(0);
-    lines.extend(auto_backup_lines(0));
-    lines.extend(restore_write_and_verify_lines(true));
-    let path = write_script("restore-profile-unrecorded-force", &lines);
+fn restore_rejects_the_removed_force_flag_at_parse_time() {
+    let config_home = scratch_config_dir("restore-force-removed");
+    let snap_path = write_snapshot("restore-force-removed", 1.2, Some(1));
+    let empty_replay = write_script("restore-force-removed", &[]);
 
     let out = run_wh(
         &["restore", snap_path.to_str().unwrap(), "--force"],
-        &path,
+        &empty_replay,
         &config_home,
     );
     assert!(
-        out.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("verified"), "unexpected stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--force' found"),
+        "expected clap's own unknown-argument error: {stderr}"
+    );
+    assert!(
+        !stderr.contains("snapshot has no recorded profile")
+            && !stderr.contains("snapshot was taken on profile"),
+        "parsing must fail before any of restore's own refusals run: {stderr}"
+    );
 
     std::fs::remove_file(snap_path).unwrap();
-    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(empty_replay).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
 /// `restore`'s own direct profile read is a hard refusal on a wire index the board could never
-/// report under the four measured profiles: unlike `dump`/`backup`/`set`'s auto-backup, `restore`
-/// cannot compare what it cannot interpret, so it keeps aborting rather than degrading to
-/// "unknown provenance".
+/// report under the four measured profiles. `dump`, `backup` and `set`'s auto-backup now stop on
+/// it too, through `snapshot_from_device`, but this is the separate read `restore` makes for its
+/// own comparison, and it is asserted separately so neither can lose the stop on its own.
 #[test]
 fn restore_refuses_when_the_boards_profile_index_is_out_of_range() {
     let config_home = scratch_config_dir("restore-profile-out-of-range");
@@ -5808,56 +5800,155 @@ fn restore_refuses_when_the_boards_profile_index_is_out_of_range() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The `snapshot_from_device` sibling of the test above: the same out-of-range wire index
-/// (0xFE), reached through `backup --to`, must not abort the command. It degrades to
-/// `profile = None` ("unknown provenance", the same case an older pre-recording snapshot
-/// carries) with a warning on stderr naming the bad index, rather than hard-failing.
+/// A snapshot taken on a different key matrix must be refused, not partly applied. The board here
+/// has 'w' and 'a'; the snapshot holds 'w' and 's', so exactly one usage is absent, which pins
+/// that the check is per usage rather than "the two matrices differ". The refusal names 's' and
+/// counts it.
+///
+/// Nothing is written, and the backups directory being empty afterwards is the assertion that
+/// pins it: the check sits before `auto_backup`, the last point at which nothing has happened.
+/// The script deliberately carries the whole auto-backup phase past the matrix read, unused on a
+/// correct run, so that a check moved after `auto_backup` still reaches its refusal and is caught
+/// by the empty-directory assertion rather than by an exhausted script, which would be the same
+/// failure a dozen unrelated defects produce. Everything after the auto-backup is still
+/// unscripted, so any write frame fails on the send.
 #[test]
-fn backup_degrades_to_no_profile_on_an_out_of_range_index() {
-    let mut lines = sync_lines("SNOUTOFRANGE0001", "V1.0.0.001");
-    lines.extend(profile_lines(0xFE));
-    lines.extend(global_travel_lines(500, 200, 200));
-    lines.extend(matrix_lines());
-    lines.extend(key_settings_lines(0x1A, 1200, 0x0230, 500, 500, 0, 0));
-    lines.extend(key_settings_lines(0x04, 1500, 0x00, 0, 0, 0, 0));
+fn restore_refuses_a_snapshot_carrying_a_usage_the_board_does_not_have() {
+    let config_home = scratch_config_dir("restore-foreign-matrix");
+    let snap_path =
+        std::env::temp_dir().join(format!("wh-restore-foreign-{}.json", std::process::id()));
+    std::fs::write(
+        &snap_path,
+        r#"{
+  "firmware": "V1.0.0.001",
+  "serial": "SNRESTORETEST001",
+  "taken_at": "2026-08-28T12:00:00Z",
+  "profile": 1,
+  "global": { "custom_value_mm": 2.0, "press_dead_mm": 0.2, "release_dead_mm": 0.1 },
+  "keys": [
+    { "name": "w", "usage": 26, "ap_mm": 1.2, "rt": false, "rt_press_mm": 0.5,
+      "rt_release_mm": 0.6, "mode_raw": 24, "ap_keyset": 0, "rt_keyset": 0 },
+    { "name": "s", "usage": 22, "ap_mm": 1.2, "rt": false, "rt_press_mm": 0.5,
+      "rt_release_mm": 0.6, "mode_raw": 24, "ap_keyset": 0, "rt_keyset": 0 }
+  ]
+}"#,
+    )
+    .unwrap();
 
-    let path = write_script("backup-out-of-range", &lines);
-    let config_home = scratch_config_dir("backup-out-of-range");
-    let out_path = std::env::temp_dir().join(format!("wh-backup-oor-{}.json", std::process::id()));
-
+    let mut lines = restore_preamble_lines(0);
+    lines.extend(auto_backup_lines(0));
+    let path = write_script("restore-foreign-matrix", &lines);
     let out = run_wh(
-        &["backup", "--to", out_path.to_str().unwrap()],
+        &["restore", snap_path.to_str().unwrap()],
         &path,
         &config_home,
     );
     assert!(
-        out.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("254") && stderr.to_lowercase().contains("unknown"),
-        "unexpected stderr: {stderr}"
+        stderr.contains("snapshot has 1 key this board does not have (s)"),
+        "the refusal must name and count the absent usage: {stderr}"
+    );
+    assert!(
+        stderr.contains("Take a fresh snapshot on this board"),
+        "the refusal must say what the operator can do: {stderr}"
     );
 
-    let text = std::fs::read_to_string(&out_path).unwrap();
-    let snap = wh_config::snapshot::Snapshot::from_json(&text).unwrap();
+    let backups = config_home.join("wh").join("backups");
+    let count = std::fs::read_dir(&backups).map(|d| d.count()).unwrap_or(0);
     assert_eq!(
-        snap.profile, None,
-        "an out-of-range index must record no profile, not a bogus one: {text}"
+        count, 0,
+        "the refusal sits before auto_backup, so no backup may exist: {backups:?}"
+    );
+
+    std::fs::remove_file(snap_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The `snapshot_from_device` sibling of the restore profile-index refusal above: the same
+/// out-of-range wire index (0xFE), reached through `wh backup`, must stop the command rather
+/// than degrade to
+/// `profile = None`. The profile is a value in `0..=3` on the wire and nothing else, so a board
+/// reporting anything else is an error and `wh` goes no further: no snapshot file is written.
+#[test]
+fn backup_fails_and_writes_nothing_on_an_out_of_range_profile_index() {
+    let mut lines = sync_lines("SNOUTOFRANGE0001", "V1.0.0.001");
+    lines.extend(profile_lines(0xFE));
+    // Nothing follows the profile read: the global travel, matrix and per-key reads a completed
+    // backup would send have no script entry, so one reaching the wire fails on the send.
+
+    let path = write_script("backup-out-of-range", &lines);
+    let config_home = scratch_config_dir("backup-out-of-range");
+
+    let out = run_wh(&["backup"], &path, &config_home);
+    assert!(
+        !out.status.success(),
+        "an out-of-range profile index must stop the backup: stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("reading the board's active profile")
+            && stderr.contains("board reported profile index 254"),
+        "the failure must name the profile read and the offending index: {stderr}"
+    );
+
+    // `wh backup` with no `--to` writes into the store, so an empty (or absent) backups
+    // directory is the proof nothing was written, not just the absence of a success message.
+    let backups = config_home.join("wh").join("backups");
+    let count = std::fs::read_dir(&backups).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(
+        count, 0,
+        "backup must write no file when it stops: {backups:?}"
     );
 
     std::fs::remove_file(path).unwrap();
-    std::fs::remove_file(out_path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// `wh dump` reaches `snapshot_from_device` too, and must stop on the same out-of-range index
+/// rather than printing a warning and carrying on with an unknown profile. Its own test rather
+/// than a rider on `backup`'s: `dump` writes nothing to disk, so "no file appeared" cannot stand
+/// in for it, and it is the command whose degrading was visible to the operator.
+#[test]
+fn dump_fails_on_an_out_of_range_profile_index() {
+    let mut lines = sync_lines("SNOUTOFRANGE0002", "V1.0.0.001");
+    lines.extend(profile_lines(0xFE));
+
+    let path = write_script("dump-out-of-range", &lines);
+    let config_home = scratch_config_dir("dump-out-of-range");
+
+    let out = run_wh(&["dump"], &path, &config_home);
+    assert!(
+        !out.status.success(),
+        "an out-of-range profile index must stop the dump: stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("reading the board's active profile")
+            && stderr.contains("board reported profile index 254"),
+        "the failure must name the profile read and the offending index: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("profile unknown"),
+        "dump must stop rather than print an unknown profile and continue: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
 /// The distinction that justifies `DeviceError::ProfileOutOfRange` existing as its own variant,
 /// separate from `DeviceError::Decode`: a profile reply that fails to decode for a reason other
-/// than an out-of-range index (here, a payload too short to hold the index at all) must still
-/// hard-fail `backup`, unlike the out-of-range case the test above covers.
+/// than an out-of-range index (here, a payload too short to hold the index at all) fails
+/// `backup` with its own distinct message, not the out-of-range one the test above covers.
 #[test]
 fn backup_hard_fails_on_a_profile_reply_too_short_to_decode() {
     let mut lines = sync_lines("SNSHORTPROFILE01", "V1.0.0.001");
@@ -5879,7 +5970,7 @@ fn backup_hard_fails_on_a_profile_reply_too_short_to_decode() {
     );
     assert!(
         !out.status.success(),
-        "a garbled profile reply must hard-fail backup, not degrade to unknown provenance: \
+        "a garbled profile reply must fail backup with its own decode message: \
          stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
@@ -5986,8 +6077,8 @@ fn selftest_on_a_board_reporting_zero_dead_zones_rewrites_them_as_read() {
 }
 
 /// WSL only forwards an environment variable across the WSL/Windows boundary `bin/wh` execs
-/// through when it is named in `WSLENV`; a `bin/wh` that forgot to set it once let `wh restore
-/// --force` silently fall back to a real device while the operator believed `WH_REPLAY` made it
+/// through when it is named in `WSLENV`; a `bin/wh` that forgot to set it once let a `wh restore`
+/// silently fall back to a real device while the operator believed `WH_REPLAY` made it
 /// safe. Runs the actual shim against the actual release Windows binary, since `cargo test`'s
 /// host-built binary never crosses that boundary. Skips cleanly outside WSL or before `wh.exe`
 /// has been cross-built. A fake fixture serial on stdout proves replay worked end to end through
@@ -6184,7 +6275,7 @@ fn restore_last_prints_the_picked_snapshot_and_its_origin() {
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
     lines.extend(restore_write_and_verify_lines(true));
     let path = write_script("restore-last-origin", &lines);
@@ -6293,7 +6384,7 @@ const A_CORRECT_READBACK: KeyReadback = KeyReadback {
 /// ever checks the first, which `keys.iter().take(1)` proved indistinguishable from correct when
 /// the only corrupted fixture was 'w'.
 fn restore_script_with_keyset_readback(w: KeyReadback, a: KeyReadback) -> Vec<String> {
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     lines.extend(auto_backup_lines(0));
 
     // Dead zones: the 200 each the vendor writes, not the 0.2/0.1 `snapshot_json_with_keysets`
@@ -6410,6 +6501,10 @@ fn restore_script_with_keyset_readback(w: KeyReadback, a: KeyReadback) -> Vec<St
 /// `ReplayTransport` matches byte for byte, so a membership frame sent before the value frames,
 /// or batched with them, or in the wrong per-key order, fails the script rather than the
 /// assertions below: the ordering is what this test actually pins.
+///
+/// Also the accept side of the matrix refusal for a snapshot whose usages are exactly the
+/// board's: both 'w' and 'a' are on the two-key board, so nothing is missing and the restore
+/// runs end to end.
 #[test]
 fn restore_writes_keyset_membership_after_the_values() {
     let config_home = scratch_config_dir("restore-keysets");
@@ -6614,7 +6709,7 @@ fn restore_from_a_snapshot_that_predates_keysets_leaves_live_membership_untouche
     )
     .unwrap();
 
-    let mut lines = profile_lines(0);
+    let mut lines = restore_preamble_lines(0);
     // The auto-backup's own live read: 'w' holds ap keyset 4 and rt keyset 2, 'a' holds neither.
     lines.extend(sync_lines("SNWRITETEST00001", "V1.0.0.001"));
     lines.extend(profile_lines(0));
@@ -6739,7 +6834,7 @@ fn restore_refusal_before_any_write_prints_no_membership_skip_note() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("profile 1") && stderr.contains("profile 2"),
+        stderr.contains("snapshot was taken on profile 1 but the board is on profile 2"),
         "unexpected stderr: {stderr}"
     );
     assert!(

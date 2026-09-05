@@ -390,19 +390,22 @@ stderr, rather than asserting the `0` the missing fields would otherwise default
 - Polling rate.
 
 **`wh restore` is not a factory-reset recovery path.** It restores exactly the settings listed above,
-and nothing more, and it guards the profile they were recorded on with two separate refusals that do
-not share an override:
+and nothing more, and it refuses outright, before writing anything, in three cases. None of them has
+an override:
 
 - If the snapshot recorded a profile and the board is currently on a different one, `wh restore`
-  refuses unconditionally. There is no `--force` for this case: restoring would silently overwrite
-  the wrong profile's settings, which `wh` will not do even if asked. Switch the board to the
-  recorded profile first, or restore only when you actually mean to overwrite the profile you are
-  currently on.
-- If the snapshot has no recorded profile at all (it predates profile recording, or the board it
-  came from reported a profile index this build does not recognise), `wh restore` also refuses by
-  default, since it cannot verify which profile the settings belong to. `--force` rescues only this
-  case, asserting the settings belong to the board's current profile; it does nothing for the
-  mismatch case above.
+  refuses: restoring would silently overwrite the wrong profile's settings, which `wh` will not do
+  even if asked. Switch the board to the recorded profile first, or restore only when you actually
+  mean to overwrite the profile you are currently on.
+- If the snapshot has no recorded profile at all, `wh restore` refuses, since nothing can establish
+  which profile the settings belong to. `wh` never writes such a snapshot: a board reporting a
+  profile index outside 1 to 4 fails the read outright rather than recording an unknown profile.
+- If the snapshot carries a key the board in front of you does not have, `wh restore` refuses and
+  names the keys. A snapshot taken on a different key matrix is unrestorable rather than partly
+  restorable, deliberately: restoring it would write to keys this board does not have and then
+  report them verified, because the readback re-reads exactly the keys it wrote to.
+
+In all three cases, take a fresh snapshot on the board you are restoring to.
 
 If you need to undo a change to remapping, SOCD, lighting, or anything else in the list above, use
 the board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** in the vendor web
