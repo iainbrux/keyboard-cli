@@ -3,7 +3,7 @@
 Generated from all ten capture files of the 2026-08-28 hardware session. Everything here is counted
 from real bytes. Where a meaning is inferred rather than measured, it says so.
 
-**Every count here is of that ten-file sample and no other.** The corpus is now 39 files and 6280
+**Every count here is of that ten-file sample and no other.** The corpus is now 55 files and 7126
 frames, and several values were first seen after this session. Where a row and `docs/protocol.md` or
 `docs/keysets.md` disagree, those two are current and this is a record of what the first session
 measured. Any absolute in a row below, "always", "never", "only ever", is a statement about these
@@ -21,11 +21,11 @@ Every command is perfectly request/reply balanced across the corpus.
 |---|---|---|---|
 | `0x00` | 42 | 42 | orders, sub-order in `payload[0]` |
 | `0x01` | 4 | 4 | SYNC, device identity |
-| `0x18` | 6 | 6 | **unidentified.** Suspected LED or RGB; payload has a `7f7f` and `ff00ff00` shape |
+| `0x18` | 6 | 6 | **PRGB, the lighting record**, identified 2026-09-05, see `docs/protocol.md`. In this ten-file sample it appeared only in connect sequences |
 | `0x23` | 540 | 540 | KEY, per-key layout records |
 | `0x29` | 6 | 6 | DB, the global record |
 | `0x2b` | 6 | 6 | DEFKEY, physical key matrix |
-| `0x2c` | 8 | 8 | **unidentified.** Almost certainly SOCD: queries by key, replies with symmetric pairs, measured as W with S and A with D. Behaviour measured, name inferred |
+| `0x2c` | 8 | 8 | **SOCD**, confirmed by writes on 2026-09-05, see `docs/protocol.md`. This sample held only its read side: queries by key, symmetric pairs, W with S and A with D |
 
 ## cmd 0x00 sub-orders
 
@@ -40,7 +40,7 @@ Every command is perfectly request/reply balanced across the corpus.
 | `0xbb` | 3 | unidentified, reply `00bb0000` |
 | `0xbc` | 3 | unidentified, reply `00bc6400` |
 | `0xbd` | 9 | unidentified, reply `00bd01ff`. Recurs as a poll rather than sitting in the connect sequence |
-| `0xc0` | 3 | unidentified, reply `00c001` |
+| `0xc0` | 3 | Show Analog Output, identified 2026-09-05, see `docs/protocol.md`; reply here always `00c001`, the state read back |
 
 Order `0x02` (SAVE in the upstream Sparklink spec) appears **nowhere** in the corpus, including
 across five complete write sequences.
@@ -60,8 +60,8 @@ except `0x00`, where including them would have added every padding slot in the s
 | `0x08` | 2252 | 5 | mode. Modelled |
 | `0x14` | 1806 | 3 | RT press, micrometres. Modelled |
 | `0x15` | 1806 | 4 | RT release, micrometres. Modelled |
-| `0x16` | 1806 | 1 | `0` in every one of these frames. Later sessions read and write `100`, see `docs/keysets.md` |
-| `0x17` | 1806 | 1 | Same as `0x16`, and always written with it |
+| `0x16` | 1806 | 1 | `0` in every one of these frames. Identified 2026-09-05 as the safety-zone press margin, see `docs/protocol.md` |
+| `0x17` | 1806 | 1 | Same as `0x16` (the release margin), and always written with it |
 | `0x19` | 680 | 2 | unidentified. Only ever `0x0000` or `0x3e2c` |
 | `0xfe` | 412 | 2 | rapid trigger keyset membership, an index and not a boolean: only `0` and `1` in this ten-capture session, reaching `2` only in the wider 36-capture corpus, see `docs/keysets.md`, untouched by edits within a set |
 | `0xff` | 408 | 3 | read 204 times, written 0 in this ten-capture session; **host-written and measured since**, see `docs/keysets.md`, which reaches values up to `9` across the wider 36-capture corpus |

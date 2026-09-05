@@ -721,8 +721,10 @@ failures. Up from ten files and 1224 frames after Phase 1, twenty-seven after th
 sittings, and thirty-nine before the 2026-09-05 sitting (SOCD, lighting, safety zone, the analog
 output toggle and the profile export/import, written up in `docs/protocol.md`).
 
-**The corpus spans two profiles and mostly does not say which.** Only five files record a profile at
-all, and one of them, `profile-switch`, is profile 2 despite being a Phase 1 capture. Any statistic
+**The corpus spans four profiles and mostly does not say which.** Only seven files record a profile
+at all, and one of them, `profile-switch`, is profile 2 despite being a Phase 1 capture; the
+2026-09-05 sitting added profile 4 (`socd-reload-read`) and profile 3 (`profile-select-3`). Any
+statistic
 aggregated across the whole corpus mixes profiles, which is fine for framing and checksum counts and
 misleading for values.
 

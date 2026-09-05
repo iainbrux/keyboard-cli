@@ -485,10 +485,10 @@ pub(crate) fn delete<T: Transport>(
 }
 
 /// The base actuation point when no free key remains to read one from, once every free key is
-/// excluded from the read because it is itself being reset. A chosen default for that one
-/// unanswerable case, not a measured factory setting: nothing has ever read an untouched profile.
-/// Actuation point only: `2000` is the measured dominant `0x04` reading, and no equivalent exists
-/// for rapid trigger, so `remove_base_rt` refuses in the same case rather than reusing it.
+/// excluded from the read because it is itself being reset. Chosen as the measured dominant
+/// `0x04` reading; on 2026-09-05 an AP-untouched profile read `2000` on all 68 keys, so it also
+/// matches the one factory reading taken (`docs/tasks.md`, 2.22). Actuation point only: no
+/// equivalent exists for rapid trigger, so `remove_base_rt` refuses in the same case instead.
 const NO_SIGNAL_BASE: Um = Um(2000);
 
 /// Resolves `remove`'s target: the base actuation point read from the free keys `usages` leaves

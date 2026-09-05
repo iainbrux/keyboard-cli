@@ -440,9 +440,9 @@ These are known unknowns from the hardware session, listed so nobody re-derives 
 
 ### Unidentified commands
 
-- `0x18`, now 10 request and reply pairs across five files. Suspected RGB or LED control. See the
-  LED item above. A fresh sample was captured on 2026-08-29 in
-  `captures/custom-value-nudge-after-restore.jsonl`.
+- ~~`0x18`~~ **Identified 2026-09-05: PRGB, the lighting record.** Brightness in twelfths, sleep
+  timer in minutes, mode and speed named from the export schema. See `docs/protocol.md`, "The
+  lighting record", and the LED item above for the one probe still open (the colour-table block).
 - ~~`0x2C`~~ **Identified 2026-08-29: SOCD.** Query is `[rw, key, 0xFF]`, reply is
   `[status, keyA, keyB, 0, keyB, keyA]`, the pair given both ways round. Measured `w` with `s` and
   `a` with `d`, and the ADVANCED tab carries a SOCD control holding exactly those pairs. The name is
@@ -450,8 +450,9 @@ These are known unknowns from the hardware session, listed so nobody re-derives 
 
 ### Unidentified sub-orders of command `0x00`
 
-All request and reply balanced, none ever failing, all confined to the connect sequence except
-`0xBD` which recurs as a poll. None is needed for anything Phase 1 does.
+All request and reply balanced, none ever failing. `0xBD` recurs as a poll, and `0xC0` left the
+list on 2026-09-05, identified as Show Analog Output (read `c0 ff`, write `c0 <0|1>`, see
+`docs/protocol.md`). None is needed for anything Phase 1 does.
 
 | Sub-order | Pairs | Reply payload |
 |---|---|---|
@@ -463,7 +464,6 @@ All request and reply balanced, none ever failing, all confined to the connect s
 | `0xBB` | 3 | `00bb0000` |
 | `0xBC` | 3 | `00bc6400` |
 | `0xBD` | 9 | `00bd01ff` |
-| `0xC0` | 3 | `00c001` |
 
 ### Layouts, identified and not
 
@@ -473,9 +473,9 @@ Two former unknowns are now measured. See `docs/protocol-inventory.md` for the f
   `initial-load` by reading each key's `0x00` against its `0x01`: esc maps to grave, and 1 through 0
   map to F1 through F10, holding across 69 distinct values in two independent series. That is
   exactly how the board behaves under FN.
-- `0x16` and `0x17`, 1806 records each in this ten-capture session, zero in every one of them.
-  Overturned since: both read and are written `100` throughout the keyset sitting, 580 write records
-  across fourteen files. What moved them is unmeasured. See `docs/keysets.md`. Purpose unknown.
+- ~~`0x16` and `0x17`~~ **Identified 2026-09-05: the per-key safety-zone margins**, written `100`
+  and `0` by the vendor UI's SAFETY ZONE toggle, see `docs/protocol.md`. What flipped them on
+  profile 1 between the 2026-08-28 and 2026-08-29 sittings is still unmeasured.
 - `0x19`, 680 records, only ever `0x0000` or `0x3e2c`, and non-zero on 68 of the 69 enumerated keys.
   Purpose unknown.
 - `0xFE` is the **rapid trigger keyset membership**, measured from write evidence in this very

@@ -12,11 +12,13 @@ operator using the keyboard's own AP and RT keys instead of the configurator,
 and `ks-set-global-ap`, a GLOBAL ACTUATION POINT change. Whether those three
 were their own sitting is not recorded. A sixth sitting on 2026-09-05 added
 sixteen files (SOCD, the analog output and safety zone toggles, lighting, a
-profile select, and the profile export/import experiment): every file up to
-and including `socd-reload-read` is profile 4, `profile-select-3` records the
-switch (`70 02`) in its own frames, and every file after it is profile 3. The
-corpus now stands at fifty-five files and 7126 frames, with zero framing or
-checksum failures in any of them.
+profile select, and the profile export/import experiment). Two establish
+their profile from frames: `socd-reload-read` reads index 3 (profile 4) and
+`profile-select-3` selects index 2 (profile 3). The rest carry no `70` frame
+and are attributed by sitting continuity, files before the select to profile
+4 and files after to profile 3, the operator's sequence rather than a
+measurement. The corpus now stands at fifty-five files and 7126 frames, with
+zero framing or checksum failures in any of them.
 The results are recorded in `docs/protocol-inventory.md`, `docs/protocol.md`
 and `docs/keysets.md`. This document describes the procedure so it can be run
 again, for a firmware update, a second board, or a new scenario, not as a
@@ -34,8 +36,8 @@ repository will do that for you.
 
 Before you start, note which profile is active on the keyboard, somewhere
 outside this repository (your own notes, not a comment in the capture
-file). Most captures record nothing about which profile was active, five of
-the thirty-nine being the exception, and it matters: per-key state is per
+file). Most captures record nothing about which profile was active, seven of
+the fifty-five being the exception, and it matters: per-key state is per
 profile. `layout-16-by-profile` measures the profile 1 side of that; the other
 side rests on the operator's note. Not recording it cost real work. The
 2026-08-29 captures are profile 1 and those 2026-09-04 keyset captures that
