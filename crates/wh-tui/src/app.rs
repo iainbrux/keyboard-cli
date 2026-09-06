@@ -1,8 +1,14 @@
-use crate::board::BoardModel;
+use crate::board::{ap_keysets, rt_keysets, BoardModel};
 use crate::matrix::{render_matrix, CapValue};
+use crate::rows::{self, render_prompt, render_row};
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::prelude::*;
 use std::collections::HashSet;
+
+/// The AP and RT tabs' prompt line, identical between them: both build keysets the same way
+/// (click keys, Enter or ADD KEYSET commits), so the vendor gives them the same status text.
+const KEYSET_PROMPT: &str = "> CLICK ON THE KEYS TO MAKE A KEYSET";
+const RESET_KEYSETS_ACTION: &str = "RESET KEYSETS";
 
 /// The project's own mark, not the vendor's: Wallhack's logo is Wallhack's.
 pub const LOGO: &[&str] = &[
@@ -69,6 +75,9 @@ pub struct App {
     /// `selection` yet, that arrives with click-to-select in a later plan.
     pub key_rects: Vec<(Rect, u8)>,
     pub selection: HashSet<u8>,
+    /// The prompt line's right-side action button rect, recorded during the last `draw`. `None`
+    /// on a tab with no prompt line. The button is inert until a later plan wires it up.
+    pub prompt_action_rect: Option<Rect>,
 }
 
 impl App {
@@ -81,6 +90,7 @@ impl App {
             tab_rects: Vec::new(),
             key_rects: Vec::new(),
             selection: HashSet::new(),
+            prompt_action_rect: None,
         }
     }
 
@@ -179,17 +189,61 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.tab_rects = tab_rects;
 
     // The body: everything between the tab row and the footer, split horizontally. The left
-    // pane is chrome for a later task (a settings panel); the matrix takes whatever is left.
+    // pane holds the settings rows below; the matrix takes whatever is left.
     let body_y = y + 1;
     let footer_y = area.height.saturating_sub(1);
     let body_height = footer_y.saturating_sub(body_y);
-    let left_width = area.width.min(46);
+    // 46 (task 6's placeholder, explicitly ledgered as unpinned) is too narrow for this task's
+    // own mandated prompt line: "> CLICK ON THE KEYS TO MAKE A KEYSET" (36) plus
+    // "[RESET KEYSETS]" (15) is 51 columns with no gap between them at all. 56 leaves that gap
+    // a visible 5 columns.
+    let left_width = area.width.min(56);
     let matrix_area = Rect::new(
         left_width,
         body_y,
         area.width.saturating_sub(left_width),
         body_height,
     );
+
+    // The left pane: settings rows for whichever tab is active, then one prompt line. Only AP
+    // and RT build rows in this phase; the other tabs are an honest gap left for later plans.
+    let left_area = Rect::new(0, body_y, left_width, body_height);
+    let settings_rows = match app.tab {
+        Tab::ActuationPoint => rows::ap_rows(&app.board.keys, app.board.global.travel),
+        Tab::RapidTrigger => rows::rt_rows(&app.board.keys),
+        _ => Vec::new(),
+    };
+    let mut ry = left_area.y;
+    for row in &settings_rows {
+        if ry >= left_area.y + left_area.height {
+            break;
+        }
+        render_row(
+            Rect::new(left_area.x, ry, left_area.width, 1),
+            f.buffer_mut(),
+            row,
+        );
+        ry += 1;
+    }
+    app.prompt_action_rect = None;
+    if matches!(app.tab, Tab::ActuationPoint | Tab::RapidTrigger)
+        && ry < left_area.y + left_area.height
+    {
+        let keysets_empty = match app.tab {
+            Tab::ActuationPoint => ap_keysets(&app.board.keys).is_empty(),
+            Tab::RapidTrigger => rt_keysets(&app.board.keys).is_empty(),
+            _ => true,
+        };
+        let prompt_area = Rect::new(left_area.x, ry, left_area.width, 1);
+        let action_rect = render_prompt(
+            prompt_area,
+            f.buffer_mut(),
+            KEYSET_PROMPT,
+            RESET_KEYSETS_ACTION,
+            keysets_empty,
+        );
+        app.prompt_action_rect = Some(action_rect);
+    }
 
     let value_of = |usage: u8| -> CapValue {
         match app.tab {
