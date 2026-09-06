@@ -159,8 +159,9 @@ equivalent. So the ACTUATION POINT and RAPID TRIGGER tabs are buildable today, k
 **What is blocked on protocol work.** MAPPING needs layouts `0x00` and `0x01`, which are measured but
 unmodelled. SWITCHES is unmeasured entirely, and so is every ADVANCED surface except DEVICE, whose
 name, serial and firmware come straight off the measured SYNC read and render live today. Profile
-*select* is measured but not implemented. So a genuinely one to one TUI depends on the remapping work and a capture session
-covering switches and the advanced tab. Build the two tabs we can drive first rather than waiting.
+*select* is measured but not implemented. So a genuinely one to one TUI depends on the remapping
+work and a capture session covering switches and the advanced tab. Build the two tabs we can drive
+first rather than waiting.
 
 **What it needs, technically.** `ratatui` 0.29 and `crossterm` 0.28 are already dependencies, used by
 the `--pick` picker, and Task 17 established the pattern of a pure state core with a thin terminal
@@ -354,8 +355,10 @@ The board really is that fast; this is presentation.
 
 **In the TUI.** Open question, and it may not belong there at all. A TUI redraws continuously, so a
 modal spinner would be a different thing from a one-shot CLI flourish. `wh tui` exists now but
-writes nothing, and its one long wait (the re-read on the board's leaving edge) already draws a
-frame saying so. Decide when it starts writing rather than now.
+writes nothing, and it already has two long waits. The re-read on the board's leaving edge draws a
+frame saying what it is doing; the open read, which runs before the alternate screen is entered,
+shows nothing at all and is the one with no message. Decide when it starts writing rather than
+now.
 
 ### A write that sends nothing still rotates a backup
 
