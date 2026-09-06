@@ -83,7 +83,7 @@ mod tests {
     fn adjust_event_ignores_an_ordinary_reply() {
         // A bd poll reply, the commonest frame on the wire: cmd 0x80, payload 00 bd 01 ff.
         let mut f = [0u8; 64];
-        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x53, 0x00, 0xbd, 0x01, 0xff]);
+        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x14, 0x00, 0xbd, 0x01, 0xff]);
         assert_eq!(adjust_event(&f), None);
     }
 
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn any_event_wraps_a_non_be_frame_as_unknown_with_its_payload() {
         let mut f = [0u8; 64];
-        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x53, 0x00, 0xbd, 0x01, 0xff]);
+        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x14, 0x00, 0xbd, 0x01, 0xff]);
         assert_eq!(any_event(&f), BoardEvent::Unknown(vec![0x00, 0xbd, 0x01, 0xff]));
     }
 
