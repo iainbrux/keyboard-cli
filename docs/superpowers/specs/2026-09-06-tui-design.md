@@ -40,15 +40,20 @@ Frame, top to bottom:
   2026-09-06); it is the vendor's own chrome, not a departure from it. The banner is the one
   deliberate departure that remains. The vendor's banner reads
   `WH_TERMINAL V1.0.0 - WALLHACK 2026`; `wh tui`'s reads
-  `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's choice, 2026-09-06). Then
+  `WALLHACK TERMINAL BY @BRUX - V<wh version>` (operator's choice, 2026-09-06, quotes dropped
+  around `@BRUX` 2026-09-06). Then
   `NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS`.
 - Device line: connection mark, `WALLHACK K-001 - V<fw>`, and a `PROFILE < n >` stepper.
 - Tab row: ACTUATION POINT, RAPID TRIGGER, MAPPING, SWITCHES, ADVANCED. The selected tab renders
   boxed or inverted; the others plain; disabled things dim.
-- Two-pane body: settings on the left, the 68-key ANSI-DK matrix on the right. Between them one
-  prompt line: left half a `> message` status, right half the contextual actions (RESET KEYSETS,
-  or ADD KEYSET [ENTER] and CANCEL [ESC] during a selection). Only ADVANCED's GAMEPAD, DEVICE and
-  SHARE sub-tabs drop the keyboard pane.
+- Two-pane body, both top-aligned: settings on the left, the 68-key ANSI-DK matrix on the right.
+  The right pane's own first row is a prompt line, level with the left pane's first settings row:
+  a `> message` status on the left half, contextual actions on the right half (RESET KEYSETS, or
+  ADD KEYSET [ENTER] and CANCEL [ESC] during a selection); the matrix starts the row beneath it.
+  Only ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane (and with it, this
+  prompt row: their own stub, if any, stays in the left pane instead). Corrected 2026-09-06 from a
+  UI-polish pass: the prompt used to sit in the left pane's own flow, after the settings rows,
+  leaving the matrix floating low with dead space beneath a short settings block.
 - Footer: HELP drawer bottom left, EN JA CH language row, support email.
 
 Widget inventory, in order of leverage:

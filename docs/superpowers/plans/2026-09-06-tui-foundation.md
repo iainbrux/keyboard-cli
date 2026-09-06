@@ -34,7 +34,8 @@ code.
 - Never loosen `ReplayTransport`'s byte-for-byte frame matching.
 - `wh-tui` never encodes frames by hand and never opens a transport itself; it receives a
   `Session` and calls `wh-device` ops.
-- The banner line is exactly `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's ruling,
+- The banner line is exactly `WALLHACK TERMINAL BY @BRUX - V<wh version>` (operator's ruling,
+  2026-09-06; the quotes around `@BRUX` were dropped by a later operator amendment, also
   2026-09-06).
 - The TUI renders Wallhack's own mark, extracted verbatim from the vendor bundle, used with
   Wallhack's permission (held by the operator, stated 2026-09-06): the earlier own-mark ruling

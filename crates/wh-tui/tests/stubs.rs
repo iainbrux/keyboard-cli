@@ -72,8 +72,12 @@ fn mapping_renders_its_subtab_labels_and_the_stub_line() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
+    // BASE LAYER / FN LAYER is the left pane's first row, and the right pane's own stub shares
+    // that exact row (both panes start at the same y, the vendor's own top-aligned layout, see
+    // `05-mapping.png`): asserted by `starts_with` against the row's whole left-pane
+    // reconstruction, not a loosened fragment match.
     assert!(
-        lines.iter().any(|l| l == MAPPING_LABELS_ROW_1),
+        lines.iter().any(|l| l.starts_with(MAPPING_LABELS_ROW_1)),
         "the BASE LAYER / FN LAYER label row is missing or wrong: {lines:?}"
     );
     assert!(
@@ -81,23 +85,11 @@ fn mapping_renders_its_subtab_labels_and_the_stub_line() {
         "the character sub-tab label row is missing or wrong: {lines:?}"
     );
 
-    // MAPPING_STUB (62 chars) is wider than the 56-column left pane, so it renders word-wrapped
-    // across two lines rather than truncated; each half is asserted whole, and joining them with
-    // a space must reproduce MAPPING_STUB exactly, so the wrap can never silently drop a word.
-    let wrap_1 = "> MAPPING EDITS ARE NOT BUILT IN WH YET (3.6 IN";
-    let wrap_2 = "DOCS/TASKS.MD)";
-    assert_eq!(
-        format!("{wrap_1} {wrap_2}"),
-        MAPPING_STUB,
-        "the two wrapped halves must reconstruct the pinned stub constant exactly"
-    );
+    // MAPPING_STUB (62 chars) now renders in the right pane (104 columns wide at this terminal
+    // size), not the 56-column left pane, so it fits on one line rather than wrapping.
     assert!(
-        lines.iter().any(|l| l == wrap_1),
-        "the mapping stub line's first half is missing or wrong: {lines:?}"
-    );
-    assert!(
-        lines.iter().any(|l| l == wrap_2),
-        "the mapping stub line's second half is missing or wrong: {lines:?}"
+        lines.iter().any(|l| l.ends_with(MAPPING_STUB)),
+        "the mapping stub line is missing or wrong: {lines:?}"
     );
 }
 
@@ -115,8 +107,11 @@ fn switches_renders_rows_and_the_stub_line() {
     );
     let current_line = format!("CURRENT SWITCHES{}< - >", dots("CURRENT SWITCHES", "< - >"));
 
+    // CALIBRATE SWITCHES is the left pane's first row, and the right pane's own stub shares that
+    // exact row (both panes start at the same y): asserted by `starts_with` against the row's
+    // whole left-pane reconstruction, not a loosened fragment match.
     assert!(
-        lines.iter().any(|l| l == &calibrate_line),
+        lines.iter().any(|l| l.starts_with(&calibrate_line)),
         "the CALIBRATE SWITCHES row is missing or wrong: {lines:?}"
     );
     assert!(
@@ -127,7 +122,7 @@ fn switches_renders_rows_and_the_stub_line() {
     // `SWITCHES_STUB` renders no line at all, which `.any(|l| l == "")` would otherwise accept.
     assert!(!SWITCHES_STUB.is_empty(), "SWITCHES_STUB must not be blank");
     assert!(
-        lines.iter().any(|l| l == SWITCHES_STUB),
+        lines.iter().any(|l| l.ends_with(SWITCHES_STUB)),
         "the switches stub line is missing or wrong: {lines:?}"
     );
 }
@@ -275,8 +270,10 @@ fn advanced_general_rows_render_with_stub_markers_where_unbuilt() {
         !ADVANCED_GENERAL_STUB.is_empty(),
         "ADVANCED_GENERAL_STUB must not be blank"
     );
+    // GENERAL shows the matrix, so its stub moved to the right pane, sharing the sub-tab row (the
+    // left pane's own first row) rather than rendering as its own separate line.
     assert!(
-        lines.iter().any(|l| l == ADVANCED_GENERAL_STUB),
+        lines.iter().any(|l| l.ends_with(ADVANCED_GENERAL_STUB)),
         "the advanced general stub line is missing or wrong: {lines:?}"
     );
 }
@@ -325,13 +322,15 @@ fn clicking_an_advanced_sub_tab_selects_it() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
-    // The sub-tab row sits one line below the main tab row (y=25, see chrome.rs), at y=26.
-    // Find DEVICE's column in that literal rather than reading it back from app.advanced_rects,
-    // so a rect moved out from under the visible text is still caught.
+    // The sub-tab row sits one line below the main tab row (y=25, see chrome.rs), at y=26. The
+    // right pane's own stub for GENERAL shares this exact row (both panes start at the same y),
+    // so only the left pane's own reconstruction is asserted whole, by `starts_with`, not the
+    // rest of the line. Find DEVICE's column in that literal rather than reading it back from
+    // app.advanced_rects, so a rect moved out from under the visible text is still caught.
     let sub_tab_row_y = 26u16;
     let sub_tab_line = &lines[sub_tab_row_y as usize];
-    assert_eq!(
-        sub_tab_line, "[GENERAL]  GAMEPAD  DEVICE  SHARE",
+    assert!(
+        sub_tab_line.starts_with("[GENERAL]  GAMEPAD  DEVICE  SHARE"),
         "the sub-tab row: {lines:?}"
     );
     let col = sub_tab_line.find("DEVICE").unwrap() as u16;

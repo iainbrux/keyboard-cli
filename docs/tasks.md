@@ -147,7 +147,7 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   The foundation plan is done. `wh tui` opens the board, reads it once, and renders the vendor
   frame: Wallhack's own ASCII logo (used with Wallhack's permission, held by the operator, stated
   2026-09-06, extracted verbatim from the vendor bundle), the banner
-  (`WALLHACK TERMINAL BY "@BRUX" - V<version>`),
+  (`WALLHACK TERMINAL BY @BRUX - V<version>`),
   the device and profile lines, five clickable and arrow-cyclable tabs, the 68-key matrix with
   two-line caps and hit testing, dotted-leader setting rows, keyset rows and a prompt line. It
   stubs MAPPING, SWITCHES and ADVANCED's GENERAL/GAMEPAD/SHARE honestly and shows ADVANCED/DEVICE

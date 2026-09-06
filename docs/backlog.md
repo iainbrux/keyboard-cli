@@ -138,7 +138,7 @@ typical configurator.
 **The header is the vendor's own mark, used with permission.** The operator holds permission from
 Wallhack to use their ASCII logo (stated 2026-09-06), so the header renders it verbatim, extracted
 from the vendor bundle; `brux` is named as text in the banner line under it
-(`WALLHACK TERMINAL BY "@BRUX" - V<version>`) rather than drawn. The Wallhack name and logo remain
+(`WALLHACK TERMINAL BY @BRUX - V<version>`) rather than drawn. The Wallhack name and logo remain
 theirs, this project is independent and unendorsed, and the banner line is the departure that
 still makes the distinction.
 

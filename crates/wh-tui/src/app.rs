@@ -260,7 +260,7 @@ impl App {
     }
 
     pub fn banner(&self) -> String {
-        format!("WALLHACK TERMINAL BY \"@BRUX\" - V{}", self.wh_version)
+        format!("WALLHACK TERMINAL BY @BRUX - V{}", self.wh_version)
     }
 
     pub fn handle_key(&mut self, code: KeyCode) {
@@ -364,16 +364,19 @@ fn render_tab_like_row<T: Copy>(
     rects
 }
 
-/// The left pane's width. 46 (task 6's placeholder, explicitly ledgered as unpinned) is too
-/// narrow for the mandated prompt line: "> CLICK ON THE KEYS TO MAKE A KEYSET" (36) plus
-/// "[RESET KEYSETS]" (15) is 51 columns with no gap between them at all. 56 leaves that gap a
-/// visible 5 columns.
+/// The left pane's width, for the settings and keyset rows. 46 (task 6's placeholder, explicitly
+/// ledgered as unpinned) was too narrow for the AP/RT prompt line when that line still lived in
+/// this pane: "> CLICK ON THE KEYS TO MAKE A KEYSET" (36) plus "[RESET KEYSETS]" (15) is 51
+/// columns with no gap between them at all, and 56 left that gap a visible 5 columns. The prompt
+/// moved to the right pane (see `draw`), but 56 is kept: it still has to hold the widest settings
+/// row and keyset line, and nothing measured since has needed it narrower or wider.
 const LEFT_WIDTH: u16 = 56;
 
-/// Word-wraps `text` to fit `width` columns, greedy, breaking only at spaces. Every stub constant
-/// above fits `left_area`'s 56 columns on one line except `MAPPING_STUB`, whose own cited
-/// docs/tasks.md task number pushes it past that width; wrapping keeps the exact text intact
-/// rather than truncating it or letting it run into the matrix pane on the right.
+/// Word-wraps `text` to fit `width` columns, greedy, breaking only at spaces. A tab's own stub
+/// renders in the right pane now (see `draw`), wide enough that every stub constant above fits on
+/// one line at any terminal width this crate is tested against; wrapping still keeps the exact
+/// text intact rather than truncating it, for whichever pane or width narrows enough to need it
+/// (the locked banner and the too-narrow refusal render at the frame's own width, which can).
 fn wrap_stub(text: &str, width: u16) -> Vec<String> {
     let width = width as usize;
     let mut lines = Vec::new();
@@ -475,14 +478,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // reversed, matching the vendor's inverted selected tab while still surviving in plain text.
     app.tab_rects = render_tab_like_row(f, y, 0, area.width, &TABS, |t| t == app.tab, Tab::title);
 
-    // The body: everything between the tab row and the footer, split horizontally. The left
-    // pane holds the settings rows below; the matrix takes whatever is left.
+    // The body: everything between the tab row and the footer, split into two top-aligned panes
+    // (the vendor's own layout, measured 2026-09-06 against
+    // research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png and 05-mapping.png,
+    // whose right pane's own prompt row sits level with the left pane's first content row, the
+    // matrix beneath it). The left pane holds the settings rows (and, on MAPPING and ADVANCED,
+    // their own label rows above them); the right pane's first row is the tab's own prompt or
+    // stub, the matrix immediately below it. ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop
+    // the keyboard pane entirely (see the design spec): there is no per-key value on any of them,
+    // so the left pane takes the whole width, no cap is drawn or recorded, and their stub (if
+    // any) has nowhere to move to, so it stays in the left pane's own flow, unchanged.
     let body_y = y + 1;
     let footer_y = area.height.saturating_sub(1);
     let body_height = footer_y.saturating_sub(body_y);
-    // ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane, the vendor's own
-    // layout (see the design spec): there is no per-key value on any of them, so the left pane
-    // takes the whole width and no cap is drawn or recorded.
     let show_matrix = match app.tab {
         Tab::Advanced => app.advanced_tab == AdvancedTab::General,
         _ => true,
@@ -492,18 +500,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         area.width
     };
-    let matrix_area = Rect::new(
-        left_width,
-        body_y,
-        area.width.saturating_sub(left_width),
-        body_height,
-    );
 
     // The left pane: for MAPPING and ADVANCED, sub-tab label rows above the settings rows (the
     // latter interactive, its own rect-recording pattern); then settings rows for whichever tab
-    // (and, on ADVANCED, sub-tab) is active; then either the AP/RT keyset prompt or a single
-    // honest-stub line naming what is not built yet. ADVANCED > DEVICE is the one sub-tab that
-    // gets no stub line: it is live, not a stub.
+    // (and, on ADVANCED, sub-tab) is active. ADVANCED > DEVICE gets no stub line: it is live, not
+    // a stub.
     let left_area = Rect::new(0, body_y, left_width, body_height);
     let mut ry = left_area.y;
     app.advanced_rects = Vec::new();
@@ -567,12 +568,40 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ry += 1;
     }
 
-    // While locked, this row renders `LOCKED_BANNER` instead (below, after the matrix, since the
-    // banner spans the full frame width and would otherwise be cut back by the matrix pane's own
-    // render over the same row): the tab's own prompt or stub does not appear at all, matching
-    // "ignore everything except quit and tab navigation" (there is nothing left to click).
+    // ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs have no right pane (`show_matrix` is false),
+    // so their stub, if any, stays here at the end of the left pane's own flow: there is nowhere
+    // else for it to go. Every tab that shows the matrix has its prompt or stub rendered in the
+    // right pane below instead. While locked, nothing renders here either: "ignore everything
+    // except quit and tab navigation" leaves nothing to click, so nothing to name.
+    if !app.locked && !show_matrix && ry < left_area.y + left_area.height {
+        match app.advanced_tab {
+            AdvancedTab::Gamepad => render_stub(f, left_area, &mut ry, ADVANCED_GAMEPAD_STUB),
+            AdvancedTab::Device => {}
+            AdvancedTab::Share => render_stub(f, left_area, &mut ry, ADVANCED_SHARE_STUB),
+            // Unreachable: `show_matrix` is only false on ADVANCED, and only for these three
+            // sub-tabs; GENERAL always shows the matrix.
+            AdvancedTab::General => {}
+        }
+    }
+    // The row the body's own message block starts on: right where the left pane's own flow (and,
+    // on the three sub-tabs above, its stub) ends. Rendered after the matrix below, full frame
+    // width, so it is never cut back by the matrix pane's own render.
+    let note_row = ry;
+
+    // The right pane: the tab's own prompt or stub on its first row, level with the left pane's
+    // first settings row (both panes start at `body_y`, the vendor's own top-aligned layout); the
+    // matrix starts on the row beneath it. While locked there is nothing to click, so nothing
+    // renders here and the matrix keeps its usual top row, matching the left pane's own rule.
     app.prompt_action_rect = None;
-    if !app.locked && ry < left_area.y + left_area.height {
+    let mut matrix_y = body_y;
+    if show_matrix && !app.locked && body_height > 0 {
+        let right_area = Rect::new(
+            left_width,
+            body_y,
+            area.width.saturating_sub(left_width),
+            body_height,
+        );
+        let mut right_ry = right_area.y;
         match app.tab {
             Tab::ActuationPoint | Tab::RapidTrigger => {
                 let keysets_empty = match app.tab {
@@ -580,7 +609,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     Tab::RapidTrigger => rt_keysets(&app.board.keys).is_empty(),
                     _ => true,
                 };
-                let prompt_area = Rect::new(left_area.x, ry, left_area.width, 1);
+                let prompt_area = Rect::new(right_area.x, right_ry, right_area.width, 1);
                 let action_rect = render_prompt(
                     prompt_area,
                     f.buffer_mut(),
@@ -589,22 +618,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     keysets_empty,
                 );
                 app.prompt_action_rect = Some(action_rect);
-                ry += 1;
+                right_ry += 1;
             }
-            Tab::Mapping => render_stub(f, left_area, &mut ry, MAPPING_STUB),
-            Tab::Switches => render_stub(f, left_area, &mut ry, SWITCHES_STUB),
-            Tab::Advanced => match app.advanced_tab {
-                AdvancedTab::General => render_stub(f, left_area, &mut ry, ADVANCED_GENERAL_STUB),
-                AdvancedTab::Gamepad => render_stub(f, left_area, &mut ry, ADVANCED_GAMEPAD_STUB),
-                AdvancedTab::Device => {}
-                AdvancedTab::Share => render_stub(f, left_area, &mut ry, ADVANCED_SHARE_STUB),
-            },
+            Tab::Mapping => render_stub(f, right_area, &mut right_ry, MAPPING_STUB),
+            Tab::Switches => render_stub(f, right_area, &mut right_ry, SWITCHES_STUB),
+            // Unreachable in practice: `show_matrix` on ADVANCED is only true for GENERAL.
+            Tab::Advanced => render_stub(f, right_area, &mut right_ry, ADVANCED_GENERAL_STUB),
         }
+        matrix_y = right_ry;
     }
-    // The row the body's own message block starts on: right where the tab's prompt or stub would
-    // otherwise sit (or, while locked, right where it was skipped above). Rendered after the
-    // matrix below, full frame width, so it is never cut back by the matrix pane's own render.
-    let note_row = ry;
+    let matrix_area = Rect::new(
+        left_width,
+        matrix_y,
+        area.width.saturating_sub(left_width),
+        body_height.saturating_sub(matrix_y - body_y),
+    );
 
     let value_of = |usage: u8| -> CapValue {
         match app.tab {
@@ -717,7 +745,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l == "WALLHACK TERMINAL BY \"@BRUX\" - V0.5.0-alpha"),
+                .any(|l| l == "WALLHACK TERMINAL BY @BRUX - V0.5.0-alpha"),
             "banner missing or wrong: {lines:?}"
         );
     }
