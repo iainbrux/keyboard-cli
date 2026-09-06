@@ -43,8 +43,11 @@ impl<T: Transport> Session<T> {
                 Err(e) => return Err(e),
             };
             // Checked before the reply match: a 0xbe edge during a cmd 0x00 roundtrip carries
-            // cmd 0x80 too, and would otherwise be mistaken for the awaited reply.
-            if let Some(e) = wh_proto::event::adjust_event(&report) {
+            // cmd 0x80 too, and would otherwise be mistaken for the awaited reply. Routed on
+            // `be_event`, wider than `adjust_event`: every `00 be` frame is certainly
+            // unsolicited (no request in the corpus carries sub-order `0xbe`), so an unmeasured
+            // third byte is queued too, rather than falling through and matching as the reply.
+            if let Some(e) = wh_proto::event::be_event(&report) {
                 self.events.push_back(e);
                 continue;
             }
@@ -97,9 +100,11 @@ impl<T: Transport> Session<T> {
     }
 
     /// What arrived uninvited while this session worked, drained: a caller reports each event
-    /// once, and a second call answers nothing.
-    pub fn pending_events(&mut self) -> std::collections::vec_deque::Drain<'_, BoardEvent> {
-        self.events.drain(..)
+    /// once, and a second call answers nothing. Returns an owned `Vec`, not a lazy `Drain`: a
+    /// short-circuiting read (`.any(...)`) over a `Drain` still silently discards whatever it
+    /// never yielded, since dropping a `Drain` finishes draining the queue regardless.
+    pub fn pending_events(&mut self) -> Vec<BoardEvent> {
+        self.events.drain(..).collect()
     }
 }
 
@@ -139,6 +144,11 @@ mod tests {
     }
     fn be_leaving() -> [u8; 64] {
         wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x01]).unwrap()
+    }
+    /// An unmeasured third byte on a `0xbe` frame: never observed, but still certainly
+    /// unsolicited, since sub-order `0xbe` appears in no request in the corpus.
+    fn be_unmeasured() -> [u8; 64] {
+        wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x02]).unwrap()
     }
 
     /// A `bd` poll reply, cmd 0x80, payload `00 bd 01 ff`.
@@ -205,8 +215,26 @@ mod tests {
         ]));
         let payload = s.roundtrip(&req).unwrap();
         assert_eq!(payload[..3], [0x00, 0x70, 0x00]);
-        let events: Vec<_> = s.pending_events().collect();
-        assert_eq!(events, vec![BoardEvent::AdjustModeEntered]);
+        assert_eq!(s.pending_events(), vec![BoardEvent::AdjustModeEntered]);
+    }
+
+    /// The closed failure this task fixed: before `roundtrip` routed on `be_event`, a `be 02`
+    /// mid-`cmd 0x00` roundtrip fell through to the reply match, mismatched, and killed the
+    /// whole command with an opaque decode error instead of being queued as unsolicited.
+    #[test]
+    fn roundtrip_queues_an_unmeasured_be_frame_as_unknown_and_still_succeeds() {
+        let req = wh_proto::cmds::read_profile();
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_unmeasured()),
+            crate::replay::Entry::In(profile_reply_frame()),
+        ]));
+        let payload = s.roundtrip(&req).unwrap();
+        assert_eq!(payload[..3], [0x00, 0x70, 0x00]);
+        assert_eq!(
+            s.pending_events(),
+            vec![BoardEvent::Unknown(vec![0x00, 0xbe, 0x02])]
+        );
     }
 
     #[test]
@@ -223,10 +251,7 @@ mod tests {
         ]));
         let payload = s.roundtrip(&req).unwrap();
         assert_eq!(payload[..2], [0x00, 0xbd]);
-        assert_eq!(
-            s.pending_events().collect::<Vec<_>>(),
-            vec![BoardEvent::AdjustModeEntered]
-        );
+        assert_eq!(s.pending_events(), vec![BoardEvent::AdjustModeEntered]);
     }
 
     #[test]
@@ -243,10 +268,7 @@ mod tests {
         ]));
         let payload = s.roundtrip(&req).unwrap();
         assert_eq!(payload, vec![0x01, 0x04, 0x14, 0xF4, 0x01]);
-        assert_eq!(
-            s.pending_events().collect::<Vec<_>>(),
-            vec![BoardEvent::AdjustModeEntered]
-        );
+        assert_eq!(s.pending_events(), vec![BoardEvent::AdjustModeEntered]);
     }
 
     #[test]
@@ -260,12 +282,33 @@ mod tests {
             crate::replay::Entry::In(profile_reply_frame()),
         ]));
         s.roundtrip(&req).unwrap();
-        assert_eq!(
-            s.pending_events().collect::<Vec<_>>(),
-            vec![BoardEvent::AdjustModeLeft]
-        );
+        assert_eq!(s.pending_events(), vec![BoardEvent::AdjustModeLeft]);
         // The first drain took everything; a second drain on the same queue is empty.
-        assert_eq!(s.pending_events().count(), 0);
+        assert_eq!(s.pending_events().len(), 0);
+    }
+
+    /// The hazard the reviewer measured: `.any(|e| e == AdjustModeLeft)` over a queue of `[Left,
+    /// Entered]` short-circuits on the first match, and a `Drain`'s own `Drop` impl would then
+    /// silently discard the trailing `Entered` it never yielded. Returning a `Vec` means the
+    /// whole queue is already materialized before the caller runs any predicate over it, so a
+    /// short-circuiting read cannot lose what it never looked at.
+    #[test]
+    fn pending_events_returns_a_vec_a_short_circuiting_read_cannot_lose_the_rest_of() {
+        let req = wh_proto::cmds::read_profile();
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_leaving()),
+            crate::replay::Entry::In(be_entering()),
+            crate::replay::Entry::In(profile_reply_frame()),
+        ]));
+        s.roundtrip(&req).unwrap();
+        let events = s.pending_events();
+        // A short-circuiting read, the TUI's natural "is the board modal right now" idiom.
+        assert!(events.contains(&BoardEvent::AdjustModeLeft));
+        // The trailing edge must still be reachable in what was returned: proves the vec was
+        // fully drained up front, not lazily during iteration.
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1], BoardEvent::AdjustModeEntered);
     }
 
     #[test]

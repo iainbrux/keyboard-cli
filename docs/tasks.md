@@ -98,27 +98,42 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
 
 - [x] ~~**3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.**~~ `Session`
   now queues an edge that arrives during any roundtrip rather than losing it: a roundtrip parses
-  `cmd 0x00` sub-order `0xbe` off a reply-shaped frame (`be 00` entering, `be 01` leaving) and
-  queues only those two, discarding anything else exactly as before this change; `Unknown` is
-  `poll_event`'s own concern, produced by `any_event` for its 3.5 consumers, never by a roundtrip.
-  `poll_event`/`pending_events` surface the queue. Every one-shot command now drains it after its
-  own work, success or failure, and prints one stderr note per kind seen, worded exactly and never
-  duplicated on stdout. A mid-roundtrip mismatch was found and fixed on the way here: an edge
-  shares `cmd 0x80` with an ordinary reply, so the routing has to be checked before the awaited
-  reply's own match, not after, or the edge is read back as the reply it happens to resemble.
+  every `cmd 0x00` sub-order `0xbe` reply-shaped frame (`be_event`, wider than the strict
+  `adjust_event`) and queues it, since sub-order `0xbe` appears in no request in the corpus, so
+  every such frame is certainly unsolicited regardless of its third byte. The two measured edges
+  queue as themselves; an unmeasured third byte queues as `Unknown` rather than falling through to
+  the reply match and killing the command outright, the failure this widening closed. `any_event`
+  (used by `poll_event`) is unchanged and still wraps anything at all, `be`-shaped or not.
+  `poll_event`/`pending_events` surface the queue; `pending_events` hands back an owned `Vec`, not
+  a lazy `Drain`, since a short-circuiting read (`.any(...)`, a natural TUI idiom) over a `Drain`
+  silently discards whatever it never yielded.
+
+  Every one-shot command drains the queue after its own work, success or failure, and prints one
+  stderr note per kind seen (never `Unknown`, which is `poll_event`'s own concern for 3.5), worded
+  exactly and never duplicated on stdout. The notes print in the order of each kind's own latest
+  arrival, not a fixed entered-then-left order: on wire order `be 01` then `be 00`, printing
+  entered before left would leave the final line claiming the board is still adjusting when it is
+  not. A mid-roundtrip mismatch was found and fixed on the way here: an edge shares `cmd 0x80`
+  with an ordinary reply, so the routing has to be checked before the awaited reply's own match,
+  not after, or the edge is read back as the reply it happens to resemble.
 
   An edge arriving between two commands is expected to reach the next roundtrip's read loop, if
   there is one, via the OS input buffer, which would make it the same mid-roundtrip path. That
   buffering is expected, not measured: it is part of the pending hardware check below, and an edge
-  with no roundtrip after it is never seen, the limit `README.md` states. `ReplayTransport`'s
-  positional scripts represent that by placing the `In` entry after the next `Out`, which is
-  exactly what this task's fixtures do; splicing it any earlier hits the script's own loud
+  with no roundtrip after it is never seen, the limit `README.md` states (which also now notes
+  that a buffered edge is attributed to whichever later command's read consumes it).
+  `ReplayTransport`'s positional scripts represent that by placing the `In` entry after the next
+  `Out`, which is exactly what this task's fixtures do; splicing it any earlier hits the script's loud
   mismatch rather than proving anything.
 
-  Still open for the operator, before 3.5 relies on this: FN+AP on the real board with
-  `poll_event` running, expecting both edges over a real HID read rather than a replay script, and
-  that `HidTransport::recv`'s zero-byte read maps to `DeviceError::Timeout` (`hid.rs:64-66`) the
-  way the real hidapi behaves on a timeout, not merely the way this build assumes it does.
+  Still open for the operator, before 3.5 relies on this:
+  - FN+AP on the real board with `poll_event` running, expecting both edges over a real HID read
+    rather than a replay script.
+  - That `HidTransport::recv`'s zero-byte read maps to `DeviceError::Timeout` (`hid.rs:64-66`) the
+    way the real hidapi behaves on a timeout, not merely the way this build assumes it does.
+  - The between-commands buffering claim above: emit an edge with no command running, then run a
+    command, and check whether it surfaces in that command's note. A measured "no" is as much an
+    answer as a measured "yes"; either closes the open question.
   **[hardware]**
 
 - [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,
@@ -126,6 +141,13 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   cache), re-reading on `be 01`, and showing a locked-board banner between `be 00` and `be 01`.
   `ratatui` and `crossterm` are already dependencies and `wh keys --pick` is the working seed.
   Spec to be written when this task opens; it consumes 3.1, 3.3 and 3.4.
+
+  `poll_event` against a replay script whose cursor sits on an `Out` entry is a loud
+  `DeviceError::Replay`, not a quiet `Ok(None)`: `ReplayTransport::recv` refuses when the script
+  expects a send next, and `poll_event` propagates that rather than treating it as a timeout. The
+  TUI's poll-then-read event loop cannot be scripted against `WH_REPLAY` as it stands; 3.5 must
+  solve that scripting question (a wait/gap script entry, or an equivalent) before its own event
+  loop is testable the way every other command in this repo is.
 
 - [ ] **3.6 Key remapping, base layer and FN layer.** Layouts `0x00` and `0x01`, both measured
   (`remap-one-key`, `initial-load`, and the FN-layer table in `docs/protocol-inventory.md`). `wh`

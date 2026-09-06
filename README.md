@@ -376,8 +376,9 @@ especially the first time you type a new key selector. `wh restore` and `wh self
 only ever rewrites a setting to the value it already read.
 
 Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
-`keyset list|create|set|delete|remove`, `profile`) names which transport it opened, on stderr, one line,
-before doing anything else: `transport: hardware (real keyboard)` or `transport: replay (<path>)`.
+`keyset list|create|set|delete|remove`, `socd list|pair|unpair`, `profile`) names which transport it
+opened, on stderr, one line, before doing anything else: `transport: hardware (real keyboard)` or
+`transport: replay (<path>)`.
 Check that line before trusting that a run did what you expected, especially when driving `wh` from
 a script or another tool where the rest of the output might scroll past. `wh keys list` and
 `wh keys group` never open a transport at all (they only ever touch the local key store), so they
@@ -391,7 +392,9 @@ underneath it` (and the same sentence with "left" for the other edge). This is i
 failure on its own; it exists because the board stopped being a keyboard for however long the edit
 took, and whatever the command read or wrote around that window may no longer match what is on the
 board now. `wh` only hears an edge while a command is actually waiting on the board, so one that
-lands after the command's last read is not reported.
+lands after the command's last read is not reported; an edge that lands between two commands is
+attributed to whichever later command's own read consumes it, not the command running when the
+board actually changed.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 

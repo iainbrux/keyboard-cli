@@ -7147,6 +7147,12 @@ fn adjust_edge_in_line(entering: bool) -> String {
     in_line(&reply(0x00, &[0x00, 0xbe, sub]))
 }
 
+/// A `0xbe` frame with an unmeasured third byte: still certainly unsolicited (`be_event`),
+/// but neither measured edge, so it queues as `Unknown` rather than either note.
+fn unmeasured_be_edge_in_line() -> String {
+    in_line(&reply(0x00, &[0x00, 0xbe, 0x02]))
+}
+
 /// The exact stderr lines `with_session` prints for each edge kind, verbatim: the tests below
 /// compare a whole line, not a substring, so a note wrapped in a prefix or suffix cannot pass.
 const ADJUST_ENTERED_NOTE: &str = "note: the board entered its own adjust mode during this \
@@ -7232,6 +7238,114 @@ fn repeated_edges_of_one_kind_print_once_and_both_kinds_print_one_each() {
         count_exact_lines(&stderr, ADJUST_LEFT_NOTE),
         1,
         "got: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The position of the one stderr line equal to `note`, so a test can compare which of two
+/// notes printed first without caring how many other lines sit around them.
+fn note_line_index(stderr: &str, note: &str) -> usize {
+    stderr
+        .lines()
+        .position(|l| l == note)
+        .unwrap_or_else(|| panic!("no line equal to {note:?} in: {stderr}"))
+}
+
+/// The ordering hazard: printing entered-then-left unconditionally would, on wire order `be 01`
+/// then `be 00`, put "entered" last, claiming the board is still adjusting when it just left.
+/// Ordered by each kind's own latest arrival instead, so the final line always matches the
+/// board's most recent known edge.
+#[test]
+fn wire_order_left_then_entered_prints_the_left_note_first_and_entered_note_last() {
+    let mut lines = matrix_lines();
+    let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
+    // Highest index first: `be 00` (entering) spliced before RT_RELEASE's reply, `be 01`
+    // (leaving) spliced before AP's reply, so leaving arrives chronologically first.
+    key_lines.insert(7, adjust_edge_in_line(true));
+    key_lines.insert(1, adjust_edge_in_line(false));
+    lines.extend(key_lines);
+    let path = write_script("adjust-note-wire-order-left-first", &lines);
+    let config_home = scratch_config_dir("adjust-note-wire-order-left-first");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let left_at = note_line_index(&stderr, ADJUST_LEFT_NOTE);
+    let entered_at = note_line_index(&stderr, ADJUST_ENTERED_NOTE);
+    assert!(
+        left_at < entered_at,
+        "left arrived first on the wire and must print first: got left at line {left_at}, \
+         entered at line {entered_at}, stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The mirror of the test above: wire order `be 00` then `be 01` prints entered first, left last.
+#[test]
+fn wire_order_entered_then_left_prints_the_entered_note_first_and_left_note_last() {
+    let mut lines = matrix_lines();
+    let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
+    // Highest index first: `be 01` (leaving) spliced before RT_RELEASE's reply, `be 00`
+    // (entering) spliced before AP's reply, so entering arrives chronologically first.
+    key_lines.insert(7, adjust_edge_in_line(false));
+    key_lines.insert(1, adjust_edge_in_line(true));
+    lines.extend(key_lines);
+    let path = write_script("adjust-note-wire-order-entered-first", &lines);
+    let config_home = scratch_config_dir("adjust-note-wire-order-entered-first");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let entered_at = note_line_index(&stderr, ADJUST_ENTERED_NOTE);
+    let left_at = note_line_index(&stderr, ADJUST_LEFT_NOTE);
+    assert!(
+        entered_at < left_at,
+        "entered arrived first on the wire and must print first: got entered at line \
+         {entered_at}, left at line {left_at}, stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The closed failure item 3/4 fixed: before `roundtrip` routed on `be_event`, a `be 02`
+/// mid-`cmd 0x00` roundtrip fell through and killed the command with an opaque decode error.
+/// Now it queues as `Unknown` and the command succeeds; a one-shot command still prints no note
+/// for it, since `Unknown` is `poll_event`'s own concern.
+#[test]
+fn a_command_with_an_unmeasured_be_edge_succeeds_and_prints_no_note_for_it() {
+    let mut lines = matrix_lines();
+    let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
+    key_lines.insert(1, unmeasured_be_edge_in_line());
+    lines.extend(key_lines);
+    let path = write_script("adjust-note-unmeasured-be", &lines);
+    let config_home = scratch_config_dir("adjust-note-unmeasured-be");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("adjust mode"),
+        "unexpected stderr: {stderr}"
     );
 
     std::fs::remove_file(path).unwrap();

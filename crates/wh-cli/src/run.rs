@@ -79,29 +79,39 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
     // Drained and reported regardless of `f`'s own result: a note about the board's own edges
     // is as true of a run that failed as one that succeeded, so the drain must not sit behind
     // an early return.
-    let mut entered = false;
-    let mut left = false;
-    for e in s.pending_events() {
+    let mut entered_at: Option<usize> = None;
+    let mut left_at: Option<usize> = None;
+    for (i, e) in s.pending_events().into_iter().enumerate() {
         match e {
-            wh_proto::event::BoardEvent::AdjustModeEntered => entered = true,
-            wh_proto::event::BoardEvent::AdjustModeLeft => left = true,
-            // `Session::events` has exactly one push site, fed by `adjust_event`, which returns
-            // only these two edges, so `Unknown` cannot reach this drain today. If `roundtrip`
-            // ever queues from `any_event` instead, this arm must stop ignoring it.
+            wh_proto::event::BoardEvent::AdjustModeEntered => entered_at = Some(i),
+            wh_proto::event::BoardEvent::AdjustModeLeft => left_at = Some(i),
+            // `roundtrip` routes on `be_event`, which queues an unmeasured `00 be` third byte
+            // here too. A one-shot command still reports nothing for it: `poll_event`'s own
+            // consumers own reporting `Unknown`, not this drain, for 3.5.
             wh_proto::event::BoardEvent::Unknown(_) => {}
         }
     }
-    if entered {
-        best_effort_eprintln(
+    // One note per kind, ordered by each kind's own latest arrival rather than a fixed
+    // entered-then-left order: with wire order `left` then `entered`, printing entered first
+    // would leave the final line claiming the board is still adjusting when it is not.
+    let mut notes: Vec<(usize, &str)> = Vec::new();
+    if let Some(i) = entered_at {
+        notes.push((
+            i,
             "note: the board entered its own adjust mode during this command; settings may have \
              changed underneath it",
-        );
+        ));
     }
-    if left {
-        best_effort_eprintln(
+    if let Some(i) = left_at {
+        notes.push((
+            i,
             "note: the board left its own adjust mode during this command; settings may have \
              changed underneath it",
-        );
+        ));
+    }
+    notes.sort_by_key(|&(i, _)| i);
+    for (_, msg) in notes {
+        best_effort_eprintln(msg);
     }
     result
 }
