@@ -4,9 +4,17 @@
 //! `sync_lines`, `profile_lines`, `global_travel_lines`, `build_script`), deliberately not
 //! shared: the two suites must drift apart only loudly, by a fixture mismatch, never silently
 //! through a shared helper edit.
+//!
+//! Each test binary in this crate compiles this whole module but uses only the subset its own
+//! suite needs (`board.rs` reads the device, `chrome.rs` only holds a model to draw), so the
+//! module is allowed dead code rather than pared down per binary.
+#![allow(dead_code)]
 
+use wh_device::ops::KeySettings;
 use wh_device::replay::hex;
-use wh_proto::cmds::{self, layout};
+use wh_proto::cmds::{self, layout, GlobalTravel, Mode, ProfileNumber};
+use wh_proto::value::Um;
+use wh_tui::board::BoardModel;
 
 pub fn out_line(bytes: &[u8; 64]) -> String {
     format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(bytes))
@@ -137,6 +145,45 @@ pub fn global_travel_lines(travel_um: u16, press_um: u16, release_um: u16) -> Ve
         out_line(&cmds::read_global_travel()),
         in_line(&reply(cmds::cmd::DB, &payload)),
     ]
+}
+
+/// A `BoardModel` literal with two keys and no wire, for chrome tests: those exercise `draw` and
+/// `App`'s own state, not the read path, so they need a model to hold rather than a `Session` to
+/// read one from. Mirrors `app::tests::test_fixture` in shape, not shared: that one is
+/// `pub(crate)` to `wh-tui`'s own crate and unreachable from this external test crate.
+#[allow(dead_code)]
+pub fn two_key_board() -> BoardModel {
+    BoardModel {
+        serial: "SNTUITEST0000001".to_string(),
+        firmware: "V1.0.0.001".to_string(),
+        profile: ProfileNumber::from_wire_index(0).unwrap(),
+        global: GlobalTravel {
+            travel: Um(500),
+            press_dead: Um(200),
+            release_dead: Um(200),
+        },
+        rows: Vec::new(),
+        keys: vec![
+            KeySettings {
+                usage: 0x1A,
+                ap: Um(1200),
+                mode: Mode::from_value(0x0010),
+                rt_press: Um(500),
+                rt_release: Um(500),
+                ap_keyset: 0,
+                rt_keyset: 0,
+            },
+            KeySettings {
+                usage: 0x04,
+                ap: Um(1500),
+                mode: Mode::from_value(0x0010),
+                rt_press: Um(0),
+                rt_release: Um(0),
+                ap_keyset: 0,
+                rt_keyset: 0,
+            },
+        ],
+    }
 }
 
 /// Composes, in order, exactly the frames `BoardModel::read` sends against the two-key board:
