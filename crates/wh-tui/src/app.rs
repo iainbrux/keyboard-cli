@@ -165,8 +165,10 @@ pub struct App {
     /// `handle_key`/`handle_mouse` ignore everything except quit and top-level tab navigation.
     pub locked: bool,
     /// A one-line note `tick` sets, most recently for an unrecognised board event or a re-read
-    /// that timed out. Sticky: nothing clears it once set, since a stale note is still true until
-    /// the next one replaces it.
+    /// that timed out. Cleared by the next successful `AdjustModeLeft` re-read, whatever set it:
+    /// a fresh full read is the strongest signal available that the board's display is
+    /// trustworthy again, and a note claiming otherwise (or naming a now-old event) has served
+    /// its purpose once the operator has seen it.
     pub status: Option<String>,
 }
 
@@ -192,8 +194,9 @@ impl App {
     /// `Ok(true)` when the display changed (a redraw is due). `AdjustModeLeft` re-reads the whole
     /// board, the same thing the vendor configurator does on that edge; if that read itself times
     /// out, the old model is kept and a status note says so rather than the operator being shown
-    /// nothing or a half-read model. Queued events beyond the one this call drains stay queued,
-    /// the starvation ruling from the spec: this plan sets no cap on that queue.
+    /// nothing or a half-read model. On success, any note already showing is cleared: see
+    /// `status`'s own doc for why. Queued events beyond the one this call drains stay queued, the
+    /// starvation ruling from the spec: this plan sets no cap on that queue.
     pub fn tick<T: Transport>(&mut self, s: &mut Session<T>) -> Result<bool, DeviceError> {
         match s.poll_event(Duration::from_millis(15))? {
             Some(BoardEvent::AdjustModeEntered) => {
@@ -203,7 +206,10 @@ impl App {
             Some(BoardEvent::AdjustModeLeft) => {
                 self.locked = false;
                 match BoardModel::read(s) {
-                    Ok(board) => self.board = board,
+                    Ok(board) => {
+                        self.board = board;
+                        self.status = None;
+                    }
                     Err(DeviceError::Timeout) => {
                         self.status = Some(STATUS_REREAD_TIMED_OUT.to_string());
                     }
