@@ -357,6 +357,15 @@ wh profile
 wh profile 2
 ```
 
+Open the full-screen terminal UI, a read-only view of the whole board in the vendor
+configurator's own layout. It needs an interactive terminal and refuses a redirected or piped
+stdout before it opens the device at all. Nothing in it writes yet: every stepper and button
+renders a value only, and the tabs that have no read behind them say so in as many words:
+
+```
+wh tui
+```
+
 A self-test that exercises a real write/read round trip, rewriting the board's global record with
 the values it just read (see the read-modify-write note below for the one part of that which is not
 provably a no-op):
@@ -376,9 +385,9 @@ especially the first time you type a new key selector. `wh restore` and `wh self
 only ever rewrites a setting to the value it already read.
 
 Every `wh` command that touches the device (`dump`, `get`, `set`, `backup`, `restore`, `selftest`,
-`keyset list|create|set|delete|remove`, `socd list|pair|unpair`, `profile`) names which transport it
-opened, on stderr, one line, before doing anything else: `transport: hardware (real keyboard)` or
-`transport: replay (<path>)`.
+`keyset list|create|set|delete|remove`, `socd list|pair|unpair`, `profile`, `tui`) names which
+transport it opened, on stderr, one line, before doing anything else:
+`transport: hardware (real keyboard)` or `transport: replay (<path>)`.
 Check that line before trusting that a run did what you expected, especially when driving `wh` from
 a script or another tool where the rest of the output might scroll past. `wh keys list` and
 `wh keys group` never open a transport at all (they only ever touch the local key store), so they
@@ -394,8 +403,9 @@ took, and whatever the command read or wrote around that window may no longer ma
 board now. `wh` only hears an edge while a command is actually waiting on the board, so one that
 lands after the command's last read is not reported, and one that lands between two commands is
 never reported at all (measured 2026-09-06: edges emitted with no command running produced no note
-on the next command). A long-running interface that holds the connection open, the planned TUI,
-is what hears everything.
+on the next command). `wh tui` holds the connection open for as long as it runs, so it is the one
+interface that hears every edge: it raises a banner on the entering one and re-reads the whole
+board on the leaving one.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 
@@ -490,13 +500,20 @@ board's own **RESET PROFILE** or **FACTORY RESET** under **Advanced > General** 
 configurator; `wh` does not implement either. SOCD is the exception: a snapshot cannot bring a pair
 back, but `wh socd unpair` undoes a pairing directly, and `wh socd pair` recreates one.
 
-## No drift: `wh` caches no device state
+## No drift: every command reads live over HID
 
-Every `wh` command reads live over HID. There is no local cache of the board's settings, which is
-why `wh` cannot show a stale value the way the web configurator sometimes can: there is nothing
-cached to go stale.
+Every `wh` command reads live over HID. The command-line surface keeps no local copy of the board's
+settings, which is why it cannot show a stale value the way the web configurator sometimes can:
+there is nothing cached to go stale.
 
-Two things look like exceptions and are not:
+`wh tui` is the one real exception. It reads the whole board once when it opens and holds that model
+for as long as it runs, since redrawing a full screen cannot mean a HID roundtrip per keystroke. It
+re-reads everything when the board announces it has left its own adjust mode (`be 01`, the only
+change the board tells the host about), and if that re-read times out it keeps the old model and
+says so in a note rather than showing you a half-read one. A change nothing announces will not
+reach the screen until the next re-read.
+
+Two more things look like exceptions and are not:
 
 - `set rt`, `set ap`, and `keyset create`/`set`/`delete`/`remove` each read a key's current
   settings, then write back a change built from that read (all but `set rt --set` through the same

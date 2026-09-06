@@ -135,8 +135,9 @@ layout closely enough that someone who knows the website can drive it without re
 The vendor UI is already terminal-styled, so this is a far smaller leap than it would be for a
 typical configurator.
 
-**The header is a collaboration mark, not a copy.** The vendor's ASCII logo at the top is replaced by
-a joint one: the `wh` logo in ASCII art alongside `brux` in ASCII art. Do not reproduce Wallhack's
+**The header is this project's own mark, not a copy.** The vendor's ASCII logo at the top is
+replaced by a `wh` mark in ASCII art, with `brux` named as text in the banner line under it
+(`WALLHACK TERMINAL BY "@BRUX" - V<version>`) rather than drawn. Do not reproduce Wallhack's
 logo. The Wallhack name and logo are theirs, this project is independent and unendorsed, and the
 header is the most visible place that distinction gets made.
 
@@ -156,8 +157,9 @@ since layout `0xFF` turned out to hold the actuation-point keyset index and `0xF
 equivalent. So the ACTUATION POINT and RAPID TRIGGER tabs are buildable today, keysets included.
 
 **What is blocked on protocol work.** MAPPING needs layouts `0x00` and `0x01`, which are measured but
-unmodelled. SWITCHES and ADVANCED are unmeasured entirely. Profile *select* is measured but not
-implemented. So a genuinely one to one TUI depends on the remapping work and a capture session
+unmodelled. SWITCHES is unmeasured entirely, and so is every ADVANCED surface except DEVICE, whose
+name, serial and firmware come straight off the measured SYNC read and render live today. Profile
+*select* is measured but not implemented. So a genuinely one to one TUI depends on the remapping work and a capture session
 covering switches and the advanced tab. Build the two tabs we can drive first rather than waiting.
 
 **What it needs, technically.** `ratatui` 0.29 and `crossterm` 0.28 are already dependencies, used by
@@ -351,8 +353,9 @@ The board really is that fast; this is presentation.
   scripting against it.
 
 **In the TUI.** Open question, and it may not belong there at all. A TUI redraws continuously, so a
-modal spinner would be a different thing from a one-shot CLI flourish. Decide when the TUI exists
-rather than now.
+modal spinner would be a different thing from a one-shot CLI flourish. `wh tui` exists now but
+writes nothing, and its one long wait (the re-read on the board's leaving edge) already draws a
+frame saying so. Decide when it starts writing rather than now.
 
 ### A write that sends nothing still rotates a backup
 

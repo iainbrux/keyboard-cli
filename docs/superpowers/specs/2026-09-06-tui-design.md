@@ -4,8 +4,10 @@
 
 A terminal UI, launched as `wh tui`, that replicates terminal.wallhack.com one to one: the same
 layout, the same tabs, the same gestures, driven by mouse or arrow and enter keys. Values are
-populated by reading the board on open. Nothing is cached beyond the read-modify-write window the
-CLI already has.
+populated by reading the board on open, and that model is then held for the session: unlike the
+CLI, which caches nothing beyond its read-modify-write window, the TUI cannot afford a HID
+roundtrip per redraw. It is refreshed by a full re-read on the board's `be 01` leaving edge, and
+when that read times out the old model is kept behind a note saying values may be stale.
 
 ## Decisions made with the operator (2026-09-06)
 
@@ -99,21 +101,28 @@ is measured, and a stub where neither exists yet. Stubs render the vendor layout
 "not built yet, see docs/tasks.md" where interaction would start. Nothing unmeasured is shown as
 a value.
 
-| Surface | State in 3.5 |
-|---|---|
-| AP tab (global, custom value, keysets) | Live |
-| RT tab (toggle, sensitivities, keysets) | Live |
-| Profile stepper | Live |
-| SOCD editor | Live (`wh socd` exists) |
-| Show Analog Output, Safety Zone toggles | Read-only (reads measured in 3.2; `wh` has no write op yet) |
-| MAPPING | Stub until 3.6; current mapping may display (reads measured) |
-| LED rows | Stub until 3.7; values may display (record decomposed) |
-| SHARE | Stub until 3.8 |
-| SWITCHES calibration and switch type | Stub (unmeasured) |
-| DKS, Mod Tap editors | Stub (write model unmeasured) |
-| GAMEPAD sub-tab | Stub |
-| Walkthrough | Stub |
-| Reset Profile, Factory Reset, RESET ALL | Stub in 3.5 (destructive, write model unmeasured) |
+3.5 is two plans, and the foundation one writes nothing at all: every control it renders is either
+a value read off the board or a stub. This table is what each surface is after the foundation
+plan, and what the editing plan is to add.
+
+| Surface | After the foundation plan | The editing plan adds |
+|---|---|---|
+| Key matrix | Read-only: laid out from the board's own DEFKEY rows, AP or RT value per cap | Click-to-select, keyset building |
+| AP tab (global, custom value, keysets) | Read-only: folded from every key's read | Live steppers and keyset gestures |
+| RT tab (toggle, sensitivities, keysets) | Read-only: same fold, toggles read ON/OFF/MIXED | Live steppers and keyset gestures |
+| ADVANCED > DEVICE | Read-only and live from the SYNC read: name, serial, firmware | Nothing, it is read-only by nature |
+| Adjust-mode banner and re-read | Live: `be 00` raises it, `be 01` re-reads the board | Refusing edits mid-lock |
+| Profile stepper | Read-only: shows the active profile | Selecting a profile (`wh profile` exists) |
+| SOCD editor | Not rendered; the ADVANCED row is a disabled SELECT | The editor (`wh socd` exists) |
+| Show Analog Output, Safety Zone toggles | Stub reading `-` (reads measured in 3.2, not wired) | Wiring the reads; `wh` still has no write op |
+| MAPPING | Stub: sub-tab labels and a one-line "not built" | Stub until 3.6 |
+| LED rows | Stub reading `-` | Stub until 3.7 |
+| SHARE | Stub | Stub until 3.8 |
+| SWITCHES calibration and switch type | Stub (unmeasured) | Stub (unmeasured) |
+| DKS, Mod Tap editors | Stub (write model unmeasured) | Stub (write model unmeasured) |
+| GAMEPAD sub-tab | Stub, and it drops the keyboard pane | Stub |
+| Walkthrough | Stub | Stub |
+| Reset Profile, Factory Reset, RESET ALL | Stub (destructive, write model unmeasured) | Stub |
 
 ## Event loop
 

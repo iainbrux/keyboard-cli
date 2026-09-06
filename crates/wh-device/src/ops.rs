@@ -477,7 +477,7 @@ mod tests {
         assert!(s.into_inner().finished());
     }
 
-    /// `matrix_script()` above is already the encoder-built two-key-per-row DEFKEY fixture this
+    /// `matrix_script()` above is already the encoder-built one-key-per-row DEFKEY fixture this
     /// test needs (three `read_defkey_rows` roundtrips, each row pair with a distinct usage at
     /// col 0), so it is reused rather than duplicated under a second name.
     #[test]

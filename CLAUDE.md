@@ -45,9 +45,14 @@ exclusive, so `wh` fails with `DeviceError::Busy` while terminal.wallhack.com ha
 why there is no daemon: `wh tui` is long-running and holds the device for as long as it runs, but
 nothing stays open once that one process exits.
 
-**`wh` caches no device state.** Every command reads live over HID, which is why it cannot show a
-stale value where the web configurator can. The only exception is the read-modify-write window
-above.
+**Every `wh` command reads live over HID, and there are exactly two exceptions.** The first is the
+read-modify-write window above. The second is `wh tui`: it reads the whole board once on open and
+holds that model for the session, because a TUI redrawing every frame cannot afford a HID roundtrip
+per keystroke. What bounds it: the model is re-read in full on the board's `be 01` leaving edge (the
+only device-initiated change `wh` can hear), and when that re-read times out the old model is kept
+with a status note saying values may be stale. Nothing else refreshes it, so a change the board
+makes without announcing one would not reach the screen. Everywhere else `wh` still cannot show a
+stale value where the web configurator can, because there is nothing cached to go stale.
 
 **The board can change under you, and it says so.** The keyboard's own AP and RT keys edit settings
 without the host involved, and while that is happening the board stops being a keyboard at all: it

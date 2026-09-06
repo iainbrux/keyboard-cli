@@ -429,8 +429,8 @@ fn dump_with_no_flags_is_json() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The table survives behind `--table`, since nothing else renders 68 keys readably until the
-/// TUI exists.
+/// The table survives behind `--table`: `wh tui` renders 68 keys readably too, but it needs an
+/// interactive terminal, and this is the form a pipe or a script can read.
 #[test]
 fn dump_table_flag_prints_the_human_table() {
     let path = write_script("dump-table", &build_script());
