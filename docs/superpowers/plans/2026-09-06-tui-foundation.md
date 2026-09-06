@@ -14,7 +14,9 @@ pure draw functions, a BoardModel read over the existing `wh-device` ops), launc
 replay script format so a polling loop is scriptable, and a row-preserving matrix read so the key
 grid renders from board-derived geometry.
 
-**Tech Stack:** Rust, ratatui 0.29, crossterm 0.28, existing wh-proto/wh-device/wh-config crates.
+**Tech Stack:** Rust, ratatui 0.29, crossterm 0.28, the existing wh-proto and wh-device crates.
+(`wh-config` was declared here at first and never used: nothing in this plan touches a snapshot,
+so it was dropped, and the editing plan re-adds it when the backup lands.)
 
 **Spec:** `docs/superpowers/specs/2026-09-06-tui-design.md`. 3.5 executes as two plans; this is
 plan 1. Plan 2 (editing: steppers that write, the keyset gesture, SOCD editor, profile switch,
@@ -276,7 +278,6 @@ publish = false
 [dependencies]
 wh-proto = { path = "../wh-proto" }
 wh-device = { path = "../wh-device" }
-wh-config = { path = "../wh-config" }
 anyhow = "1"
 ratatui = "0.29"
 crossterm = "0.28"

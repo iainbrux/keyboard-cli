@@ -4,8 +4,12 @@ use wh_device::replay::ReplayTransport;
 use wh_device::session::Session;
 use wh_tui::board::{ap_keysets, global_ap, global_rt, rt_keysets, BoardModel, GlobalValue};
 
+/// `BoardModel::read` sends exactly this sequence and nothing else, byte for byte through
+/// `ReplayTransport`. It is deliberately the same order `wh-cli`'s `snapshot_from_device` reads
+/// in, but nothing here enforces that: that function is private to another crate, so the two can
+/// drift apart and only a reader comparing them would notice.
 #[test]
-fn board_model_reads_the_same_wire_sequence_as_snapshot_from_device() {
+fn board_model_read_sends_exactly_the_scripted_wire_sequence() {
     let lines = build_script(); // sync, profile 0, global travel, matrix, six reads per key
     let t = ReplayTransport::from_jsonl(&lines.join("\n")).unwrap();
     let mut s = Session::new(t);

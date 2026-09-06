@@ -491,6 +491,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             |t| t == app.advanced_tab,
             AdvancedTab::title,
         );
+        // While locked, `handle_key` and `handle_mouse` both ignore this row, so it is dimmed
+        // like any other inert control: a live-looking sub-tab that answers nothing is something
+        // the operator would otherwise have to discover by clicking it.
+        if app.locked {
+            f.buffer_mut().set_style(
+                Rect::new(left_area.x, ry, left_area.width, 1),
+                Style::default().add_modifier(Modifier::DIM),
+            );
+        }
         ry += 1;
     }
 

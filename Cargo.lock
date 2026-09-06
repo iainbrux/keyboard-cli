@@ -893,7 +893,6 @@ dependencies = [
  "anyhow",
  "crossterm",
  "ratatui",
- "wh-config",
  "wh-device",
  "wh-proto",
 ]

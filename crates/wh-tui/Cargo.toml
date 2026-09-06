@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 wh-proto = { path = "../wh-proto" }
 wh-device = { path = "../wh-device" }
-wh-config = { path = "../wh-config" }
 anyhow = "1"
 ratatui = "0.29"
 crossterm = "0.28"

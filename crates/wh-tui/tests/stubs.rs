@@ -412,6 +412,105 @@ fn up_and_down_do_nothing_when_a_non_advanced_tab_is_selected() {
     );
 }
 
+/// While the board is locked, every guard in `handle_key` and `handle_mouse` holds: the ADVANCED
+/// sub-tab neither cycles nor answers a click, while quit and top-level tab navigation, keyboard
+/// and mouse both, still work. Without these the two `!self.locked` guards could be deleted with
+/// the suite green.
+#[test]
+fn a_locked_board_freezes_the_advanced_sub_tabs_but_not_quit_or_tab_navigation() {
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Gamepad;
+    app.locked = true;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let lines = buffer_lines(&terminal);
+
+    app.handle_key(KeyCode::Down);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::Gamepad,
+        "Down must not cycle the sub-tab while locked: {lines:?}"
+    );
+    app.handle_key(KeyCode::Up);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::Gamepad,
+        "Up must not cycle the sub-tab while locked: {lines:?}"
+    );
+
+    // The sub-tab row still renders while locked, and its rects are still recorded; the click is
+    // refused by the guard, not by there being nothing to hit.
+    let sub_tab_row_y = 15u16;
+    let sub_tab_line = &lines[sub_tab_row_y as usize];
+    assert_eq!(
+        sub_tab_line, "GENERAL  [GAMEPAD]  DEVICE  SHARE",
+        "the sub-tab row: {lines:?}"
+    );
+    let col = sub_tab_line.find("DEVICE").unwrap() as u16;
+    app.handle_mouse(MouseEventKind::Down(MouseButton::Left), col, sub_tab_row_y);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::Gamepad,
+        "a sub-tab click must be ignored while locked: {lines:?}"
+    );
+
+    // Top-level navigation is the exception the banner's own wording relies on.
+    app.handle_key(KeyCode::Left);
+    assert_eq!(
+        app.tab,
+        Tab::Switches,
+        "Left must still move the top-level tab while locked"
+    );
+    let tab_row = &lines[14];
+    let mapping_col = tab_row.find("MAPPING").unwrap() as u16;
+    app.handle_mouse(MouseEventKind::Down(MouseButton::Left), mapping_col, 14);
+    assert_eq!(
+        app.tab,
+        Tab::Mapping,
+        "a top-level tab click must still work while locked"
+    );
+
+    app.handle_key(KeyCode::Char('q'));
+    assert!(app.quit, "q must still quit while locked");
+}
+
+/// The dim state of that inert row, both ways.
+#[test]
+fn the_advanced_sub_tab_row_dims_while_locked() {
+    let row_y = 15u16;
+    let row_width = "GENERAL  [GAMEPAD]  DEVICE  SHARE".chars().count() as u16;
+
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Gamepad;
+    app.locked = true;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    for x in 0..row_width {
+        assert!(
+            buf[(x, row_y)].modifier.contains(Modifier::DIM),
+            "column {x} of the sub-tab row must be dim while locked: {lines:?}"
+        );
+    }
+
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Gamepad;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    for x in 0..row_width {
+        assert!(
+            !buf[(x, row_y)].modifier.contains(Modifier::DIM),
+            "column {x} of the sub-tab row must not be dim while unlocked: {lines:?}"
+        );
+    }
+}
+
 #[test]
 fn general_gamepad_share_and_switches_rows_render_dim_disabled() {
     // GENERAL: every row from disabled_button/disabled_stepper, including SOCD.

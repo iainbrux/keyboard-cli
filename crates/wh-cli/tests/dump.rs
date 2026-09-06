@@ -305,7 +305,7 @@ fn run_wh_stdin(
 }
 
 #[test]
-fn tui_refuses_without_an_interactive_terminal() {
+fn tui_refuses_without_an_interactive_terminal_before_opening_any_transport() {
     let dir = scratch_config_dir("tui-refuse");
     let script = write_script("tui-refuse", &[]);
     let out = run_wh(&["tui"], &script, &dir);
@@ -319,6 +319,14 @@ fn tui_refuses_without_an_interactive_terminal() {
             == "error: wh tui needs an interactive terminal, but stdout here is redirected or piped"
         }),
         "unexpected stderr: {stderr}"
+    );
+    // No transport may have been opened. `with_session` announces every transport it opens on
+    // stderr, so its absence is the evidence, and the error line alone is not: moving this check
+    // inside `with_session` would still print it, having first taken the exclusive vendor HID
+    // collection on Windows and locked the operator out of the configurator to say no.
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("transport:")),
+        "the refusal must come before any transport is opened: {stderr}"
     );
 }
 
