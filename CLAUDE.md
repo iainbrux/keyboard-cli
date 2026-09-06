@@ -251,7 +251,9 @@ live document until execution finishes. Execution finishes when the plan's branc
 `main`, and the branch's final commit before that merge appends an execution note to the plan file
 itself ("Executed: <date>, merged to main"); appending it is part of finishing the branch, not a
 later chore. A plan carrying the note is frozen; a plan without it on an unmerged branch is live;
-plans dated before 2026-09-06 predate this convention and are all closed.
+a plan that reached `main` without its note was mis-merged and is closed all the same, the note
+added as an ordinary docs fix; plans dated before 2026-09-06 predate this convention and are all
+closed.
 
 `captures/` holds real device traffic and is **gitignored**. It is the operator's own data. The
 golden test (`cargo test -p wh-proto --test golden`) decodes every frame in it; a missing directory
