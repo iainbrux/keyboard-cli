@@ -1,5 +1,7 @@
 use crate::transport::{DeviceError, Transport};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use wh_proto::event::BoardEvent;
 use wh_proto::frame::{parse, FrameError, REPLY_BIT};
 
 pub const READ_TIMEOUT: Duration = Duration::from_millis(250);
@@ -12,11 +14,15 @@ pub const MAX_READS: usize = 256;
 
 pub struct Session<T: Transport> {
     t: T,
+    events: VecDeque<BoardEvent>,
 }
 
 impl<T: Transport> Session<T> {
     pub fn new(t: T) -> Self {
-        Self { t }
+        Self {
+            t,
+            events: VecDeque::new(),
+        }
     }
     pub fn into_inner(self) -> T {
         self.t
@@ -36,6 +42,12 @@ impl<T: Transport> Session<T> {
                 Err(DeviceError::Timeout) => continue,
                 Err(e) => return Err(e),
             };
+            // Checked before the reply match: a 0xbe edge during a cmd 0x00 roundtrip carries
+            // cmd 0x80 too, and would otherwise be mistaken for the awaited reply.
+            if let Some(e) = wh_proto::event::adjust_event(&report) {
+                self.events.push_back(e);
+                continue;
+            }
             match parse(&report) {
                 // The device sets the high bit on the reply's cmd byte (see `REPLY_BIT`),
                 // never echoing the request's cmd byte unmodified.
@@ -70,6 +82,25 @@ impl<T: Transport> Session<T> {
         }
         Ok(out)
     }
+
+    /// One bounded listen for a device-initiated frame. Drains queued events first; a quiet
+    /// wire is `Ok(None)`, the normal idle case.
+    pub fn poll_event(&mut self, timeout: Duration) -> Result<Option<BoardEvent>, DeviceError> {
+        if let Some(e) = self.events.pop_front() {
+            return Ok(Some(e));
+        }
+        match self.t.recv(timeout) {
+            Ok(report) => Ok(Some(wh_proto::event::any_event(&report))),
+            Err(DeviceError::Timeout) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// What arrived uninvited while this session worked, drained: a caller reports each event
+    /// once, and a second call answers nothing.
+    pub fn pending_events(&mut self) -> std::collections::vec_deque::Drain<'_, BoardEvent> {
+        self.events.drain(..)
+    }
 }
 
 #[cfg(test)]
@@ -81,6 +112,106 @@ mod tests {
     /// real device sends it (`wh_proto::frame::REPLY_BIT`).
     fn reply_frame(cmd: u8, payload: &[u8]) -> [u8; 64] {
         wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
+    }
+
+    /// Builds a `ReplayTransport` directly from `Entry` values, via the same jsonl text
+    /// path `from_jsonl` already takes, so no new parsing surface is introduced.
+    fn replay_with(entries: Vec<crate::replay::Entry>) -> ReplayTransport {
+        let script = entries
+            .iter()
+            .map(|e| match e {
+                crate::replay::Entry::Out(b) => {
+                    format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(b))
+                }
+                crate::replay::Entry::In(b) => {
+                    format!("{{\"dir\":\"in\",\"hex\":\"{}\"}}", hex(b))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        ReplayTransport::from_jsonl(&script).unwrap()
+    }
+
+    /// The `0xbe` entering edge, byte for byte as the board sent it, built via the real
+    /// encoder rather than a hand-typed checksum.
+    fn be_entering() -> [u8; 64] {
+        wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x00]).unwrap()
+    }
+    fn be_leaving() -> [u8; 64] {
+        wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x01]).unwrap()
+    }
+
+    /// A `bd` poll reply, cmd 0x80, payload `00 bd 01 ff`.
+    fn bd_reply() -> [u8; 64] {
+        wh_proto::frame::frame(0x80, &[0x00, 0xbd, 0x01, 0xff]).unwrap()
+    }
+
+    /// A profile-read reply shaped `[status, sub-order, index, 0xff]` for profile index 0,
+    /// matching `wh_proto::cmds::read_profile`'s expected reply shape.
+    fn profile_reply_frame() -> [u8; 64] {
+        wh_proto::frame::frame(0x80, &[0x00, 0x70, 0x00, 0xff]).unwrap()
+    }
+
+    #[test]
+    fn poll_event_returns_a_scripted_edge_and_then_none_on_exhaustion() {
+        let mut s = Session::new(replay_with(vec![crate::replay::Entry::In(be_entering())]));
+        assert_eq!(
+            s.poll_event(Duration::from_millis(1)).unwrap(),
+            Some(BoardEvent::AdjustModeEntered)
+        );
+        assert_eq!(s.poll_event(Duration::from_millis(1)).unwrap(), None);
+    }
+
+    #[test]
+    fn poll_event_wraps_a_non_be_frame_as_unknown() {
+        let mut s = Session::new(replay_with(vec![crate::replay::Entry::In(bd_reply())]));
+        match s.poll_event(Duration::from_millis(1)).unwrap() {
+            Some(BoardEvent::Unknown(p)) => assert_eq!(p, vec![0x00, 0xbd, 0x01, 0xff]),
+            other => panic!("wanted Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_queues_an_edge_and_still_matches_its_reply() {
+        // Script: out request, in 0xbe edge, in real reply. The edge arrives mid-roundtrip.
+        let req = wh_proto::cmds::read_profile();
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_entering()),
+            crate::replay::Entry::In(profile_reply_frame()),
+        ]));
+        let payload = s.roundtrip(&req).unwrap();
+        assert_eq!(payload[..3], [0x00, 0x70, 0x00]);
+        let events: Vec<_> = s.pending_events().collect();
+        assert_eq!(events, vec![BoardEvent::AdjustModeEntered]);
+    }
+
+    #[test]
+    fn roundtrip_does_not_return_an_edge_as_a_cmd_zero_reply() {
+        // The hazard: a bd poll's reply match is cmd 0x80, which a 0xbe frame also carries.
+        // The edge must be queued and the real bd reply returned, not the edge as the reply.
+        // No poll_bd-style encoder exists in wh_proto::cmds, so hand-built via the real
+        // frame encoder rather than a checksum literal.
+        let req = wh_proto::frame::frame(0x00, &[0xbd, 0x01, 0xff, 0xff]).unwrap();
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_entering()),
+            crate::replay::Entry::In(bd_reply()),
+        ]));
+        let payload = s.roundtrip(&req).unwrap();
+        assert_eq!(payload[..2], [0x00, 0xbd]);
+        assert_eq!(
+            s.pending_events().collect::<Vec<_>>(),
+            vec![BoardEvent::AdjustModeEntered]
+        );
+    }
+
+    #[test]
+    fn pending_events_drains_once() {
+        let mut s = Session::new(replay_with(vec![crate::replay::Entry::In(be_leaving())]));
+        let _ = s.poll_event(Duration::from_millis(1)).unwrap();
+        // poll_event returned it; the queue holds nothing, and a second drain is empty.
+        assert_eq!(s.pending_events().count(), 0);
     }
 
     #[test]
