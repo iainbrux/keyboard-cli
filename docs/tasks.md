@@ -107,9 +107,10 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   shares `cmd 0x80` with an ordinary reply, so the routing has to be checked before the awaited
   reply's own match, not after, or the edge is read back as the reply it happens to resemble.
 
-  An edge arriving between two commands, not mid-roundtrip, is not a separate case: on real
-  hardware the frame sits in the OS buffer until the next roundtrip's read loop consumes it, so
-  it is the same mid-roundtrip path from the transport's own point of view. `ReplayTransport`'s
+  An edge arriving between two commands is expected to reach the next roundtrip's read loop, if
+  there is one, via the OS input buffer, which would make it the same mid-roundtrip path. That
+  buffering is expected, not measured: it is part of the pending hardware check below, and an edge
+  with no roundtrip after it is never seen, the limit `README.md` states. `ReplayTransport`'s
   positional scripts represent that by placing the `In` entry after the next `Out`, which is
   exactly what this task's fixtures do; splicing it any earlier hits the script's own loud
   mismatch rather than proving anything.
