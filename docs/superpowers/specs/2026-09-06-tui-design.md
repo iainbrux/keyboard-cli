@@ -33,9 +33,11 @@ colour system. The vendor body font is monospace, so the web layout is already t
 
 Frame, top to bottom:
 
-- ASCII logo block, then the banner line. The vendor's reads `WH_TERMINAL V1.0.0 - WALLHACK 2026`;
-  `wh tui`'s reads `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's choice, 2026-09-06),
-  the one deliberate departure from the vendor's chrome. Then
+- ASCII logo block, then the banner line. These are the two deliberate departures from the
+  vendor's chrome. The logo is the project's own ASCII art, not the vendor's mark: the Wallhack
+  logo is Wallhack's, and this project is independent and unendorsed. The vendor's banner reads
+  `WH_TERMINAL V1.0.0 - WALLHACK 2026`; `wh tui`'s reads
+  `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's choice, 2026-09-06). Then
   `NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS`.
 - Device line: connection mark, `WALLHACK K-001 - V<fw>`, and a `PROFILE < n >` stepper.
 - Tab row: ACTUATION POINT, RAPID TRIGGER, MAPPING, SWITCHES, ADVANCED. The selected tab renders

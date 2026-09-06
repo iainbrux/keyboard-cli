@@ -169,31 +169,21 @@ supports mouse as well as arrows; `crossterm` can capture mouse events, so that 
 to change many settings quickly was the worst place to discover a write bug, and that risk is now
 retired.
 
-**Populate on open, and listen for the board.** Reading the whole board costs about 40ms, measured:
-a nine-layout sweep of 68 keys ran in 28ms and 41ms in two captures. So the TUI reads once at
-startup and holds that model, which is exactly what the configurator does, and needs no polling and
-no cache-invalidation machinery. An earlier draft of this entry worried about staleness; the concern
-was misplaced, because the device is exclusive and nothing else can change the board while the TUI
-holds it.
+**Populate on open, and listen for the board: built.** This landed as the TUI foundation plan
+(`docs/tasks.md` 3.5, `docs/superpowers/plans/2026-09-06-tui-foundation.md`). Reading the whole
+board costs about 40ms, measured: a nine-layout sweep of 68 keys ran in 28ms and 41ms in two
+captures. `wh tui` reads once on open and holds that model rather than polling, exactly what the
+configurator does. `Session::poll_event` and `pending_events` (3.4) receive and queue the board's
+own unsolicited `0xbe` edges, so the TUI consumes events rather than adding transport machinery of
+its own: it shows the locked banner on `be 00`, re-reads the whole board on `be 01` (never stale on
+its own read-only path), notes an unrecognised event, and notes stale values if a re-read times out.
+Mouse support turned out to be load-bearing, not a nicety, exactly as this entry predicted: while
+the board is in adjust mode it stops being a keyboard, so mouse is the only input that still works,
+and the banner is the only way an operator learns why the keys stopped.
 
-Except the board itself, and the board says so. Sub-order `0xbe` arrives unsolicited when the
-operator uses the keyboard's own AP or RT keys, `be 00` on entering adjust mode and `be 01` on
-leaving, and the configurator re-reads everything on the second one and ignores the first
-(`docs/protocol.md`). A TUI does the same and is then never stale. The architectural addition this
-needed landed as 3.4: `Session::poll_event` and `pending_events` receive and queue unsolicited
-reports, so the TUI consumes events rather than adding transport machinery of its own.
-
-**Two design consequences fall out of one measured fact.** While the board is in adjust mode it
-stops being a keyboard, so a TUI driven from that keyboard becomes unnavigable at the same instant,
-through no fault of its own. Mouse support is therefore load-bearing rather than a nicety, since it
-is the only input that still works. And the TUI should render the locked state explicitly, a banner
-saying the board is being adjusted on the device, because the alternative is an interface that
-silently stops responding to the keys.
-
-**That banner is a deliberate improvement on the target, and the first one.** The vendor UI shows
-nothing at all for this state. Diverging in what is displayed is not the same as diverging in what
-is written: the goal of matching the configurator is about frames on the wire, and a banner sends
-none.
+What is still open is everything the foundation plan deliberately left out: the editing plan
+(steppers that write, the keyset gesture, the SOCD editor, profile switching, typed-yes
+confirmation modals, the one `auto: tui` backup) has not been written yet.
 
 ### A Windows installer with a licence acceptance step
 
