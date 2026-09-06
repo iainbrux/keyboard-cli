@@ -290,7 +290,7 @@ fn a_full_ansi_dk_board_needs_113_columns_for_its_widest_row() {
 fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
     for width in [50u16, 56, 57, 64, 71, 72, 80, 93, 94, 168, 169] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
-        let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = body_lines(&terminal);
 
@@ -319,13 +319,14 @@ fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
 }
 
 /// The same rule on the height axis, and with the locked banner competing for the same rows.
-/// 50x20 leaves the body four rows for two settings rows, the banner and a two-line refusal;
-/// 64x24 fits the refusal on one line but only just; 64x40 has room to spare. At all three the
-/// banner must be whole (it is a sentence too, and half of one is worse than none) and the
-/// refusal must be whole, neither run into the footer nor overwritten by the other.
+/// The chrome above the body is 26 rows, so 50x31 leaves the body four rows for two settings
+/// rows, the banner and a two-line refusal; 64x35 fits the refusal on one line but only just;
+/// 64x51 has room to spare. At all three the banner must be whole (it is a sentence too, and
+/// half of one is worse than none) and the refusal must be whole, neither run into the footer
+/// nor overwritten by the other.
 #[test]
 fn a_locked_board_shows_both_the_banner_and_the_whole_refusal_at_every_height() {
-    for (width, height) in [(50u16, 20u16), (64, 24), (64, 40)] {
+    for (width, height) in [(50u16, 31u16), (64, 35), (64, 51)] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
         app.locked = true;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

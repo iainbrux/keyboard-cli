@@ -27,7 +27,7 @@ fn new_app() -> App {
 }
 
 fn new_terminal() -> Terminal<TestBackend> {
-    Terminal::new(TestBackend::new(160, 40)).unwrap()
+    Terminal::new(TestBackend::new(160, 50)).unwrap()
 }
 
 #[test]
@@ -36,9 +36,12 @@ fn the_logo_and_nav_line_render_whole_and_exact() {
     let mut terminal = new_terminal();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
-    assert_eq!(lines[0], "00     00  00   00", "logo first line: {lines:?}");
     assert_eq!(
-        lines[9], "NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS",
+        lines[0], "00000000000000000000000",
+        "logo first line: {lines:?}"
+    );
+    assert_eq!(
+        lines[20], "NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS",
         "nav line: {lines:?}"
     );
 }
@@ -50,7 +53,7 @@ fn the_tab_row_renders_all_five_titles_and_marks_the_selected_one() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert_eq!(
-        lines[14], "[ACTUATION POINT]  RAPID TRIGGER  MAPPING  SWITCHES  ADVANCED",
+        lines[25], "[ACTUATION POINT]  RAPID TRIGGER  MAPPING  SWITCHES  ADVANCED",
         "tab row: {lines:?}"
     );
 }
@@ -102,7 +105,7 @@ fn clicking_a_tab_title_selects_it() {
     // out from under the visible text is still caught.
     let tab_row = "[ACTUATION POINT]  RAPID TRIGGER  MAPPING  SWITCHES  ADVANCED";
     let col = tab_row.find("MAPPING").unwrap() as u16 + 1;
-    let row = 14u16;
+    let row = 25u16;
 
     assert_eq!(app.tab, Tab::ActuationPoint);
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), col, row);
@@ -116,7 +119,7 @@ fn the_footer_renders_help_language_and_support() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert_eq!(
-        lines[39], "HELP  EN JA CH  SUPPORT@WALLHACK.COM",
+        lines[49], "HELP  EN JA CH  SUPPORT@WALLHACK.COM",
         "footer line: {lines:?}"
     );
 }

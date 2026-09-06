@@ -117,7 +117,7 @@ fn a_be00_edge_raises_the_locked_banner_and_be01_rereads_and_lowers_it() {
     assert!(changed2, "the entering edge must report a change");
     assert!(app.locked, "the entering edge must lock the board");
 
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rendered = buffer_lines(&terminal);
     assert!(
@@ -223,7 +223,7 @@ fn the_leaving_edge_draws_a_re_reading_frame_before_the_read_sends_anything() {
 
     // A `RefCell` so the frames can be read between the two ticks while the callback that fills
     // them is still alive.
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     let frames: std::cell::RefCell<Vec<(usize, Vec<String>)>> = std::cell::RefCell::new(Vec::new());
     let mut redraw = |a: &mut App| {
         let sends_so_far = sends.get();
@@ -290,7 +290,7 @@ fn an_unknown_event_lands_in_the_status_line_and_does_not_lock() {
     assert!(!app.locked, "an unknown event must not lock the board");
     assert_eq!(app.status.as_deref(), Some(STATUS_UNKNOWN_EVENT));
 
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rendered = buffer_lines(&terminal);
     assert!(

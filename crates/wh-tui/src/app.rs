@@ -30,14 +30,27 @@ pub const ADVANCED_GENERAL_STUB: &str = "> EDITING THESE ARRIVES WITH THE TUI'S 
 pub const ADVANCED_GAMEPAD_STUB: &str = "> GAMEPAD SETTINGS ARE NOT BUILT IN WH YET";
 pub const ADVANCED_SHARE_STUB: &str = "> PROFILE SHARING IS NOT BUILT IN WH YET";
 
-/// The project's own mark, not the vendor's: Wallhack's logo is Wallhack's.
+/// Wallhack's own mark, used with Wallhack's permission (held by the operator, stated 2026-09-06),
+/// extracted verbatim from the vendor bundle's own render (`research/vendor-bundle/2026-09-05/
+/// assets/index-DWlSnOsR.js`), not redrawn.
 pub const LOGO: &[&str] = &[
-    "00     00  00   00",
-    "00  0  00  00   00",
-    "00 000 00  0000000",
-    "0000 0000  00   00",
-    " 000 000   00   00",
-    "  00 00    00   00",
+    "00000000000000000000000",
+    "0000000000000000000000000",
+    "000000000000000000000000000",
+    "00000000000000000000000000000",
+    "000000               0000000000",
+    "000000   000000000     00000000",
+    "000000   00000000000     000000",
+    "000000     00000000000     0000",
+    "00000000     00000000000     00",
+    " 000000000     00000000000",
+    "   000000000     00000000000",
+    "     000000000     00000000000",
+    "00     000000000     0000000000",
+    "0000     000000000     00000000",
+    "000000     000000000     000000",
+    "00000000     000000000     0000",
+    " 000000000     00000000      00",
 ];
 
 /// The footer's fixed text, last row of the frame: help, language, then support contact, each
@@ -399,8 +412,9 @@ fn render_stub(f: &mut Frame, area: Rect, ry: &mut u16, text: &str) {
 /// Renders the body's full-width message lines (see `draw`), starting at `note_row`, where the
 /// tab's own prompt or stub would otherwise sit, and running down from there. When the block
 /// will not fit before the body ends it is pushed up over the rows above instead of being cut
-/// off at the footer: a settings row hidden on a twenty-row terminal costs the operator less
-/// than half a sentence, and half a sentence is what a bottom-clipped block leaves.
+/// off at the footer: a settings row hidden on a thirty-one-row terminal (the chrome above the
+/// body is 26 rows, plus the footer's own row) costs the operator less than half a sentence, and
+/// half a sentence is what a bottom-clipped block leaves.
 ///
 /// Every line is padded to `width` by hand rather than rendered through `Line::raw`: a widget
 /// writes only as many cells as its text holds, so a shorter line would leave whatever it covers
@@ -657,7 +671,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         app.status.as_deref()
     };
-    // The banner is a sentence too, and it is 97 columns long: on a narrow terminal it wraps
+    // The banner is a sentence too, and it is 96 columns long: on a narrow terminal it wraps
     // rather than being cut off mid-clause, the same as the refusal below it.
     if let Some(text) = note {
         message.extend(wrap_stub(text, area.width));
@@ -697,7 +711,7 @@ mod tests {
     #[test]
     fn the_banner_line_renders_whole_and_exact() {
         let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = buffer_lines(&terminal);
         assert!(
@@ -711,7 +725,7 @@ mod tests {
     #[test]
     fn the_device_line_renders_the_firmware_from_the_board_model() {
         let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = buffer_lines(&terminal);
         assert!(
@@ -723,7 +737,7 @@ mod tests {
     #[test]
     fn the_profile_line_renders_the_one_based_profile_number() {
         let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = buffer_lines(&terminal);
         assert!(
@@ -750,7 +764,7 @@ mod tests {
     #[test]
     fn the_matrix_shows_each_keys_actuation_point_on_the_actuation_point_tab() {
         let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
 
         let w_rect = app
@@ -771,7 +785,7 @@ mod tests {
     fn the_matrix_shows_rt_press_only_for_keys_in_an_rt_keyset_on_the_rapid_trigger_tab() {
         let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
         app.tab = Tab::RapidTrigger;
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
 
         let lines = buffer_lines(&terminal);
@@ -798,6 +812,21 @@ mod tests {
             "│     │",
             "s is in an rt keyset but its rapid trigger is off, so it has no sensitivity to \
              show: {lines:?}"
+        );
+    }
+
+    /// Pins the vendor mark's own first and last row, whole-line, plus the row count: a partial
+    /// paste or a dropped row (top or bottom) fails this before it fails anything downstream.
+    #[test]
+    fn logo_pins_first_and_last_row_and_row_count() {
+        assert_eq!(LOGO.len(), 17, "the vendor mark is 17 rows: {LOGO:?}");
+        assert_eq!(
+            LOGO[0], "00000000000000000000000",
+            "the mark's first row: {LOGO:?}"
+        );
+        assert_eq!(
+            LOGO[16], " 000000000     00000000      00",
+            "the mark's last row: {LOGO:?}"
         );
     }
 

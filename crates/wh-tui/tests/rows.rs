@@ -109,7 +109,7 @@ fn ap_keyset_board() -> BoardModel {
 #[test]
 fn the_ap_tab_body_renders_global_custom_value_and_keyset_rows() {
     let mut app = App::new(ap_keyset_board(), "0.5.0-alpha");
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
@@ -157,7 +157,7 @@ fn rt_sub_rows_render_dim_while_global_rt_is_off() {
     // neither is rapid-trigger-enabled: global rapid trigger reads off.
     let mut app = App::new(two_key_board(), "0.5.0-alpha");
     app.tab = Tab::RapidTrigger;
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
 
     let buf = terminal.backend().buffer().clone();
@@ -236,7 +236,7 @@ fn outside_key(usage: u8, mode: u16, press: u16) -> KeySettings {
 fn rt_lines(keys: Vec<KeySettings>) -> Vec<String> {
     let mut app = App::new(rt_board(keys), "0.5.0-alpha");
     app.tab = Tab::RapidTrigger;
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     buffer_lines(&terminal)
 }
@@ -353,7 +353,7 @@ fn reset_keysets_span(lines: &[String]) -> (u16, std::ops::Range<u16>) {
 fn reset_keysets_is_dim_when_the_tabs_keyset_list_is_empty() {
     // `two_key_board`'s keys both carry `ap_keyset: 0`: no AP keyset exists.
     let mut app = App::new(two_key_board(), "0.5.0-alpha");
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
 
     let buf = terminal.backend().buffer().clone();
@@ -372,7 +372,7 @@ fn reset_keysets_is_dim_when_the_tabs_keyset_list_is_empty() {
 fn reset_keysets_is_not_dim_when_the_tab_has_a_keyset() {
     // `ap_keyset_board` puts 'w' and 'a' in AP keyset 1: one keyset exists.
     let mut app = App::new(ap_keyset_board(), "0.5.0-alpha");
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
 
     let buf = terminal.backend().buffer().clone();

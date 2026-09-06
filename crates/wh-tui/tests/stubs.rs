@@ -33,7 +33,7 @@ fn new_app() -> App {
 }
 
 fn new_terminal() -> Terminal<TestBackend> {
-    Terminal::new(TestBackend::new(160, 40)).unwrap()
+    Terminal::new(TestBackend::new(160, 50)).unwrap()
 }
 
 /// `left_width` is `area.width.min(56)` in `app::draw`, 56 here since the terminal is 160 wide.
@@ -325,10 +325,10 @@ fn clicking_an_advanced_sub_tab_selects_it() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
-    // The sub-tab row sits one line below the main tab row (y=14, see chrome.rs), at y=15.
+    // The sub-tab row sits one line below the main tab row (y=25, see chrome.rs), at y=26.
     // Find DEVICE's column in that literal rather than reading it back from app.advanced_rects,
     // so a rect moved out from under the visible text is still caught.
-    let sub_tab_row_y = 15u16;
+    let sub_tab_row_y = 26u16;
     let sub_tab_line = &lines[sub_tab_row_y as usize];
     assert_eq!(
         sub_tab_line, "[GENERAL]  GAMEPAD  DEVICE  SHARE",
@@ -441,7 +441,7 @@ fn a_locked_board_freezes_the_advanced_sub_tabs_but_not_quit_or_tab_navigation()
 
     // The sub-tab row still renders while locked, and its rects are still recorded; the click is
     // refused by the guard, not by there being nothing to hit.
-    let sub_tab_row_y = 15u16;
+    let sub_tab_row_y = 26u16;
     let sub_tab_line = &lines[sub_tab_row_y as usize];
     assert_eq!(
         sub_tab_line, "GENERAL  [GAMEPAD]  DEVICE  SHARE",
@@ -462,9 +462,9 @@ fn a_locked_board_freezes_the_advanced_sub_tabs_but_not_quit_or_tab_navigation()
         Tab::Switches,
         "Left must still move the top-level tab while locked"
     );
-    let tab_row = &lines[14];
+    let tab_row = &lines[25];
     let mapping_col = tab_row.find("MAPPING").unwrap() as u16;
-    app.handle_mouse(MouseEventKind::Down(MouseButton::Left), mapping_col, 14);
+    app.handle_mouse(MouseEventKind::Down(MouseButton::Left), mapping_col, 25);
     assert_eq!(
         app.tab,
         Tab::Mapping,
@@ -478,7 +478,7 @@ fn a_locked_board_freezes_the_advanced_sub_tabs_but_not_quit_or_tab_navigation()
 /// The dim state of that inert row, both ways.
 #[test]
 fn the_advanced_sub_tab_row_dims_while_locked() {
-    let row_y = 15u16;
+    let row_y = 26u16;
     let row_width = "GENERAL  [GAMEPAD]  DEVICE  SHARE".chars().count() as u16;
 
     let mut app = new_app();
