@@ -51,9 +51,10 @@ above.
 without the host involved, and while that is happening the board stops being a keyboard at all: it
 will not type until the key is pressed again. It announces both edges with an unsolicited `cmd 0x00`
 sub-order `0xbe`, `be 00` entering and `be 01` leaving, and the vendor configurator ignores the
-first and re-reads the whole board on the second. Measured, see `docs/protocol.md`. `Transport` is
-strictly request-then-response today and cannot receive it, which is the one real blocker for any
-long-running interface.
+first and re-reads the whole board on the second. Measured, see `docs/protocol.md`. As of 3.4,
+`Session` queues these edges instead of discarding them (`poll_event`/`pending_events`), and the
+lock is measured input-only: reads and writes both work mid-lock, so hearing the edges is the only
+detection there is.
 
 **The board has four profiles and every per-key layout is per profile.** `cmd 0x00` payload
 `70 0xFF` reads the active profile; `70 <index>` selects one. A snapshot belongs to the profile it
@@ -161,6 +162,24 @@ Practical consequences:
 - Pin a decoder against something known-good before trusting its output.
 - If a brief contradicts what you measure, trust the measurement and say so.
 
+## The review loop is lockstep, and this rule cannot be bypassed
+
+Every task's diff gets an adversarial review, and **every fix round returns to the reviewer that
+raised the findings, until that reviewer returns an explicit approve**. The loop ends when neither
+side has anything further to raise, and nowhere earlier. Ordered by the operator on 2026-09-06 and
+not subject to judgement calls:
+
+- A fix round closed on the implementer's report alone is not closed.
+- A controller spot-check (re-running one mutation, reading the diff) supplements the confirming
+  pass and never substitutes for it. The reviewer that found a gap holds context about its subtler
+  variant; a spot-check re-runs only the obvious one.
+- This applies regardless of how small or mechanical the fix appears. The rule exists because the
+  drift happened exactly there: coverage-gap fixes that looked too simple to send back, closed
+  without the reviewer's confirmation, on the same branch where a reviewer's second look had been
+  finding real defects in every round.
+- Findings the controller fixes directly get the same confirming pass as findings an implementer
+  fixes.
+
 ## Test discipline
 
 A test that passes for the wrong reason is worse than no test. Establish that each test **fails when
@@ -226,7 +245,13 @@ key", and comparing only the value a command owns will miss a MODE change the sa
 Plan and spec files under `docs/superpowers/` are dated records of what was planned, not living
 documents: a signature or example in one may no longer compile, and that is expected. Correct a
 stale statement where code reads it (comments, README, `docs/*.md`); leave plan files as the record
-of what was decided at the time.
+of what was decided at the time. The one exception is a plan still being executed: its task briefs
+are extracted from it, so a wrong byte in it flows into the next task, and it is corrected like any
+live document while its branch is unmerged. The state is merge status and nothing else: a plan on
+`main` is closed, a plan on an unmerged branch is live, no third case exists. The execution note
+appended before merge ("Executed: <date>") records when execution finished and claims nothing
+about the merge, which git states by itself; a plan on `main` missing one gets it as an ordinary
+docs fix.
 
 `captures/` holds real device traffic and is **gitignored**. It is the operator's own data. The
 golden test (`cargo test -p wh-proto --test golden`) decodes every frame in it; a missing directory

@@ -83,7 +83,7 @@ mod tests {
     fn adjust_event_ignores_an_ordinary_reply() {
         // A bd poll reply, the commonest frame on the wire: cmd 0x80, payload 00 bd 01 ff.
         let mut f = [0u8; 64];
-        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x53, 0x00, 0xbd, 0x01, 0xff]);
+        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x14, 0x00, 0xbd, 0x01, 0xff]);
         assert_eq!(adjust_event(&f), None);
     }
 
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn any_event_wraps_a_non_be_frame_as_unknown_with_its_payload() {
         let mut f = [0u8; 64];
-        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x53, 0x00, 0xbd, 0x01, 0xff]);
+        f[..8].copy_from_slice(&[0x5c, 0x04, 0x80, 0x14, 0x00, 0xbd, 0x01, 0xff]);
         assert_eq!(any_event(&f), BoardEvent::Unknown(vec![0x00, 0xbd, 0x01, 0xff]));
     }
 
@@ -261,8 +261,8 @@ fn roundtrip_does_not_return_an_edge_as_a_cmd_zero_reply() {
     // The hazard: a bd poll's reply match is cmd 0x80, which a 0xbe frame also carries. The
     // edge must be queued and the real bd reply returned, not the edge returned as the reply.
     let req = wh_proto::cmds::poll_bd(); // whatever encoder sends payload bd 01 ff ff; if none
-                                         // exists, hand-build the request frame as the captures
-                                         // show it: 5c 04 00 53 bd 01 ff ff zero-padded.
+                                         // exists, hand-build the request through
+                                         // wh_proto::frame::frame(), never a hand-typed checksum.
     let mut s = Session::new(replay_with(vec![
         Entry::Out(req),
         Entry::In(be_entering()),
@@ -478,3 +478,7 @@ existing "board can change under you" material describing the note and what it m
 git add crates/wh-cli/src/run.rs crates/wh-cli/tests/dump.rs docs/tasks.md README.md
 git commit -m "[feat] - Report the board's adjust-mode edges after every command, once per kind"
 ```
+
+---
+
+Executed: 2026-09-06

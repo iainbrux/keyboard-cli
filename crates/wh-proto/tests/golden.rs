@@ -503,6 +503,97 @@ fn all_captures_decode_and_classify() {
     assert_no_hard_failures(&summary);
 }
 
+/// The measured sweep behind 3.4's queueing change: every inbound `captures/` frame is offered
+/// to `adjust_event`; its fires must equal exactly the frames with `cmd == REPLY_BIT` and payload
+/// `00 be 00|01`, never an outbound frame. Catches under-firing only: the corpus has no widening
+/// counterexample (no other-cmd `00 be`, no third byte past `00`/`01`), so the unit tests alone
+/// cover that direction.
+#[test]
+fn adjust_event_fires_exactly_on_the_measured_edges_and_never_outbound() {
+    let captures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");
+    let Ok(entries) = fs::read_dir(&captures_dir) else {
+        eprintln!("no captures/ yet, skipping");
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+
+    let mut inbound_checked = 0usize;
+    let mut inbound_fires = 0usize;
+    let mut expected_edges = 0usize;
+    let mut outbound_fires = 0usize;
+
+    for path in paths {
+        if path.extension().is_none_or(|e| e != "jsonl") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(hexs) = v["hex"].as_str() else {
+                continue;
+            };
+            let Ok(bytes) = decode_hex_bytes(hexs) else {
+                continue;
+            };
+            if bytes.len() != REPORT_LEN {
+                continue;
+            }
+            let report: [u8; REPORT_LEN] = bytes.try_into().expect("length checked above");
+            let dir = v["dir"].as_str().unwrap_or("?");
+            let fires = wh_proto::event::adjust_event(&report).is_some();
+
+            if dir.starts_with("out") {
+                if fires {
+                    outbound_fires += 1;
+                }
+                continue;
+            }
+            if !dir.starts_with("in") {
+                continue;
+            }
+            inbound_checked += 1;
+            if fires {
+                inbound_fires += 1;
+            }
+            if let Ok(reply) = frame::parse(&report) {
+                if reply.cmd == frame::REPLY_BIT
+                    && matches!(
+                        reply.payload,
+                        [0x00, 0xbe, 0x00, ..] | [0x00, 0xbe, 0x01, ..]
+                    )
+                {
+                    expected_edges += 1;
+                }
+            }
+        }
+    }
+
+    if inbound_checked == 0 {
+        eprintln!("no captures/ yet, skipping");
+        return;
+    }
+    eprintln!(
+        "golden: adjust_event sweep: {inbound_fires} fire(s) across {inbound_checked} inbound \
+         frame(s)"
+    );
+    assert_eq!(
+        inbound_fires, expected_edges,
+        "adjust_event's fires must equal exactly the frames whose payload starts 00 be 00|01"
+    );
+    assert_eq!(
+        outbound_fires, 0,
+        "adjust_event must never fire on an outbound frame"
+    );
+}
+
 #[cfg(test)]
 mod classifier_tests {
     use super::*;

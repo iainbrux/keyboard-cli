@@ -179,9 +179,9 @@ holds it.
 Except the board itself, and the board says so. Sub-order `0xbe` arrives unsolicited when the
 operator uses the keyboard's own AP or RT keys, `be 00` on entering adjust mode and `be 01` on
 leaving, and the configurator re-reads everything on the second one and ignores the first
-(`docs/protocol.md`). A TUI does the same and is then never stale. This does mean `Transport` needs
-a way to receive an unsolicited report, which is the one genuine architectural addition here: it is
-strictly request-then-response today.
+(`docs/protocol.md`). A TUI does the same and is then never stale. The architectural addition this
+needed landed as 3.4: `Session::poll_event` and `pending_events` receive and queue unsolicited
+reports, so the TUI consumes events rather than adding transport machinery of its own.
 
 **Two design consequences fall out of one measured fact.** While the board is in adjust mode it
 stops being a keyboard, so a TUI driven from that keyboard becomes unnavigable at the same instant,

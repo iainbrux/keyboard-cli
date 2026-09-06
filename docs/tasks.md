@@ -96,20 +96,59 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   pairing, since discovery only queries flagged keys, and priority `3` and `4` are refused by
   their own decode error rather than silently read as last-input.
 
-- [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
-  architectural blocker for any long-running interface. The board announces entering and leaving
-  its own adjust mode with `cmd 0x00` sub-order `0xbe` (`be 00` entering, `be 01` leaving), and
-  while adjusting it stops being a keyboard entirely. The vendor configurator ignores the first
-  and re-reads the whole board on the second. `Transport` is strictly request-then-response and
-  cannot receive it. This lands before the TUI so the TUI's read loop is written once against the
-  final transport, and it is what makes both vendor-matching re-reads and the locked-board banner
-  (which the vendor UI lacks, and the operator wants) possible.
+- [x] ~~**3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.**~~ `Session`
+  now queues an edge that arrives during any roundtrip rather than losing it: a roundtrip parses
+  every `cmd 0x00` sub-order `0xbe` reply-shaped frame (`be_event`, wider than the strict
+  `adjust_event`) and queues it, since sub-order `0xbe` appears in no request in the corpus, so
+  every such frame is certainly unsolicited regardless of its third byte. The two measured edges
+  queue as themselves; an unmeasured third byte queues as `Unknown` rather than falling through to
+  the reply match and killing the command outright, the failure this widening closed. `any_event`
+  (used by `poll_event`) is unchanged and still wraps anything at all, `be`-shaped or not.
+  `poll_event`/`pending_events` surface the queue; `pending_events` hands back an owned `Vec`, not
+  a lazy `Drain`, since a short-circuiting read (`.any(...)`, a natural TUI idiom) over a `Drain`
+  silently discards whatever it never yielded.
+
+  Every one-shot command drains the queue after its own work, success or failure, and prints one
+  stderr note per kind seen (never `Unknown`, which is `poll_event`'s own concern for 3.5), worded
+  exactly and never duplicated on stdout. The notes print in the order of each kind's own latest
+  arrival, not a fixed entered-then-left order: on wire order `be 01` then `be 00`, printing
+  entered before left would leave the final line claiming the board is still adjusting when it is
+  not. A mid-roundtrip mismatch was found and fixed on the way here: an edge shares `cmd 0x80`
+  with an ordinary reply, so the routing has to be checked before the awaited reply's own match,
+  not after, or the edge is read back as the reply it happens to resemble.
+
+  An edge arriving between two commands was expected to reach the next command via the OS input
+  buffer. **Measured 2026-09-06: it does not.** Both edges were emitted and concluded with no
+  command running, and the next command (`wh dump`, live hardware) printed no note. The likely
+  mechanism, an inference and labelled as one: each command opens the device fresh, and HID input
+  reports are delivered per open handle, so a frame sent while no handle exists is never delivered.
+  Within one open session the buffering is real, which is what the mid-roundtrip fixtures and the
+  listener probe exercise. An edge with no read after it inside a session is never seen either, the
+  limit `README.md` states. `ReplayTransport`'s positional scripts represent that by placing the `In` entry after the next
+  `Out`, which is exactly what this task's fixtures do; splicing it any earlier hits the script's loud
+  mismatch rather than proving anything.
+
+  The hardware check ran on 2026-09-06, all three items measured on the real board:
+  - Both edges arrived through `poll_event` over a real HID read (`AdjustModeEntered` at 4.98s,
+    `AdjustModeLeft` at 10.87s of a 60s listen, a throwaway probe binary since deleted).
+  - The timeout path held: the other ~54s of that listen were quiet `recv` timeouts handled as
+    `Ok(None)` with no error and no spurious frames, so `hid.rs`'s zero-byte mapping behaves on
+    hardware as the build assumes.
+  - Between-commands buffering: measured no, see above.
+  **[hardware]**
 
 - [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,
   arrow-navigable, values populated by reading the board on open (a full read costs ~40ms, so no
   cache), re-reading on `be 01`, and showing a locked-board banner between `be 00` and `be 01`.
   `ratatui` and `crossterm` are already dependencies and `wh keys --pick` is the working seed.
   Spec to be written when this task opens; it consumes 3.1, 3.3 and 3.4.
+
+  `poll_event` against a replay script whose cursor sits on an `Out` entry is a loud
+  `DeviceError::Replay`, not a quiet `Ok(None)`: `ReplayTransport::recv` refuses when the script
+  expects a send next, and `poll_event` propagates that rather than treating it as a timeout. The
+  TUI's poll-then-read event loop cannot be scripted against `WH_REPLAY` as it stands; 3.5 must
+  solve that scripting question (a wait/gap script entry, or an equivalent) before its own event
+  loop is testable the way every other command in this repo is.
 
 - [ ] **3.6 Key remapping, base layer and FN layer.** Layouts `0x00` and `0x01`, both measured
   (`remap-one-key`, `initial-load`, and the FN-layer table in `docs/protocol-inventory.md`). `wh`

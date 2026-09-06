@@ -48,6 +48,9 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 /// silently opens the real keyboard instead. This line is the backstop that makes a run
 /// quietly hitting real hardware never silent, regardless of what carries the variable.
 /// Kept off stdout so `dump`'s parseable JSON output stays clean.
+///
+/// After `f` returns, drains whatever adjust-mode edges arrived during its work and reports each
+/// kind once on stderr, regardless of whether `f` succeeded: see the drain below `f`'s own call.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
@@ -72,7 +75,45 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
             }
         };
     let mut s = Session::new(t);
-    f(&mut s)
+    let result = f(&mut s);
+    // Drained and reported regardless of `f`'s own result: a note about the board's own edges
+    // is as true of a run that failed as one that succeeded, so the drain must not sit behind
+    // an early return.
+    let mut entered_at: Option<usize> = None;
+    let mut left_at: Option<usize> = None;
+    for (i, e) in s.pending_events().into_iter().enumerate() {
+        match e {
+            wh_proto::event::BoardEvent::AdjustModeEntered => entered_at = Some(i),
+            wh_proto::event::BoardEvent::AdjustModeLeft => left_at = Some(i),
+            // `roundtrip` routes on `be_event`, which queues an unmeasured `00 be` third byte
+            // here too. A one-shot command still reports nothing for it: `poll_event`'s own
+            // consumers own reporting `Unknown`, not this drain, for 3.5.
+            wh_proto::event::BoardEvent::Unknown(_) => {}
+        }
+    }
+    // One note per kind, ordered by each kind's own latest arrival rather than a fixed
+    // entered-then-left order: with wire order `left` then `entered`, printing entered first
+    // would leave the final line claiming the board is still adjusting when it is not.
+    let mut notes: Vec<(usize, &str)> = Vec::new();
+    if let Some(i) = entered_at {
+        notes.push((
+            i,
+            "note: the board entered its own adjust mode during this command; settings may have \
+             changed underneath it",
+        ));
+    }
+    if let Some(i) = left_at {
+        notes.push((
+            i,
+            "note: the board left its own adjust mode during this command; settings may have \
+             changed underneath it",
+        ));
+    }
+    notes.sort_by_key(|&(i, _)| i);
+    for (_, msg) in notes {
+        best_effort_eprintln(msg);
+    }
+    result
 }
 
 /// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
