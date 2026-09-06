@@ -370,6 +370,12 @@ fn render_tab_like_row<T: Copy>(
 /// 62 is that minimum with no gap at all. 64 leaves a two-column gap, visible but not wasteful.
 const LEFT_WIDTH: u16 = 64;
 
+/// Columns of breathing room between the left pane and the keyboard, the operator's own request
+/// (2026-09-06): the matrix used to start immediately after the left pane's text. Everything
+/// placed relative to the matrix (the prompt row, the too-narrow refusal's own figure, the hit-test
+/// rects) shifts with it, since they all key off `matrix_area`'s own `x`.
+const MATRIX_GUTTER: u16 = 2;
+
 /// Word-wraps `text` to fit `width` columns, greedy, breaking only at spaces. A stub renders on
 /// one row of the tab row now (see `draw`) and never needs this; the locked banner and the
 /// too-narrow refusal, both rendered at the frame's own width, still can.
@@ -491,10 +497,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         area.width
     };
+    let matrix_x = left_width.saturating_add(MATRIX_GUTTER);
     let matrix_area = Rect::new(
-        left_width,
+        matrix_x,
         body_y,
-        area.width.saturating_sub(left_width),
+        area.width.saturating_sub(matrix_x),
         body_height,
     );
     // Read once, used both to size the prompt row below and to decide whether the matrix itself
@@ -597,11 +604,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.prompt_action_rect = None;
     if show_matrix && !app.locked {
         let right_width = if matrix_needed > 0 {
-            matrix_needed.min(area.width.saturating_sub(left_width))
+            matrix_needed.min(area.width.saturating_sub(matrix_x))
         } else {
-            area.width.saturating_sub(left_width)
+            area.width.saturating_sub(matrix_x)
         };
-        let right_area = Rect::new(left_width, tab_row_y, right_width, 1);
+        let right_area = Rect::new(matrix_x, tab_row_y, right_width, 1);
         match app.tab {
             Tab::ActuationPoint | Tab::RapidTrigger => {
                 let keysets_empty = match app.tab {
@@ -683,7 +690,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 &mut key_rects,
             );
         } else if matrix_needed > 0 {
-            refusal = Some(too_narrow_text(LEFT_WIDTH.saturating_add(matrix_needed)));
+            refusal = Some(too_narrow_text(
+                LEFT_WIDTH
+                    .saturating_add(MATRIX_GUTTER)
+                    .saturating_add(matrix_needed),
+            ));
         }
     }
     app.key_rects = key_rects;

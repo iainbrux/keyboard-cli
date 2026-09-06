@@ -82,12 +82,13 @@ fn mapping_renders_its_subtab_labels_and_the_stub_line() {
     );
 
     // MAPPING_STUB now shares the tab row (y=25) with the tab titles, past the 64-column left
-    // pane: asserted by its exact starting column, not just that it appears somewhere on the row.
+    // pane and its own 2-column gutter: asserted by its exact starting column, not just that it
+    // appears somewhere on the row.
     let tab_row = &lines[25];
     assert_eq!(
-        &tab_row[64..],
+        &tab_row[66..],
         MAPPING_STUB,
-        "the mapping stub must start at column 64, right after the left pane: {lines:?}"
+        "the mapping stub must start at column 66, past the left pane and its gutter: {lines:?}"
     );
 }
 
@@ -116,13 +117,14 @@ fn switches_renders_rows_and_the_stub_line() {
     // Guards against a blanked constant matching a blank padded row by coincidence: a wiped
     // `SWITCHES_STUB` renders no line at all, which `.any(|l| l == "")` would otherwise accept.
     assert!(!SWITCHES_STUB.is_empty(), "SWITCHES_STUB must not be blank");
-    // SWITCHES_STUB shares the tab row (y=25) with the tab titles: asserted by its exact starting
-    // column, not just that it appears somewhere on the row.
+    // SWITCHES_STUB shares the tab row (y=25) with the tab titles, past the left pane and its
+    // gutter: asserted by its exact starting column, not just that it appears somewhere on the
+    // row.
     let tab_row = &lines[25];
     assert_eq!(
-        &tab_row[64..],
+        &tab_row[66..],
         SWITCHES_STUB,
-        "the switches stub must start at column 64, right after the left pane: {lines:?}"
+        "the switches stub must start at column 66, past the left pane and its gutter: {lines:?}"
     );
 }
 
@@ -270,12 +272,13 @@ fn advanced_general_rows_render_with_stub_markers_where_unbuilt() {
         "ADVANCED_GENERAL_STUB must not be blank"
     );
     // GENERAL shows the matrix, so its stub shares the tab row (y=25), not the sub-tab row below
-    // it: asserted by its exact starting column, not just that it appears somewhere on the row.
+    // it, past the left pane and its own gutter: asserted by its exact starting column, not just
+    // that it appears somewhere on the row.
     let tab_row = &lines[25];
     assert_eq!(
-        &tab_row[64..],
+        &tab_row[66..],
         ADVANCED_GENERAL_STUB,
-        "the advanced general stub must start at column 64, right after the left pane: {lines:?}"
+        "the advanced general stub must start at column 66, past the left pane and its gutter: {lines:?}"
     );
 }
 

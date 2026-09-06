@@ -97,7 +97,8 @@ fn row_widths(usages: &[u8]) -> Vec<u16> {
 /// Columns the widest of `rows` needs, before `render_matrix` draws anything. A full ANSI-DK
 /// 68-key board's widest row needs 112 (every row sums to the same 16.0 `cap_units` total,
 /// measured against `research/vendor-bundle/2026-09-05/screenshots/`), so with the 64-column
-/// left pane beside it the whole frame wants 176; the refusal states the figure for the rows read.
+/// left pane and its own 2-column gutter beside it the whole frame wants 178; the refusal states
+/// the figure for the rows read.
 pub fn needed_width(rows: &[DefKeyRow]) -> u16 {
     rows.iter()
         .map(|row| {
@@ -149,11 +150,13 @@ pub fn render_matrix(
     }
 
     let mut y = area.y;
+    let mut prev_row_rects: Option<Vec<Rect>> = None;
     for caps in &row_caps {
         if y.saturating_add(CAP_HEIGHT) > area.y + area.height {
             break;
         }
         let mut x = area.x;
+        let mut row_rects: Vec<Rect> = Vec::with_capacity(caps.len());
         for &(usage, width) in caps {
             if width == 0 || x + width > area.x + area.width {
                 break;
@@ -186,11 +189,95 @@ pub fn render_matrix(
             // first-match search resolves a shared row to the cap above with no shrinking
             // needed, the vendor's own hit-test convention.
             rects.push((rect, usage));
+            row_rects.push(rect);
             x += width;
         }
+        // The row below's own top border just overwrote the row above's own bottom border,
+        // wholesale, on the very same physical line: `merge_shared_border` reconciles the two
+        // rows' own boundaries there so the join is one continuous rule, not whichever row
+        // happened to be drawn last.
+        if let Some(prev) = &prev_row_rects {
+            merge_shared_border(buf, prev, &row_rects, y);
+        }
+        prev_row_rects = Some(row_rects);
         // Always 3, not 4: the next row's own top border reuses this row's own bottom border
         // row, so only 3 new rows of vertical space are actually spent on it.
         y += CAP_HEIGHT - 1;
+    }
+}
+
+/// The columns where `row`'s own caps have a vertical border, the two edge columns of every cap
+/// in it (`x` and `x + width - 1`; identical when a cap is exactly one column wide). Two adjacent
+/// caps abut without sharing a column (see `render_matrix`'s own rect maths), so a join between
+/// them contributes two distinct, adjacent boundary columns here, not one.
+fn row_boundaries(row: &[Rect]) -> HashSet<u16> {
+    let mut set = HashSet::new();
+    for r in row {
+        set.insert(r.x);
+        set.insert(r.x + r.width - 1);
+    }
+    set
+}
+
+/// Rewrites the one physical row shared between `upper` (the row above, its own bottom border)
+/// and `lower` (the row below, its own top border) at `y`, replacing whichever row's Block
+/// widget happened to draw last with a single continuous rule spanning the union of both rows'
+/// horizontal extents. Only the symbol changes, never the style: a cap's own `Modifier::REVERSED`
+/// selection highlight (applied over its own top border row, see the caller) must survive this
+/// rewrite untouched.
+///
+/// A column covered by only one of the two rows is left exactly as that row already drew it: its
+/// own natural corner or rule, since nothing here ever wrote over it in the first place. Only a
+/// column both rows cover needs reconciling, and the glyph there follows the brief's own table:
+/// `┼` where both rows have a boundary, `┴`/`┬` where only the upper/lower row does, `─`
+/// otherwise, `├`/`┤` at the shared line's own left/right end (where the rule continues on one
+/// side only), never a corner there since the walls above and below both still connect.
+fn merge_shared_border(buf: &mut Buffer, upper: &[Rect], lower: &[Rect], y: u16) {
+    if upper.is_empty() || lower.is_empty() {
+        return;
+    }
+    let upper_min = upper[0].x;
+    let upper_max = upper[upper.len() - 1].x + upper[upper.len() - 1].width;
+    let lower_min = lower[0].x;
+    let lower_max = lower[lower.len() - 1].x + lower[lower.len() - 1].width;
+    let lo = upper_min.min(lower_min);
+    let hi = upper_max.max(lower_max);
+    if lo >= hi {
+        return;
+    }
+    let upper_bounds = row_boundaries(upper);
+    let lower_bounds = row_boundaries(lower);
+
+    for x in lo..hi {
+        let up_rule = x >= upper_min && x < upper_max;
+        let down_rule = x >= lower_min && x < lower_max;
+        if !(up_rule && down_rule) {
+            // Only one row's own rendering reaches this column: it is already correct, left by
+            // whichever row drew it, untouched by the other.
+            continue;
+        }
+        let up_stem = upper_bounds.contains(&x);
+        let down_stem = lower_bounds.contains(&x);
+        let at_left = x == lo;
+        let at_right = x == hi - 1;
+        let ch = if at_left && at_right {
+            '\u{2502}' // │, a one-column union: both walls connect, neither side continues.
+        } else if at_left {
+            '\u{251c}' // ├
+        } else if at_right {
+            '\u{2524}' // ┤
+        } else if up_stem && down_stem {
+            '\u{253c}' // ┼
+        } else if up_stem {
+            '\u{2534}' // ┴
+        } else if down_stem {
+            '\u{252c}' // ┬
+        } else {
+            '\u{2500}' // ─
+        };
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_symbol(ch.encode_utf8(&mut [0u8; 4]));
+        }
     }
 }
 

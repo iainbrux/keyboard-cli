@@ -281,6 +281,56 @@ fn a_shared_border_row_is_styled_by_the_cap_below_not_above() {
     );
 }
 
+/// The operator's own defect (2026-09-06 23:51): a real board's rows rarely line up their cap
+/// boundaries, so the row below's own top border simply overwrote the row above's own bottom
+/// border wholesale, erasing corners and leaving stray verticals wherever the two rows' widths
+/// differed. Three plain 1u caps (widths 7,7,7, boundaries at columns 0,6,7,13,14,20) sit over a
+/// row whose middle cap is TAB at 1.5u (widths 7,11,7, boundaries at 0,6,7,17,18,24): the two
+/// rows agree at 0, 6, 7 (`┼`, `┼`, `┼`... only 6 and 7 are interior, 0 is the shared line's own
+/// left end, `├`), diverge where only the upper row has a boundary (13, 14: `┴`, `┴`), diverge
+/// again where only the lower row does (17, 18: `┬`, `┬`), and the lower row's own trailing cap
+/// (18-24) has nothing above it at all, so 21-23 stay a plain rule and 24, the shared line's own
+/// right end, is a genuine corner-turned-`┐` from the lower row's own untouched rendering.
+/// Asserted as one exact string: a partial fix that gets some columns right would still fail this.
+#[test]
+fn a_misaligned_shared_border_merges_into_one_continuous_rule() {
+    let rows = vec![
+        DefKeyRow {
+            row: 0,
+            keys: vec![(0, 0x1A), (1, 0x16), (2, 0x04)], // w, s, a: three plain 1u caps
+        },
+        DefKeyRow {
+            row: 1,
+            keys: vec![(0, 0x07), (1, 0x2B), (2, 0x09)], // d, tab (1.5u), f
+        },
+    ];
+    let area = Rect::new(0, 0, 40, 10);
+    let mut buf = Buffer::empty(area);
+    let mut rects = Vec::new();
+    let selected = HashSet::new();
+
+    render_matrix(
+        area,
+        &mut buf,
+        &rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected,
+        &mut rects,
+    );
+
+    let lines = buffer_lines(&buf);
+    // The shared row: the upper row's own bottom border, CAP_HEIGHT - 1 (3) rows below its own
+    // top at y=0, which is also the lower row's own top border.
+    assert_eq!(
+        lines[3], "├─────┼┼─────┴┴──┬┬─┴───┐",
+        "the shared line must merge into one continuous rule, containing at least one ┬, ┴ \
+         and ┼, with correct end characters: {lines:?}"
+    );
+}
+
 /// A one-key-per-row fixture: each row is independent, so a cap's rendered width is exactly
 /// `round(cap_units(usage) * 7)` with no cumulative interaction from a neighbour, letting these
 /// label tests pin an exact cell width by hand.
@@ -516,10 +566,10 @@ fn terminal_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
-/// The whole refusal, as one literal. Deliberately not `too_narrow_text(176)`: a test that
+/// The whole refusal, as one literal. Deliberately not `too_narrow_text(178)`: a test that
 /// compares rendered text against the generator that produced it passes whatever the generator
 /// says, including a generator that stopped naming the width at all.
-const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 176 COLUMNS";
+const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 178 COLUMNS";
 
 /// Reassembles the body's message block from whatever `draw` rendered: finds the line holding
 /// `needle`, takes every following line's slice from that same column until a blank one, and
@@ -559,8 +609,8 @@ fn body_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
 /// QWERTY row, tab (1.5) plus twelve 1.0 caps plus backslash (1.5) plus the row-end key, at 7
 /// columns per unit, summing to the same 16.0 units as every other row (measured against the
 /// vendor's own rendering, `research/vendor-bundle/2026-09-05/screenshots/`, whose rows all share
-/// one right edge). The whole frame therefore wants this plus the 64-column left pane, and the
-/// refusal in the width sweep below states exactly that total.
+/// one right edge). The whole frame therefore wants this plus the 64-column left pane and its own
+/// 2-column gutter, and the refusal in the width sweep below states exactly that total.
 #[test]
 fn a_full_ansi_dk_board_needs_112_columns_for_its_widest_row() {
     let board = ansi_dk_board();
@@ -572,18 +622,19 @@ fn a_full_ansi_dk_board_needs_112_columns_for_its_widest_row() {
     assert_eq!(needed_width(&board.rows), 112);
 }
 
-/// The refusal at real terminal widths. 176 is the first width that fits the matrix (112 plus
-/// the 64-column left pane); every width below it must show the whole sentence, wherever it has
-/// to go: the matrix pane at 65 columns is one column wide, and at 64 or less it does not exist.
+/// The refusal at real terminal widths. 178 is the first width that fits the matrix (112 plus
+/// the 64-column left pane plus its own 2-column gutter); every width below it must show the
+/// whole sentence, wherever it has to go: the matrix pane at 67 columns is one column wide, and
+/// at 66 or less it does not exist.
 #[test]
 fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
-    for width in [50u16, 64, 65, 72, 79, 80, 88, 101, 102, 175, 176] {
+    for width in [52u16, 66, 67, 74, 81, 82, 90, 103, 104, 177, 178] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
         let mut terminal = Terminal::new(TestBackend::new(width, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = body_lines(&terminal);
 
-        if width >= 176 {
+        if width >= 178 {
             assert_eq!(
                 app.key_rects.len(),
                 68,
@@ -610,9 +661,9 @@ fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
 /// The vendor's two top-aligned panes, pixel-scanned against
 /// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png` and `05-mapping.png`:
 /// the right pane's own prompt shares the TAB ROW itself (y=25, pinned independently by
-/// `chrome.rs`'s own row-render test), past the 64-column left pane; the matrix's first cap row
-/// starts at `body_y` (26), level with the left pane's first settings row, unchanged from before
-/// this round.
+/// `chrome.rs`'s own row-render test), past the 64-column left pane and its own 2-column gutter;
+/// the matrix's first cap row starts at `body_y` (26), level with the left pane's first settings
+/// row, unchanged from before this round.
 #[test]
 fn the_prompt_shares_the_tab_row_and_the_matrix_starts_at_body_y() {
     let tab_row_y = 25u16;
@@ -629,16 +680,16 @@ fn the_prompt_shares_the_tab_row_and_the_matrix_starts_at_body_y() {
         "the prompt must render on the tab row, not a row of its own below it"
     );
 
-    // The prompt's own status text starts exactly at column 64, right after the left pane: not
-    // just that the prompt renders somewhere on the tab row, but that it starts where the left
-    // pane ends.
+    // The prompt's own status text starts exactly at column 66, past the 64-column left pane and
+    // its own 2-column gutter: not just that the prompt renders somewhere on the tab row, but that
+    // it starts where the matrix itself does.
     let buf = terminal.backend().buffer().clone();
     let tab_row_line: String = (0..buf.area.width)
         .map(|x| buf[(x, tab_row_y)].symbol().to_string())
         .collect();
     assert!(
-        tab_row_line[64..].starts_with("> CLICK ON THE KEYS TO MAKE A KEYSET"),
-        "the prompt must start at column 64: {tab_row_line:?}"
+        tab_row_line[66..].starts_with("> CLICK ON THE KEYS TO MAKE A KEYSET"),
+        "the prompt must start at column 66: {tab_row_line:?}"
     );
 
     let matrix_top = app
@@ -786,10 +837,10 @@ fn a_click_on_a_shared_border_row_resolves_to_the_cap_above() {
     );
 }
 
-/// [RESET KEYSETS] right-aligns to the matrix's own right edge (`left_width + needed_width`), not
-/// the frame's: the vendor aligns the action to the keyboard, and a frame wider than the matrix
-/// needs (200 here, matrix needs 64 + 112 = 176) previously left the button hugging column 200
-/// instead of 176, past the matrix entirely.
+/// [RESET KEYSETS] right-aligns to the matrix's own right edge (`left_width + gutter +
+/// needed_width`), not the frame's: the vendor aligns the action to the keyboard, and a frame
+/// wider than the matrix needs (200 here, matrix needs 64 + 2 + 112 = 178) previously left the
+/// button hugging column 200 instead of 178, past the matrix entirely.
 #[test]
 fn the_reset_keysets_action_aligns_to_the_matrixs_right_edge_not_the_frames() {
     let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");

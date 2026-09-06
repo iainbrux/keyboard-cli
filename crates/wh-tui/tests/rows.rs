@@ -140,19 +140,21 @@ fn the_ap_tab_body_renders_global_custom_value_and_keyset_rows() {
     );
 
     // The prompt now shares the tab row (y=25), not the first settings row asserted above, so it
-    // renders as its own whole line here with nothing else on it.
+    // renders as its own whole line here with nothing else on it. It starts past the left pane's
+    // own 2-column gutter (`app::MATRIX_GUTTER`), not immediately after the left pane's own width.
+    let gutter = 2usize;
     let status = "> CLICK ON THE KEYS TO MAKE A KEYSET";
     let action = "[RESET KEYSETS]";
-    let right_width = 120 - left_width;
+    let right_width = 120 - left_width - gutter;
     let prompt_line = format!(
         "{status}{}{action}",
         " ".repeat(right_width - status.len() - action.len())
     );
     let tab_row = &lines[25];
-    let right_slice: String = tab_row.chars().skip(left_width).collect();
+    let right_slice: String = tab_row.chars().skip(left_width + gutter).collect();
     assert_eq!(
         right_slice, prompt_line,
-        "right pane's prompt, on the tab row past the left pane's own width: {lines:?}"
+        "right pane's prompt, on the tab row past the left pane's own width and its gutter: {lines:?}"
     );
 }
 
