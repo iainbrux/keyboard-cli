@@ -30,7 +30,19 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Selftest => selftest(),
         Cmd::Keyset { what } => keyset_cmd(what, &store),
         Cmd::Socd { what } => socd_cmd(what, &store),
+        Cmd::Tui => tui_cmd(),
     }
+}
+
+/// Refuses before `with_session` is ever entered: a redirected/piped stdout can never draw the
+/// alternate screen, and this check has to run before the exclusive vendor HID collection is
+/// opened, or a refusal here would still have grabbed the device for nothing.
+fn tui_cmd() -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        bail!("wh tui needs an interactive terminal, but stdout here is redirected or piped");
+    }
+    with_session(|s| wh_tui::run(s, env!("CARGO_PKG_VERSION")))
 }
 
 /// Treats `WH_REPLAY=` (present but empty) the same as unset, rather than as a request to

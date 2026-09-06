@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/wh-proto", "crates/wh-device", "crates/wh-config", "crates/wh-cli"]
+members = [
+    "crates/wh-proto",
+    "crates/wh-device",
+    "crates/wh-config",
+    "crates/wh-cli",
+    "crates/wh-tui",
+]
 
 [workspace.package]
 edition = "2021"

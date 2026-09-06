@@ -305,6 +305,24 @@ fn run_wh_stdin(
 }
 
 #[test]
+fn tui_refuses_without_an_interactive_terminal() {
+    let dir = scratch_config_dir("tui-refuse");
+    let script = write_script("tui-refuse", &[]);
+    let out = run_wh(&["tui"], &script, &dir);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    // `main.rs` prints `error: {e:#}`, lowercase, not the capitalized `Error: ` form: verified by
+    // running the built binary directly against a failing command before writing this assertion.
+    assert!(
+        stderr.lines().any(|l| {
+            l
+            == "error: wh tui needs an interactive terminal, but stdout here is redirected or piped"
+        }),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn dump_json_via_replay() {
     let path = write_script("dump", &build_script());
     let config_home = scratch_config_dir("dump-json");
