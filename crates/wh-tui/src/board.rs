@@ -5,7 +5,7 @@
 use wh_device::ops::{self, KeySettings};
 use wh_device::session::Session;
 use wh_device::transport::{DeviceError, Transport};
-use wh_proto::cmds::{DefKeyRow, GlobalTravel, ProfileNumber};
+use wh_proto::cmds::{DefKeyRow, GlobalTravel, ProfileNumber, TouchMode};
 use wh_proto::value::Um;
 
 /// The product name, not per-board data: the vendor's own device line and the ADVANCED > DEVICE
@@ -99,6 +99,44 @@ pub fn global_rt(keys: &[KeySettings]) -> GlobalValue<(Um, Um)> {
     }
 }
 
+/// Folds a per-key flag over `keys` the way `global_ap` and `global_rt` fold a value: the keys
+/// `include` selects decide the row, and they either all agree or the row reads `Mixed`.
+fn global_flag(
+    keys: &[KeySettings],
+    include: impl Fn(&KeySettings) -> bool,
+    flag: impl Fn(&KeySettings) -> bool,
+) -> GlobalValue<bool> {
+    let mut outside = keys.iter().filter(|k| include(k)).map(flag);
+    let Some(first) = outside.next() else {
+        return GlobalValue::NoneOutside;
+    };
+    if outside.all(|v| v == first) {
+        GlobalValue::Agreed(first)
+    } else {
+        GlobalValue::Mixed
+    }
+}
+
+/// Whether rapid trigger is on, folded over every key outside any RT keyset: `Mixed` when some of
+/// those keys have it on and some off, which is a board the vendor's own toggle cannot describe
+/// and `wh` will not flatten to either end. `NoneOutside` (no key outside a keyset at all) reads
+/// the same as off, since there is nothing left for the global row to be about.
+pub fn global_rt_on(keys: &[KeySettings]) -> GlobalValue<bool> {
+    global_flag(keys, |k| k.rt_keyset == 0, |k| k.rt_enabled())
+}
+
+/// Continuous rapid trigger, folded over exactly the keys `global_rt` folds over: rapid-trigger
+/// enabled and outside any RT keyset. A key with rapid trigger off has no continuous state to
+/// report, and one key of sixty-eight is not the whole board, which is what `.any(...)` here used
+/// to claim.
+pub fn global_continuous(keys: &[KeySettings]) -> GlobalValue<bool> {
+    global_flag(
+        keys,
+        |k| k.rt_keyset == 0 && k.rt_enabled(),
+        |k| k.mode.touch == TouchMode::RtContinuous,
+    )
+}
+
 pub struct KeysetView {
     pub index: u16,
     pub members: Vec<u8>,
@@ -133,10 +171,12 @@ pub fn rt_keysets(keys: &[KeySettings]) -> Vec<KeysetView> {
     keysets_by(keys, |k| k.rt_keyset)
 }
 
-/// A `BoardModel` literal with two keys and no wire, for `app`'s unit tests: those exercise
+/// A `BoardModel` literal with three keys and no wire, for `app`'s unit tests: those exercise
 /// `draw`, not the read path, so they need a model to hold rather than a `Session` to read one
-/// from. 'a' (0x04) carries a non-zero `rt_keyset` and a `rt_press` distinct from 'w's, so a test
-/// that switches to the RapidTrigger tab can tell the two keys' matrix cells apart.
+/// from. 'a' (0x04) carries a non-zero `rt_keyset`, rapid trigger on (touch nibble 3) and a
+/// `rt_press` distinct from 'w's, so a test that switches to the RapidTrigger tab can tell the
+/// two keys' matrix cells apart. 's' (0x16) carries a non-zero `rt_keyset` with rapid trigger
+/// off (nibble 1), the case where a keyset membership alone must not print a sensitivity.
 #[cfg(test)]
 pub(crate) fn test_fixture() -> BoardModel {
     use wh_proto::cmds::Mode;
@@ -159,6 +199,10 @@ pub(crate) fn test_fixture() -> BoardModel {
                 row: 1,
                 keys: vec![(0, 0x04)],
             },
+            DefKeyRow {
+                row: 2,
+                keys: vec![(0, 0x16)],
+            },
         ],
         keys: vec![
             KeySettings {
@@ -173,11 +217,20 @@ pub(crate) fn test_fixture() -> BoardModel {
             KeySettings {
                 usage: 0x04,
                 ap: Um(1500),
-                mode: Mode::from_value(0x0010),
+                mode: Mode::from_value(0x0030),
                 rt_press: Um(300),
                 rt_release: Um(300),
                 ap_keyset: 0,
                 rt_keyset: 1,
+            },
+            KeySettings {
+                usage: 0x16,
+                ap: Um(1500),
+                mode: Mode::from_value(0x0010),
+                rt_press: Um(400),
+                rt_release: Um(400),
+                ap_keyset: 0,
+                rt_keyset: 2,
             },
         ],
     }

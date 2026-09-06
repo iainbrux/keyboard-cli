@@ -194,6 +194,134 @@ fn rt_sub_rows_render_dim_while_global_rt_is_off() {
     }
 }
 
+/// The row line `app::draw` renders in the 56-column left pane: label, dot leaders, control.
+/// Mirrors `tests/stubs.rs`'s own `dots` helper, kept separate for the same reason.
+fn row_line(label: &str, control: &str) -> String {
+    let dots = ".".repeat(56 - label.chars().count() - control.chars().count());
+    format!("{label}{dots}{control}")
+}
+
+/// A board holding exactly `keys`, everything else fixed: the RT rows read nothing else.
+fn rt_board(keys: Vec<KeySettings>) -> BoardModel {
+    BoardModel {
+        serial: "SNTUITEST0000001".to_string(),
+        firmware: "V1.0.0.001".to_string(),
+        profile: ProfileNumber::from_wire_index(0).unwrap(),
+        global: GlobalTravel {
+            travel: Um(500),
+            press_dead: Um(200),
+            release_dead: Um(200),
+        },
+        rows: Vec::new(),
+        keys,
+    }
+}
+
+/// One key outside any RT keyset, at the given raw MODE value: `0x0010` is touch nibble 1
+/// (`Single`, rapid trigger off), `0x0030` nibble 3 (`Rt`, on), `0x0040` nibble 4
+/// (`RtContinuous`, on with continuous).
+fn outside_key(usage: u8, mode: u16, press: u16) -> KeySettings {
+    KeySettings {
+        usage,
+        ap: Um(2000),
+        mode: Mode::from_value(mode),
+        rt_press: Um(press),
+        rt_release: Um(press),
+        ap_keyset: 0,
+        rt_keyset: 0,
+    }
+}
+
+/// The RT tab's left-pane lines for a board of `keys`.
+fn rt_lines(keys: Vec<KeySettings>) -> Vec<String> {
+    let mut app = App::new(rt_board(keys), "0.5.0-alpha");
+    app.tab = Tab::RapidTrigger;
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    buffer_lines(&terminal)
+}
+
+/// GLOBAL RAPID TRIGGER is a toggle, not a measurement: the vendor renders
+/// `GLOBAL RAPID TRIGGER < OFF >` and puts the millimetres on RT SENSITIVITY below it. All three
+/// states, and RT SENSITIVITY keeping its millimetres alongside the ON one.
+#[test]
+fn global_rapid_trigger_reads_on_off_or_mixed_and_never_a_measurement() {
+    let on = rt_lines(vec![
+        outside_key(0x1A, 0x0030, 300),
+        outside_key(0x04, 0x0030, 300),
+    ]);
+    assert!(
+        on.iter()
+            .any(|l| l == &row_line("GLOBAL RAPID TRIGGER", "< ON >")),
+        "every outside key has rapid trigger on: {on:?}"
+    );
+    assert!(
+        on.iter()
+            .any(|l| l == &row_line("RT SENSITIVITY", "< 0.30 MM >")),
+        "RT SENSITIVITY keeps the millimetres: {on:?}"
+    );
+
+    let off = rt_lines(vec![
+        outside_key(0x1A, 0x0010, 300),
+        outside_key(0x04, 0x0010, 300),
+    ]);
+    assert!(
+        off.iter()
+            .any(|l| l == &row_line("GLOBAL RAPID TRIGGER", "< OFF >")),
+        "no outside key has rapid trigger on: {off:?}"
+    );
+
+    let mixed = rt_lines(vec![
+        outside_key(0x1A, 0x0030, 300),
+        outside_key(0x04, 0x0010, 300),
+    ]);
+    assert!(
+        mixed
+            .iter()
+            .any(|l| l == &row_line("GLOBAL RAPID TRIGGER", "< MIXED >")),
+        "one outside key on and one off is MIXED, not either end: {mixed:?}"
+    );
+}
+
+/// CONTINUOUS RAPID TRIGGER folds the outside keys the way every sibling row does. One key of
+/// sixty-eight in continuous mode is not a board in continuous mode, which is what the `.any(..)`
+/// this replaces claimed.
+#[test]
+fn continuous_rapid_trigger_reads_mixed_when_the_outside_keys_disagree() {
+    let all_on = rt_lines(vec![
+        outside_key(0x1A, 0x0040, 300),
+        outside_key(0x04, 0x0040, 300),
+    ]);
+    assert!(
+        all_on
+            .iter()
+            .any(|l| l == &row_line("CONTINUOUS RAPID TRIGGER", "< ON >")),
+        "every outside key is in continuous mode: {all_on:?}"
+    );
+
+    let all_off = rt_lines(vec![
+        outside_key(0x1A, 0x0030, 300),
+        outside_key(0x04, 0x0030, 300),
+    ]);
+    assert!(
+        all_off
+            .iter()
+            .any(|l| l == &row_line("CONTINUOUS RAPID TRIGGER", "< OFF >")),
+        "rapid trigger on but continuous off on every outside key: {all_off:?}"
+    );
+
+    let mixed = rt_lines(vec![
+        outside_key(0x1A, 0x0040, 300),
+        outside_key(0x04, 0x0030, 300),
+    ]);
+    assert!(
+        mixed
+            .iter()
+            .any(|l| l == &row_line("CONTINUOUS RAPID TRIGGER", "< MIXED >")),
+        "one outside key continuous and one not is MIXED: {mixed:?}"
+    );
+}
+
 /// Locates `"[RESET KEYSETS]"` on whichever rendered line contains it and returns its row and
 /// its own column span, read back from the rendered text rather than assumed from a hard-coded
 /// column: a layout change that moved the prompt line would move this test's target with it.

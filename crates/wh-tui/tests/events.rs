@@ -4,8 +4,15 @@ use ratatui::Terminal;
 use support::*;
 use wh_device::replay::ReplayTransport;
 use wh_device::session::Session;
-use wh_tui::app::{draw, App, LOCKED_BANNER, STATUS_UNKNOWN_EVENT};
+use wh_tui::app::{draw, App, LOCKED_BANNER, STATUS_REREADING, STATUS_UNKNOWN_EVENT};
 use wh_tui::board::BoardModel;
+
+/// `App::tick` with a redraw callback that does nothing, for the tests that are about the model
+/// rather than about the frame `tick` draws before its blocking re-read (that one is pinned by
+/// `the_leaving_edge_draws_a_re_reading_frame_before_the_read` below).
+fn tick(app: &mut App, s: &mut Session<ReplayTransport>) -> bool {
+    app.tick(s, &mut |_| {}).unwrap()
+}
 
 /// Every rendered line of the buffer, right-trimmed, so tests assert whole lines. Copied from
 /// `app::tests::buffer_lines` and `chrome.rs`'s own copy, kept in sync deliberately rather than
@@ -69,12 +76,12 @@ fn a_be00_edge_raises_the_locked_banner_and_be01_rereads_and_lowers_it() {
     );
 
     // tick1: the scripted wait, nothing happened.
-    let changed1 = app.tick(&mut s).unwrap();
+    let changed1 = tick(&mut app, &mut s);
     assert!(!changed1, "an empty poll must not report a change");
     assert!(!app.locked, "an empty poll must not lock the board");
 
     // tick2: the entering edge, the board locks.
-    let changed2 = app.tick(&mut s).unwrap();
+    let changed2 = tick(&mut app, &mut s);
     assert!(changed2, "the entering edge must report a change");
     assert!(app.locked, "the entering edge must lock the board");
 
@@ -87,12 +94,12 @@ fn a_be00_edge_raises_the_locked_banner_and_be01_rereads_and_lowers_it() {
     );
 
     // tick3: the scripted wait, still locked.
-    let changed3 = app.tick(&mut s).unwrap();
+    let changed3 = tick(&mut app, &mut s);
     assert!(!changed3, "an empty poll must not report a change");
     assert!(app.locked, "the board must stay locked between edges");
 
     // tick4: the leaving edge, the board re-reads and unlocks.
-    let changed4 = app.tick(&mut s).unwrap();
+    let changed4 = tick(&mut app, &mut s);
     assert!(changed4, "the leaving edge must report a change");
     assert!(!app.locked, "the leaving edge must unlock the board");
 
@@ -133,19 +140,85 @@ fn a_successful_reread_clears_a_status_note_left_over_from_before_the_edge() {
     let mut app = App::new(board, "0.5.0-alpha");
     app.status = Some("NOTE: A READ TIMED OUT; VALUES MAY BE STALE".to_string());
 
-    app.tick(&mut s).unwrap(); // tick1: wait
-    app.tick(&mut s).unwrap(); // tick2: entering edge, locks
+    tick(&mut app, &mut s); // tick1: wait
+    tick(&mut app, &mut s); // tick2: entering edge, locks
     assert_eq!(
         app.status.as_deref(),
         Some("NOTE: A READ TIMED OUT; VALUES MAY BE STALE"),
         "the entering edge must not touch a note left over from before it"
     );
-    app.tick(&mut s).unwrap(); // tick3: wait
-    let changed4 = app.tick(&mut s).unwrap(); // tick4: leaving edge, a successful re-read
+    tick(&mut app, &mut s); // tick3: wait
+    let changed4 = tick(&mut app, &mut s); // tick4: leaving edge, a successful re-read
     assert!(changed4, "the leaving edge must report a change");
     assert_eq!(
         app.status, None,
         "a successful re-read must clear a note left over from before the edge"
+    );
+}
+
+/// The re-read blocks the whole UI, Ctrl-C included, so `tick` draws one frame before it starts
+/// and that frame has to say so. Pinned through `draw`, not just off `app.status`: the operator
+/// only ever sees the rendered line. The callback runs before the read, which is proved by the
+/// model still carrying the first read's firmware at that moment.
+#[test]
+fn the_leaving_edge_draws_a_re_reading_frame_before_the_read() {
+    let mut lines = build_script();
+    lines.push("{\"dir\":\"wait\"}".to_string());
+    lines.push(adjust_edge_line(false));
+    lines.extend(second_read_script());
+
+    let t = ReplayTransport::from_jsonl(&lines.join("\n")).unwrap();
+    let mut s = Session::new(t);
+    let board = BoardModel::read(&mut s).unwrap();
+    let mut app = App::new(board, "0.5.0-alpha");
+
+    // A `RefCell` so the frames can be read between the two ticks while the callback that fills
+    // them is still alive.
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let frames: std::cell::RefCell<Vec<(String, Vec<String>)>> =
+        std::cell::RefCell::new(Vec::new());
+    let mut redraw = |a: &mut App| {
+        let firmware = a.board.firmware.clone();
+        terminal.draw(|f| draw(f, a)).unwrap();
+        frames
+            .borrow_mut()
+            .push((firmware, buffer_lines(&terminal)));
+    };
+
+    assert!(
+        !app.tick(&mut s, &mut redraw).unwrap(),
+        "the scripted wait must report no change"
+    );
+    assert!(
+        frames.borrow().is_empty(),
+        "an empty poll must not draw a re-reading frame: {:?}",
+        frames.borrow()
+    );
+
+    assert!(
+        app.tick(&mut s, &mut redraw).unwrap(),
+        "the leaving edge must report a change"
+    );
+
+    let frames = frames.into_inner();
+    assert_eq!(frames.len(), 1, "exactly one frame before the read");
+    let (firmware_at_draw, rendered) = &frames[0];
+    assert_eq!(
+        firmware_at_draw, "V1.0.0.001",
+        "the frame must be drawn before the re-read lands, not after"
+    );
+    assert!(
+        rendered.iter().any(|l| l == STATUS_REREADING),
+        "the re-reading note must render as a whole line: {rendered:?}"
+    );
+
+    assert_eq!(
+        app.board.firmware, "V1.0.0.002",
+        "the re-read itself must still land"
+    );
+    assert_eq!(
+        app.status, None,
+        "the re-reading note must not outlive the read that raised it"
     );
 }
 
@@ -159,7 +232,7 @@ fn an_unknown_event_lands_in_the_status_line_and_does_not_lock() {
     let board = BoardModel::read(&mut s).unwrap();
     let mut app = App::new(board, "0.5.0-alpha");
 
-    let changed = app.tick(&mut s).unwrap();
+    let changed = tick(&mut app, &mut s);
     assert!(changed, "an unknown event must report a change");
     assert!(!app.locked, "an unknown event must not lock the board");
     assert_eq!(app.status.as_deref(), Some(STATUS_UNKNOWN_EVENT));

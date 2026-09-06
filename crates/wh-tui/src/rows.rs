@@ -8,11 +8,11 @@
 //! renders a value only, arrow and click interaction on it is a later plan.
 
 use crate::board::{
-    ap_keysets, global_ap, global_rt, rt_keysets, BoardModel, GlobalValue, KeysetView, DEVICE_NAME,
+    ap_keysets, global_ap, global_continuous, global_rt, global_rt_on, rt_keysets, BoardModel,
+    GlobalValue, KeysetView, DEVICE_NAME,
 };
 use ratatui::prelude::*;
 use wh_device::ops::KeySettings;
-use wh_proto::cmds::TouchMode;
 use wh_proto::keys::label;
 use wh_proto::value::Um;
 
@@ -175,16 +175,29 @@ pub fn ap_rows(keys: &[KeySettings], travel: Um) -> Vec<SettingRow> {
     rows
 }
 
+/// An ON/OFF/MIXED row's text, for the toggles folded through `GlobalValue<bool>`. `NoneOutside`
+/// reads `OFF`: with no key outside a keyset there is nothing for the global row to report, and
+/// the vendor's own toggle has no third position for it.
+fn toggle_text(v: GlobalValue<bool>) -> String {
+    match v {
+        GlobalValue::Agreed(true) => "ON",
+        GlobalValue::Agreed(false) | GlobalValue::NoneOutside => "OFF",
+        GlobalValue::Mixed => "MIXED",
+    }
+    .to_string()
+}
+
 /// The RT tab's rows: the global rapid trigger toggle, its three dependent sub-settings
-/// (disabled while the global toggle is off), then one row per RT keyset. `SEPARATE PRESS AND
-/// RELEASE` and `RT SENSITIVITY` are derived from the outside-keyset press/release pair
-/// (`docs/keysets.md`'s "not a stored bit": separate is `press != release`); `CONTINUOUS RAPID
-/// TRIGGER` is read directly off any outside-keyset key's own `RtContinuous` mode.
+/// (disabled while the global toggle is off), then one row per RT keyset. `GLOBAL RAPID TRIGGER`
+/// is a toggle, not a measurement (the vendor renders `GLOBAL RAPID TRIGGER < OFF >` with the
+/// millimetres on `RT SENSITIVITY` below it), so it reads ON, OFF or MIXED off `global_rt_on`.
+/// `SEPARATE PRESS AND RELEASE` and `RT SENSITIVITY` are derived from the outside-keyset
+/// press/release pair (`docs/keysets.md`'s "not a stored bit": separate is `press != release`);
+/// `CONTINUOUS RAPID TRIGGER` folds the outside keys' own `RtContinuous` mode the same way.
 pub fn rt_rows(keys: &[KeySettings]) -> Vec<SettingRow> {
-    let (off, global_value, separate_value, sensitivity_value) = match global_rt(keys) {
+    let (off, separate_value, sensitivity_value) = match global_rt(keys) {
         GlobalValue::Agreed((p, r)) => (
             false,
-            format!("{:.2} MM", p.to_mm()),
             if p != r { "ON" } else { "OFF" }.to_string(),
             if p == r {
                 format!("{:.2} MM", p.to_mm())
@@ -192,23 +205,15 @@ pub fn rt_rows(keys: &[KeySettings]) -> Vec<SettingRow> {
                 format!("{:.2}/{:.2} MM", p.to_mm(), r.to_mm())
             },
         ),
-        GlobalValue::Mixed => (
-            false,
-            "MIXED".to_string(),
-            "MIXED".to_string(),
-            "MIXED".to_string(),
-        ),
-        GlobalValue::NoneOutside => (true, "OFF".to_string(), "OFF".to_string(), "-".to_string()),
+        GlobalValue::Mixed => (false, "MIXED".to_string(), "MIXED".to_string()),
+        GlobalValue::NoneOutside => (true, "OFF".to_string(), "-".to_string()),
     };
-    let continuous_on = keys
-        .iter()
-        .any(|k| k.rt_keyset == 0 && k.mode.touch == TouchMode::RtContinuous);
 
     let mut rows = vec![
         SettingRow {
             label: "GLOBAL RAPID TRIGGER".to_string(),
             control: Control::Stepper {
-                value: global_value,
+                value: toggle_text(global_rt_on(keys)),
             },
             disabled: false,
             indent: 0,
@@ -232,7 +237,7 @@ pub fn rt_rows(keys: &[KeySettings]) -> Vec<SettingRow> {
         SettingRow {
             label: "CONTINUOUS RAPID TRIGGER".to_string(),
             control: Control::Stepper {
-                value: if continuous_on { "ON" } else { "OFF" }.to_string(),
+                value: toggle_text(global_continuous(keys)),
             },
             disabled: off,
             indent: 0,

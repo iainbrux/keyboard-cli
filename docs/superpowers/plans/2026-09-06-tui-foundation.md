@@ -800,8 +800,12 @@ frame width the board's own rows need, 169 columns for a full ANSI-DK 68-key boa
 `app::draw` splits the body horizontally (left pane 56 columns, rest to the matrix) and calls
 `render_matrix` with `value_of` chosen by tab: ActuationPoint shows every key's `ap` as
 `format!("{:.2}", um.to_mm())`; RapidTrigger shows `rt_press` only for keys with
-`rt_keyset != 0`; other tabs show none. ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the
-keyboard pane entirely and give the left pane the full width.
+`rt_keyset != 0 && rt_enabled()`; other tabs show none. ADVANCED's GAMEPAD, DEVICE and SHARE
+sub-tabs drop the keyboard pane entirely and give the left pane the full width.
+
+Controller ruling, 2026-09-06, overturning this task's own earlier text: the predicate was
+`rt_keyset != 0` alone, which prints a sensitivity for a key whose rapid trigger is off.
+`global_rt` in the same crate already used the stronger predicate, and it is the correct one.
 
 - [ ] **Step 4: Run the tests, watch them pass** (`cargo test -p wh-tui`).
 
@@ -872,13 +876,20 @@ AP tab rows: `GLOBAL ACTUATION POINT` stepper from `global_ap(&board.keys)` (`Ag
 from `board.global.travel`. Then one row per `ap_keysets` entry:
 label `[X] {members as comma-joined labels}`, control `Button { label: "^" }` (collapse marker;
 collapse state itself is plan 2 alongside interaction). RT tab rows: `GLOBAL RAPID TRIGGER`
-stepper (`NoneOutside` renders `OFF`; `Agreed((p, r))` renders `{:.2} MM`), then
+stepper, a toggle reading `ON`, `OFF` or `MIXED` off `global_rt_on`, then
 `SEPARATE PRESS AND RELEASE`, `RT SENSITIVITY`, `CONTINUOUS RAPID TRIGGER` steppers, all three
 `disabled` while the global row is `OFF`, then `rt_keysets` rows in the same shape as AP's.
 Steppers render values only; arrow interaction is plan 2, and nothing in this plan writes.
 Prompt line per tab: AP and RT read `> CLICK ON THE KEYS TO MAKE A KEYSET`, and the right side
 renders `[RESET KEYSETS]`, disabled (dim) when the tab's keyset list is empty, inert either way
 in this plan.
+
+Controller ruling, 2026-09-06, overturning this task's own earlier text: `GLOBAL RAPID TRIGGER`
+was to render `{:.2} MM` for `Agreed((p, r))`. That put the same millimetres under two labels
+(`RT SENSITIVITY` already carries them) and left a toggle that could never read `ON`. The vendor
+renders it as a toggle, `GLOBAL RAPID TRIGGER < OFF >`, with the millimetres on the row below.
+`CONTINUOUS RAPID TRIGGER` folds through `GlobalValue` the same way, so a board whose outside
+keys disagree reads `MIXED` rather than `ON` off a single key.
 
 - [ ] **Step 4: Run the tests, watch them pass** (`cargo test -p wh-tui`).
 
@@ -978,7 +989,11 @@ git commit -m "[feat] - Render MAPPING, SWITCHES and ADVANCED with honest stubs 
 impl App {
     /// One event-poll step of the loop: at most one poll_event, routing edges.
     /// Returns Ok(true) when the display changed (a redraw is due).
-    pub fn tick<T: Transport>(&mut self, s: &mut Session<T>) -> Result<bool, DeviceError>;
+    pub fn tick<T: Transport>(
+        &mut self,
+        s: &mut Session<T>,
+        redraw: &mut impl FnMut(&mut App),
+    ) -> Result<bool, DeviceError>;
 }
 pub const LOCKED_BANNER: &str =
     "BOARD LOCKED: ADJUSTING ON THE KEYBOARD ITSELF. IT WILL NOT TYPE UNTIL THE KEY IS PRESSED AGAIN.";
@@ -1028,8 +1043,11 @@ this edge; so do we). `Unknown(_)`: `status = Some(STATUS_UNKNOWN_EVENT.to_strin
 `tick` fails with `DeviceError::Timeout`, set
 `status = Some("NOTE: A READ TIMED OUT; VALUES MAY BE STALE".to_string())` and keep running with
 the old model: queued events stay queued in the Session (the starvation ruling from the spec).
-`lib.rs`'s loop calls `app.tick(session)` between the input poll and the redraw, redrawing when
-either reports a change.
+`lib.rs`'s loop calls `app.tick(session, &mut redraw)` between the input poll and the redraw,
+redrawing when either reports a change. `tick` calls `redraw` itself once before the
+`AdjustModeLeft` re-read, with `STATUS_REREADING` showing: that read blocks the single thread,
+Ctrl-C included, so the frozen frame has to say what it is waiting for. See `tick`'s own comment
+for the worst case.
 
 - [ ] **Step 4: Run the tests, watch them pass** (`cargo test -p wh-tui`).
 

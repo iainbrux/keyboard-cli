@@ -121,7 +121,13 @@ fn event_loop<T: Transport>(
         } else {
             false
         };
-        let tick_changed = app.tick(session)?;
+        // `tick` calls this itself before its blocking re-read, so the frozen frame at least
+        // says what it is waiting for. A draw error there is dropped rather than propagated: the
+        // read is about to happen either way, and the next draw below reports the same error.
+        let mut redraw = |app: &mut app::App| {
+            let _ = terminal.draw(|f| app::draw(f, app));
+        };
+        let tick_changed = app.tick(session, &mut redraw)?;
         if input_changed || tick_changed {
             terminal.draw(|f| app::draw(f, &mut app))?;
         }

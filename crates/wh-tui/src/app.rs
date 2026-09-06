@@ -60,6 +60,11 @@ pub const STATUS_UNKNOWN_EVENT: &str = "NOTE: UNRECOGNISED BOARD EVENT RECEIVED"
 /// rather than shown a mid-read model.
 const STATUS_REREAD_TIMED_OUT: &str = "NOTE: A READ TIMED OUT; VALUES MAY BE STALE";
 
+/// `tick`'s note while the `AdjustModeLeft` re-read is in flight, drawn before the read starts.
+/// The read blocks the single thread and Ctrl-C with it (see `tick`), so the one honest thing to
+/// do is say so rather than leave a frozen screen looking crashed.
+pub const STATUS_REREADING: &str = "NOTE: RE-READING THE BOARD; INPUT WAITS UNTIL IT ANSWERS";
+
 /// The five top-level tabs, in the vendor's own order. `TABS` is that order made iterable, for
 /// cycling and for rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +202,21 @@ impl App {
     /// nothing or a half-read model. On success, any note already showing is cleared: see
     /// `status`'s own doc for why. Queued events beyond the one this call drains stay queued, the
     /// starvation ruling from the spec: this plan sets no cap on that queue.
-    pub fn tick<T: Transport>(&mut self, s: &mut Session<T>) -> Result<bool, DeviceError> {
+    ///
+    /// **That re-read blocks everything.** It runs on the one thread, so while it is in flight no
+    /// key is read, and raw mode has cleared ISIG, so Ctrl-C is only another byte nobody is
+    /// reading. `redraw` is called once first, with `STATUS_REREADING` showing, so the screen
+    /// says what it is doing instead of appearing dead. The exposure, worst case: one roundtrip
+    /// gives up after `session::TOTAL_TIMEOUT` (1500ms), and the read is 6 roundtrips plus 6 per
+    /// key, 414 on a 68-key board, so a board answering slowly enough to use its whole budget on
+    /// every one of them freezes the UI for about ten minutes. A board that simply stops
+    /// answering ends it at the first roundtrip's 1.5s. Plan 2 needs a real answer here when
+    /// writes join this path.
+    pub fn tick<T: Transport>(
+        &mut self,
+        s: &mut Session<T>,
+        redraw: &mut impl FnMut(&mut App),
+    ) -> Result<bool, DeviceError> {
         match s.poll_event(Duration::from_millis(15))? {
             Some(BoardEvent::AdjustModeEntered) => {
                 self.locked = true;
@@ -205,6 +224,8 @@ impl App {
             }
             Some(BoardEvent::AdjustModeLeft) => {
                 self.locked = false;
+                self.status = Some(STATUS_REREADING.to_string());
+                redraw(self);
                 match BoardModel::read(s) {
                     Ok(board) => {
                         self.board = board;
@@ -549,8 +570,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     text: String::new(),
                 },
             },
+            // A key in an RT keyset whose own rapid trigger is off has no sensitivity to show:
+            // `rt_keyset != 0` alone would print one, the same over-wide predicate `global_rt`
+            // avoids with `rt_enabled`.
             Tab::RapidTrigger => match app.board.key(usage) {
-                Some(k) if k.rt_keyset != 0 => CapValue {
+                Some(k) if k.rt_keyset != 0 && k.rt_enabled() => CapValue {
                     show: true,
                     text: format!("{:.2}", k.rt_press.to_mm()),
                 },
@@ -728,28 +752,29 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
 
         let lines = buffer_lines(&terminal);
-        let a_rect = app
-            .key_rects
-            .iter()
-            .find(|&&(_, u)| u == 0x04)
-            .expect("a's cap must be recorded")
-            .0;
-        let w_rect = app
-            .key_rects
-            .iter()
-            .find(|&&(_, u)| u == 0x1A)
-            .expect("w's cap must be recorded")
-            .0;
+        let rect_of = |usage: u8| {
+            app.key_rects
+                .iter()
+                .find(|&&(_, u)| u == usage)
+                .unwrap_or_else(|| panic!("{usage:#04X}'s cap must be recorded"))
+                .0
+        };
 
         assert_eq!(
-            cap_line(&lines, a_rect, 2),
+            cap_line(&lines, rect_of(0x04), 2),
             "│0.30 │",
-            "a is in an rt keyset, must show rt_press: {lines:?}"
+            "a is in an rt keyset with rapid trigger on, must show rt_press: {lines:?}"
         );
         assert_eq!(
-            cap_line(&lines, w_rect, 2),
+            cap_line(&lines, rect_of(0x1A), 2),
             "│     │",
             "w is outside any rt keyset, must show a blank value line: {lines:?}"
+        );
+        assert_eq!(
+            cap_line(&lines, rect_of(0x16), 2),
+            "│     │",
+            "s is in an rt keyset but its rapid trigger is off, so it has no sensitivity to \
+             show: {lines:?}"
         );
     }
 
