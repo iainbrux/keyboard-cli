@@ -1103,3 +1103,5 @@ cargo fmt --all --check
 git add docs/tasks.md CLAUDE.md docs/superpowers/specs/2026-09-06-tui-design.md
 git commit -m "[docs] - Record the TUI foundation: read-only wh tui, wait entries, two departures"
 ```
+
+Executed: 2026-09-06
