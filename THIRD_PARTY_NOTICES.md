@@ -28,7 +28,9 @@ These notices are reproduced because the licences require it. Do not remove them
 | `research/kbdocs/` | npm `@xsyd/keyboard` 1.0.0 | ISC |
 
 Material derived from the Wallhack Terminal web bundle (decoded command tables, deobfuscated bundle
-copies) is deliberately **not** committed. See `.gitignore`.
+copies) is deliberately **not** committed. See `.gitignore`. The one exception is the ASCII logo
+mark in `crates/wh-tui/src/app.rs::LOGO`, included verbatim with Wallhack's permission, held by the
+operator, dated 2026-09-06.
 
 ## research/aure
 
