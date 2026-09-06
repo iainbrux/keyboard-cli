@@ -8,10 +8,10 @@ use crate::frame::{parse, REPLY_BIT};
 pub enum BoardEvent {
     AdjustModeEntered,
     AdjustModeLeft,
-    /// A device-initiated frame this build does not recognise. Kept, never dropped. Reaches a
-    /// caller whenever a frame is certainly device-initiated: any `00 be` frame mid-roundtrip
-    /// (`be_event`), or anything at all from a poll (`any_event`). A non-`be` mismatch
-    /// mid-roundtrip may still be a late reply, so `roundtrip` keeps skipping that case instead.
+    /// A device-initiated frame this build does not recognise, kept rather than dropped. Reached
+    /// by any `00 be` frame mid-roundtrip (`be_event`), or anything from a poll (`any_event`). A
+    /// mismatched non-`be` frame is skipped unless the roundtrip awaits cmd `0x00`, where it
+    /// returns as the reply instead and errors loudly: both consumers guard the sub-order byte.
     Unknown(Vec<u8>),
 }
 

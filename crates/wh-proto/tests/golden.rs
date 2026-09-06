@@ -503,13 +503,11 @@ fn all_captures_decode_and_classify() {
     assert_no_hard_failures(&summary);
 }
 
-/// The measured sweep behind 3.4's queueing change: every inbound, exactly-`REPORT_LEN`-byte
-/// frame in `captures/` is offered to `adjust_event`, and the fires must equal exactly the
-/// frames that parse with `cmd == REPLY_BIT` and a payload starting `00 be 00` or `00 be 01`,
-/// with no outbound frame ever firing. Asserts the property, not the literal counts (measured
-/// here as 4 fires across 3772 inbound frames, both from the two board-side capture files), since
-/// the corpus grows. Skips silently, like `all_captures_decode_and_classify`, when `captures/` is
-/// absent.
+/// The measured sweep behind 3.4's queueing change: every inbound `captures/` frame is offered
+/// to `adjust_event`; its fires must equal exactly the frames with `cmd == REPLY_BIT` and payload
+/// `00 be 00|01`, never an outbound frame. Catches under-firing only: the corpus has no widening
+/// counterexample (no other-cmd `00 be`, no third byte past `00`/`01`), so the unit tests alone
+/// cover that direction.
 #[test]
 fn adjust_event_fires_exactly_on_the_measured_edges_and_never_outbound() {
     let captures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures");

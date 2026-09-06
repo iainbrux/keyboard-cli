@@ -393,8 +393,8 @@ failure on its own; it exists because the board stopped being a keyboard for how
 took, and whatever the command read or wrote around that window may no longer match what is on the
 board now. `wh` only hears an edge while a command is actually waiting on the board, so one that
 lands after the command's last read is not reported; an edge that lands between two commands is
-attributed to whichever later command's own read consumes it, not the command running when the
-board actually changed.
+attributed to whichever later command's own read consumes it, rather than the moment the board
+actually changed.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 

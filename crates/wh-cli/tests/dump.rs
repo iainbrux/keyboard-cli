@@ -7322,30 +7322,30 @@ fn wire_order_entered_then_left_prints_the_entered_note_first_and_left_note_last
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The closed failure item 3/4 fixed: before `roundtrip` routed on `be_event`, a `be 02`
-/// mid-`cmd 0x00` roundtrip fell through and killed the command with an opaque decode error.
-/// Now it queues as `Unknown` and the command succeeds; a one-shot command still prints no note
-/// for it, since `Unknown` is `poll_event`'s own concern.
+/// `wh get ap` sends only cmd `0x22`/`0x23`, never cmd `0x00`, so a `be 02` frame there was always
+/// skipped by the pre-existing mismatch arm; that fixture could not have pinned this. `wh profile`
+/// with no argument sends the one bare cmd `0x00` roundtrip: this script used to die with an
+/// opaque decode error, now it queues as `Unknown`, the command succeeds, and no note prints for it.
 #[test]
-fn a_command_with_an_unmeasured_be_edge_succeeds_and_prints_no_note_for_it() {
-    let mut lines = matrix_lines();
-    let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
-    key_lines.insert(1, unmeasured_be_edge_in_line());
-    lines.extend(key_lines);
-    let path = write_script("adjust-note-unmeasured-be", &lines);
-    let config_home = scratch_config_dir("adjust-note-unmeasured-be");
+fn a_cmd_zero_command_with_an_unmeasured_be_edge_succeeds_and_prints_no_note_for_it() {
+    let mut lines = profile_lines(0); // board reports wire index 0, UI "profile 1"
+    lines.insert(1, unmeasured_be_edge_in_line());
+    let path = write_script("profile-unmeasured-be", &lines);
+    let config_home = scratch_config_dir("profile-unmeasured-be");
 
-    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    let out = run_wh(&["profile"], &path, &config_home);
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("profile 1"), "unexpected stdout: {stdout}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !stderr.contains("adjust mode"),
-        "unexpected stderr: {stderr}"
+        !stdout.contains("adjust mode") && !stderr.contains("adjust mode"),
+        "no note for an unmeasured edge on either stream: stdout: {stdout}\nstderr: {stderr}"
     );
 
     std::fs::remove_file(path).unwrap();
