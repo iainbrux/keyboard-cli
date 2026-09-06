@@ -7139,3 +7139,152 @@ fn restore_refusal_before_any_write_prints_no_membership_skip_note() {
     std::fs::remove_file(path).unwrap();
     let _ = std::fs::remove_dir_all(&config_home);
 }
+
+/// The board's `0xbe` adjust-mode edge, as an `in_line`, built through the real frame encoder
+/// like `reply` above rather than a hand-typed checksum.
+fn adjust_edge_in_line(entering: bool) -> String {
+    let sub = if entering { 0x00 } else { 0x01 };
+    in_line(&reply(0x00, &[0x00, 0xbe, sub]))
+}
+
+/// An 0xbe edge arriving mid-command surfaces as exactly one stderr note, the command's own
+/// work is untouched, and stdout carries no trace of it.
+#[test]
+fn a_mid_command_adjust_edge_prints_one_stderr_note_and_changes_nothing_else() {
+    let mut lines = matrix_lines();
+    let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
+    // Spliced between the AP read's own request and its scripted reply, an `in` line the
+    // command never asked for, matching how the real board interleaves it mid-roundtrip.
+    key_lines.insert(1, adjust_edge_in_line(true));
+    lines.extend(key_lines);
+    let path = write_script("adjust-note-mid-command", &lines);
+    let config_home = scratch_config_dir("adjust-note-mid-command");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.matches("note: the board entered its own adjust mode during this command; settings may have changed underneath it").count(),
+        1,
+        "got: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("w: ap 1.20mm keyset none"),
+        "the command's own work must be untouched: {stdout}"
+    );
+    assert!(
+        !stdout.contains("adjust mode"),
+        "the note must stay off stdout: {stdout}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// Two edges of the same kind still print one note; both kinds print one each.
+#[test]
+fn repeated_edges_of_one_kind_print_once_and_both_kinds_print_one_each() {
+    let mut lines = matrix_lines();
+    let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
+    // Splice, from the highest index down so earlier indices stay valid: `be 00` before the
+    // RT_PRESS reply, `be 00` before the MODE reply, `be 01` before the AP reply, all spliced
+    // across the six roundtrips `read_key_settings` sends for 'w'.
+    key_lines.insert(5, adjust_edge_in_line(false));
+    key_lines.insert(3, adjust_edge_in_line(true));
+    key_lines.insert(1, adjust_edge_in_line(true));
+    lines.extend(key_lines);
+    let path = write_script("adjust-note-repeated", &lines);
+    let config_home = scratch_config_dir("adjust-note-repeated");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.matches("note: the board entered its own adjust mode during this command; settings may have changed underneath it").count(),
+        1,
+        "got: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("note: the board left its own adjust mode during this command; settings may have changed underneath it").count(),
+        1,
+        "got: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The negative half: a command whose script carries no edge prints no note.
+#[test]
+fn a_command_with_no_edges_prints_no_adjust_note() {
+    let mut lines = matrix_lines();
+    lines.extend(key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0));
+    let path = write_script("adjust-note-absent", &lines);
+    let config_home = scratch_config_dir("adjust-note-absent");
+
+    let out = run_wh(&["get", "ap", "--keys", "w"], &path, &config_home);
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("adjust mode"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}
+
+/// The hazard a reviewer flagged: a command whose script carries an edge and then goes on to
+/// fail (here, a readback mismatch) must still print the note. `with_session` computes the
+/// result, drains the queue, prints, and only then returns the result, so the note must survive
+/// an error path exactly as it does the happy path above.
+#[test]
+fn a_failing_command_still_prints_the_adjust_note() {
+    let mut lines = set_ap_script(1100); // 1100um readback where 1200um was written: mismatch
+                                         // Spliced before the script's very last reply, the readback of 'w's KEYSET_RT layout, an
+                                         // `in` line the command never asked for.
+    let last = lines.len() - 1;
+    lines.insert(last, adjust_edge_in_line(true));
+    let path = write_script("adjust-note-on-failure", &lines);
+    let config_home = scratch_config_dir("adjust-note-on-failure");
+
+    let out = run_wh(
+        &["set", "ap", "--keys", "w", "--set", "1.2"],
+        &path,
+        &config_home,
+    );
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit, got success with stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1.10mm") && stderr.contains("1.20mm"),
+        "the failure itself must still be reported: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("note: the board entered its own adjust mode during this command; settings may have changed underneath it").count(),
+        1,
+        "the note must survive the error path: got: {stderr}"
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(&config_home);
+}

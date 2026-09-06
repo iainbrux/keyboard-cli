@@ -383,6 +383,15 @@ a script or another tool where the rest of the output might scroll past. `wh key
 `wh keys group` never open a transport at all (they only ever touch the local key store), so they
 print no such line; that absence is expected for those two, not a sign the announcement failed.
 
+**The board can change under you, and `wh` says so.** Its own AP and RT keys edit settings without
+`wh` involved, and if that happens while a command is running, `wh` prints one stderr note per edge
+it saw, once per kind, after the command's own work finishes, whether that work succeeded or failed:
+`note: the board entered its own adjust mode during this command; settings may have changed
+underneath it` (and the same sentence with "left" for the other edge). This is informational, not a
+failure on its own; it exists because the board stopped being a keyboard for however long the edit
+took, and whatever the command read or wrote around that window may no longer match what is on the
+board now.
+
 ### Running against a script instead of hardware (`WH_REPLAY`)
 
 Set `WH_REPLAY=<path-to-a-captured-jsonl-script>` and every `wh` command reads a scripted device

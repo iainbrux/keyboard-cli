@@ -96,14 +96,19 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   pairing, since discovery only queries flagged keys, and priority `3` and `4` are refused by
   their own decode error rather than silently read as last-input.
 
-- [ ] **3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.** The one
-  architectural blocker for any long-running interface. The board announces entering and leaving
-  its own adjust mode with `cmd 0x00` sub-order `0xbe` (`be 00` entering, `be 01` leaving), and
-  while adjusting it stops being a keyboard entirely. The vendor configurator ignores the first
-  and re-reads the whole board on the second. `Transport` is strictly request-then-response and
-  cannot receive it. This lands before the TUI so the TUI's read loop is written once against the
-  final transport, and it is what makes both vendor-matching re-reads and the locked-board banner
-  (which the vendor UI lacks, and the operator wants) possible.
+- [x] ~~**3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.**~~ `Session`
+  now queues an edge that arrives during any roundtrip rather than losing it: `wh_proto::event`
+  parses `cmd 0x00` sub-order `0xbe` off a reply-shaped frame (`be 00` entering, `be 01` leaving,
+  anything else `Unknown`), and `poll_event`/`pending_events` surface the queue. Every one-shot
+  command now drains it after its own work, success or failure, and prints one stderr note per
+  kind seen, worded exactly and never duplicated on stdout. A mid-roundtrip mismatch was found and
+  fixed on the way here: an edge shares `cmd 0x80` with an ordinary reply, so the routing has to be
+  checked before the awaited reply's own match, not after, or the edge is read back as the reply
+  it happens to resemble.
+
+  Still open for the operator, before 3.5 relies on this: FN+AP on the real board with
+  `poll_event` running, expecting both edges over a real HID read rather than a replay script.
+  **[hardware]**
 
 - [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,
   arrow-navigable, values populated by reading the board on open (a full read costs ~40ms, so no

@@ -72,7 +72,34 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
             }
         };
     let mut s = Session::new(t);
-    f(&mut s)
+    let result = f(&mut s);
+    // Drained and reported regardless of `f`'s own result: a note about the board's own edges
+    // is as true of a run that failed as one that succeeded, so the drain must not sit behind
+    // an early return.
+    let mut entered = false;
+    let mut left = false;
+    for e in s.pending_events() {
+        match e {
+            wh_proto::event::BoardEvent::AdjustModeEntered => entered = true,
+            wh_proto::event::BoardEvent::AdjustModeLeft => left = true,
+            // Nothing in the corpus produces one mid-roundtrip today (only `0xbe` shapes route
+            // here), and `poll_event`'s own consumers own reporting these, not a one-shot command.
+            wh_proto::event::BoardEvent::Unknown(_) => {}
+        }
+    }
+    if entered {
+        best_effort_eprintln(
+            "note: the board entered its own adjust mode during this command; settings may have \
+             changed underneath it",
+        );
+    }
+    if left {
+        best_effort_eprintln(
+            "note: the board left its own adjust mode during this command; settings may have \
+             changed underneath it",
+        );
+    }
+    result
 }
 
 /// A key's display name, falling back to its hex usage code (e.g. `"0x50"`) when it isn't in
