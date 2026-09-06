@@ -172,6 +172,29 @@ mod tests {
     }
 
     #[test]
+    fn poll_event_returns_a_queued_event_before_the_next_scripted_one_in_order() {
+        // A roundtrip queues `Entered`; `Left` sits scripted right after the matched reply.
+        // The queue must answer first, and answering it must not touch the transport, so
+        // the second call finds `Left` still waiting rather than a now-empty script.
+        let req = wh_proto::cmds::read_profile();
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_entering()),
+            crate::replay::Entry::In(profile_reply_frame()),
+            crate::replay::Entry::In(be_leaving()),
+        ]));
+        s.roundtrip(&req).unwrap();
+        assert_eq!(
+            s.poll_event(Duration::from_millis(1)).unwrap(),
+            Some(BoardEvent::AdjustModeEntered)
+        );
+        assert_eq!(
+            s.poll_event(Duration::from_millis(1)).unwrap(),
+            Some(BoardEvent::AdjustModeLeft)
+        );
+    }
+
+    #[test]
     fn roundtrip_queues_an_edge_and_still_matches_its_reply() {
         // Script: out request, in 0xbe edge, in real reply. The edge arrives mid-roundtrip.
         let req = wh_proto::cmds::read_profile();
@@ -207,10 +230,41 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_queues_an_edge_during_a_non_cmd_zero_roundtrip() {
+        // cmd 0x23 (KEY layout read), wh dump's shape and the commonest traffic in the repo.
+        // The routing must fire regardless of which cmd the roundtrip is waiting on, not only
+        // cmd 0x00: a version conditioned on `req[2] == 0x00` would silently drop this edge.
+        let req = wh_proto::cmds::read_key_layout(0x04, 0x14);
+        let reply = reply_frame(wh_proto::cmds::cmd::KEY, &[0x01, 0x04, 0x14, 0xF4, 0x01]);
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_entering()),
+            crate::replay::Entry::In(reply),
+        ]));
+        let payload = s.roundtrip(&req).unwrap();
+        assert_eq!(payload, vec![0x01, 0x04, 0x14, 0xF4, 0x01]);
+        assert_eq!(
+            s.pending_events().collect::<Vec<_>>(),
+            vec![BoardEvent::AdjustModeEntered]
+        );
+    }
+
+    #[test]
     fn pending_events_drains_once() {
-        let mut s = Session::new(replay_with(vec![crate::replay::Entry::In(be_leaving())]));
-        let _ = s.poll_event(Duration::from_millis(1)).unwrap();
-        // poll_event returned it; the queue holds nothing, and a second drain is empty.
+        // Seed the queue through a real roundtrip rather than poll_event, so this pins the
+        // drain itself: a `drain(..0)` mutation would leave the first collect empty.
+        let req = wh_proto::cmds::read_profile();
+        let mut s = Session::new(replay_with(vec![
+            crate::replay::Entry::Out(req),
+            crate::replay::Entry::In(be_leaving()),
+            crate::replay::Entry::In(profile_reply_frame()),
+        ]));
+        s.roundtrip(&req).unwrap();
+        assert_eq!(
+            s.pending_events().collect::<Vec<_>>(),
+            vec![BoardEvent::AdjustModeLeft]
+        );
+        // The first drain took everything; a second drain on the same queue is empty.
         assert_eq!(s.pending_events().count(), 0);
     }
 
