@@ -97,17 +97,27 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   their own decode error rather than silently read as last-input.
 
 - [x] ~~**3.4 Teach the transport to receive the board's unsolicited `0xbe` frame.**~~ `Session`
-  now queues an edge that arrives during any roundtrip rather than losing it: `wh_proto::event`
-  parses `cmd 0x00` sub-order `0xbe` off a reply-shaped frame (`be 00` entering, `be 01` leaving,
-  anything else `Unknown`), and `poll_event`/`pending_events` surface the queue. Every one-shot
-  command now drains it after its own work, success or failure, and prints one stderr note per
-  kind seen, worded exactly and never duplicated on stdout. A mid-roundtrip mismatch was found and
-  fixed on the way here: an edge shares `cmd 0x80` with an ordinary reply, so the routing has to be
-  checked before the awaited reply's own match, not after, or the edge is read back as the reply
-  it happens to resemble.
+  now queues an edge that arrives during any roundtrip rather than losing it: a roundtrip parses
+  `cmd 0x00` sub-order `0xbe` off a reply-shaped frame (`be 00` entering, `be 01` leaving) and
+  queues only those two, discarding anything else exactly as before this change; `Unknown` is
+  `poll_event`'s own concern, produced by `any_event` for its 3.5 consumers, never by a roundtrip.
+  `poll_event`/`pending_events` surface the queue. Every one-shot command now drains it after its
+  own work, success or failure, and prints one stderr note per kind seen, worded exactly and never
+  duplicated on stdout. A mid-roundtrip mismatch was found and fixed on the way here: an edge
+  shares `cmd 0x80` with an ordinary reply, so the routing has to be checked before the awaited
+  reply's own match, not after, or the edge is read back as the reply it happens to resemble.
+
+  An edge arriving between two commands, not mid-roundtrip, is not a separate case: on real
+  hardware the frame sits in the OS buffer until the next roundtrip's read loop consumes it, so
+  it is the same mid-roundtrip path from the transport's own point of view. `ReplayTransport`'s
+  positional scripts represent that by placing the `In` entry after the next `Out`, which is
+  exactly what this task's fixtures do; splicing it any earlier hits the script's own loud
+  mismatch rather than proving anything.
 
   Still open for the operator, before 3.5 relies on this: FN+AP on the real board with
-  `poll_event` running, expecting both edges over a real HID read rather than a replay script.
+  `poll_event` running, expecting both edges over a real HID read rather than a replay script, and
+  that `HidTransport::recv`'s zero-byte read maps to `DeviceError::Timeout` (`hid.rs:64-66`) the
+  way the real hidapi behaves on a timeout, not merely the way this build assumes it does.
   **[hardware]**
 
 - [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,

@@ -7147,6 +7147,18 @@ fn adjust_edge_in_line(entering: bool) -> String {
     in_line(&reply(0x00, &[0x00, 0xbe, sub]))
 }
 
+/// The exact stderr lines `with_session` prints for each edge kind, verbatim: the tests below
+/// compare a whole line, not a substring, so a note wrapped in a prefix or suffix cannot pass.
+const ADJUST_ENTERED_NOTE: &str = "note: the board entered its own adjust mode during this \
+    command; settings may have changed underneath it";
+const ADJUST_LEFT_NOTE: &str = "note: the board left its own adjust mode during this command; \
+    settings may have changed underneath it";
+
+/// How many lines of `text` equal `line` exactly, not merely contain it.
+fn count_exact_lines(text: &str, line: &str) -> usize {
+    text.lines().filter(|l| *l == line).count()
+}
+
 /// An 0xbe edge arriving mid-command surfaces as exactly one stderr note, the command's own
 /// work is untouched, and stdout carries no trace of it.
 #[test]
@@ -7169,7 +7181,7 @@ fn a_mid_command_adjust_edge_prints_one_stderr_note_and_changes_nothing_else() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
-        stderr.matches("note: the board entered its own adjust mode during this command; settings may have changed underneath it").count(),
+        count_exact_lines(&stderr, ADJUST_ENTERED_NOTE),
         1,
         "got: {stderr}"
     );
@@ -7192,9 +7204,10 @@ fn a_mid_command_adjust_edge_prints_one_stderr_note_and_changes_nothing_else() {
 fn repeated_edges_of_one_kind_print_once_and_both_kinds_print_one_each() {
     let mut lines = matrix_lines();
     let mut key_lines = key_settings_lines(0x1A, 1200, 0x30, 400, 600, 0, 0);
-    // Splice, from the highest index down so earlier indices stay valid: `be 00` before the
-    // RT_PRESS reply, `be 00` before the MODE reply, `be 01` before the AP reply, all spliced
-    // across the six roundtrips `read_key_settings` sends for 'w'.
+    // Inserted highest index first so earlier indices stay valid; because each insert shifts
+    // everything after it, this lands as `be 00` before AP's reply, `be 00` before MODE's reply,
+    // then `be 01` before RT_PRESS's reply, spliced across the six roundtrips
+    // `read_key_settings` sends for 'w'.
     key_lines.insert(5, adjust_edge_in_line(false));
     key_lines.insert(3, adjust_edge_in_line(true));
     key_lines.insert(1, adjust_edge_in_line(true));
@@ -7211,12 +7224,12 @@ fn repeated_edges_of_one_kind_print_once_and_both_kinds_print_one_each() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
-        stderr.matches("note: the board entered its own adjust mode during this command; settings may have changed underneath it").count(),
+        count_exact_lines(&stderr, ADJUST_ENTERED_NOTE),
         1,
         "got: {stderr}"
     );
     assert_eq!(
-        stderr.matches("note: the board left its own adjust mode during this command; settings may have changed underneath it").count(),
+        count_exact_lines(&stderr, ADJUST_LEFT_NOTE),
         1,
         "got: {stderr}"
     );
@@ -7280,7 +7293,7 @@ fn a_failing_command_still_prints_the_adjust_note() {
         "the failure itself must still be reported: {stderr}"
     );
     assert_eq!(
-        stderr.matches("note: the board entered its own adjust mode during this command; settings may have changed underneath it").count(),
+        count_exact_lines(&stderr, ADJUST_ENTERED_NOTE),
         1,
         "the note must survive the error path: got: {stderr}"
     );

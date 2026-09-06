@@ -390,7 +390,8 @@ it saw, once per kind, after the command's own work finishes, whether that work 
 underneath it` (and the same sentence with "left" for the other edge). This is informational, not a
 failure on its own; it exists because the board stopped being a keyboard for however long the edit
 took, and whatever the command read or wrote around that window may no longer match what is on the
-board now.
+board now. `wh` only hears an edge while a command is actually waiting on the board, so one that
+lands after the command's last read is not reported.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 

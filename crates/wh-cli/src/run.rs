@@ -48,6 +48,9 @@ fn non_empty_replay_path(raw: Result<String, std::env::VarError>) -> Option<Stri
 /// silently opens the real keyboard instead. This line is the backstop that makes a run
 /// quietly hitting real hardware never silent, regardless of what carries the variable.
 /// Kept off stdout so `dump`'s parseable JSON output stays clean.
+///
+/// After `f` returns, drains whatever adjust-mode edges arrived during its work and reports each
+/// kind once on stderr, regardless of whether `f` succeeded: see the drain below `f`'s own call.
 fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>) -> Result<R> {
     let t: Box<dyn Transport> =
         if let Some(path) = non_empty_replay_path(std::env::var("WH_REPLAY")) {
@@ -82,8 +85,9 @@ fn with_session<R>(f: impl FnOnce(&mut Session<Box<dyn Transport>>) -> Result<R>
         match e {
             wh_proto::event::BoardEvent::AdjustModeEntered => entered = true,
             wh_proto::event::BoardEvent::AdjustModeLeft => left = true,
-            // Nothing in the corpus produces one mid-roundtrip today (only `0xbe` shapes route
-            // here), and `poll_event`'s own consumers own reporting these, not a one-shot command.
+            // `Session::events` has exactly one push site, fed by `adjust_event`, which returns
+            // only these two edges, so `Unknown` cannot reach this drain today. If `roundtrip`
+            // ever queues from `any_event` instead, this arm must stop ignoring it.
             wh_proto::event::BoardEvent::Unknown(_) => {}
         }
     }
