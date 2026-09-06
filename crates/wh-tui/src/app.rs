@@ -1,6 +1,8 @@
 use crate::board::BoardModel;
+use crate::matrix::{render_matrix, CapValue};
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::prelude::*;
+use std::collections::HashSet;
 
 /// The project's own mark, not the vendor's: Wallhack's logo is Wallhack's.
 pub const LOGO: &[&str] = &[
@@ -62,6 +64,11 @@ pub struct App {
     /// Each tab title's on-screen rect, recorded during the last `draw`, for click-to-select.
     /// Later tasks reuse this same rect-recording pattern for keys and buttons.
     pub tab_rects: Vec<(Rect, Tab)>,
+    /// Each rendered key cap's on-screen rect and usage, recorded during the last `draw`.
+    /// Rendered as `Modifier::REVERSED` when the usage is in `selection`; nothing drives
+    /// `selection` yet, that arrives with click-to-select in a later plan.
+    pub key_rects: Vec<(Rect, u8)>,
+    pub selection: HashSet<u8>,
 }
 
 impl App {
@@ -72,6 +79,8 @@ impl App {
             quit: false,
             tab: Tab::ActuationPoint,
             tab_rects: Vec::new(),
+            key_rects: Vec::new(),
+            selection: HashSet::new(),
         }
     }
 
@@ -168,6 +177,58 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     f.render_widget(Line::from(spans), Rect::new(0, y, area.width, 1));
     app.tab_rects = tab_rects;
+
+    // The body: everything between the tab row and the footer, split horizontally. The left
+    // pane is chrome for a later task (a settings panel); the matrix takes whatever is left.
+    let body_y = y + 1;
+    let footer_y = area.height.saturating_sub(1);
+    let body_height = footer_y.saturating_sub(body_y);
+    let left_width = area.width.min(46);
+    let matrix_area = Rect::new(
+        left_width,
+        body_y,
+        area.width.saturating_sub(left_width),
+        body_height,
+    );
+
+    let value_of = |usage: u8| -> CapValue {
+        match app.tab {
+            Tab::ActuationPoint => match app.board.key(usage) {
+                Some(k) => CapValue {
+                    show: true,
+                    text: format!("{:.2}", k.ap.to_mm()),
+                },
+                None => CapValue {
+                    show: false,
+                    text: String::new(),
+                },
+            },
+            Tab::RapidTrigger => match app.board.key(usage) {
+                Some(k) if k.rt_keyset != 0 => CapValue {
+                    show: true,
+                    text: format!("{:.2}", k.rt_press.to_mm()),
+                },
+                _ => CapValue {
+                    show: false,
+                    text: String::new(),
+                },
+            },
+            _ => CapValue {
+                show: false,
+                text: String::new(),
+            },
+        }
+    };
+    let mut key_rects = Vec::new();
+    render_matrix(
+        matrix_area,
+        f.buffer_mut(),
+        &app.board.rows,
+        value_of,
+        &app.selection,
+        &mut key_rects,
+    );
+    app.key_rects = key_rects;
 
     f.render_widget(
         Line::raw(FOOTER),

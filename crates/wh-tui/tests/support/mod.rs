@@ -12,7 +12,7 @@
 
 use wh_device::ops::KeySettings;
 use wh_device::replay::hex;
-use wh_proto::cmds::{self, layout, GlobalTravel, Mode, ProfileNumber};
+use wh_proto::cmds::{self, layout, DefKeyRow, GlobalTravel, Mode, ProfileNumber};
 use wh_proto::value::Um;
 use wh_tui::board::BoardModel;
 
@@ -182,6 +182,57 @@ pub fn two_key_board() -> BoardModel {
                 ap_keyset: 0,
                 rt_keyset: 0,
             },
+        ],
+    }
+}
+
+/// A `BoardModel` literal with real `rows` (unlike `two_key_board`, whose `rows` is empty),
+/// for `matrix.rs`: the wasd shape from `dump.rs`'s `matrix_lines_wasd`, 'w' (0x1A) and 'a'
+/// (0x04) in the first row pair, 's' (0x16) and 'd' (0x07) in the second, one key per row, all
+/// in column 0. `w`'s AP is 2000 (2.00mm), the value the matrix tests assert against.
+#[allow(dead_code)]
+pub fn wasd_board() -> BoardModel {
+    let key = |usage: u8, ap: u16, rt_keyset: u16| KeySettings {
+        usage,
+        ap: Um(ap),
+        mode: Mode::from_value(0x0010),
+        rt_press: Um(500),
+        rt_release: Um(500),
+        ap_keyset: 0,
+        rt_keyset,
+    };
+    BoardModel {
+        serial: "SNTUITEST0000001".to_string(),
+        firmware: "V1.0.0.001".to_string(),
+        profile: ProfileNumber::from_wire_index(0).unwrap(),
+        global: GlobalTravel {
+            travel: Um(500),
+            press_dead: Um(200),
+            release_dead: Um(200),
+        },
+        rows: vec![
+            DefKeyRow {
+                row: 0,
+                keys: vec![(0, 0x1A)],
+            },
+            DefKeyRow {
+                row: 1,
+                keys: vec![(0, 0x04)],
+            },
+            DefKeyRow {
+                row: 2,
+                keys: vec![(0, 0x16)],
+            },
+            DefKeyRow {
+                row: 3,
+                keys: vec![(0, 0x07)],
+            },
+        ],
+        keys: vec![
+            key(0x1A, 2000, 0),
+            key(0x04, 1500, 0),
+            key(0x16, 1500, 1),
+            key(0x07, 1500, 0),
         ],
     }
 }

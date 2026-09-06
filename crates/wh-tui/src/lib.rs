@@ -1,5 +1,6 @@
 pub mod app;
 pub mod board;
+pub mod matrix;
 
 use anyhow::{Context, Result};
 use board::BoardModel;

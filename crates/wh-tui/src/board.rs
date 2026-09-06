@@ -145,7 +145,16 @@ pub(crate) fn test_fixture() -> BoardModel {
             press_dead: Um(200),
             release_dead: Um(200),
         },
-        rows: Vec::new(),
+        rows: vec![
+            DefKeyRow {
+                row: 0,
+                keys: vec![(0, 0x1A)],
+            },
+            DefKeyRow {
+                row: 1,
+                keys: vec![(0, 0x04)],
+            },
+        ],
         keys: vec![
             KeySettings {
                 usage: 0x1A,
