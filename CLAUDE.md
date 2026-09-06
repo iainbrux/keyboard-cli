@@ -247,10 +247,11 @@ documents: a signature or example in one may no longer compile, and that is expe
 stale statement where code reads it (comments, README, `docs/*.md`); leave plan files as the record
 of what was decided at the time. The one exception is a plan still being executed: its task briefs
 are extracted from it, so a wrong byte in it flows into the next task, and it is corrected like any
-live document until execution finishes. The tracked signal for that boundary: when a plan's last
-task merges, an execution note is appended to the plan file itself ("Executed: merged as <sha>,
-<date>"), and a plan carrying that note is frozen. Plans dated before 2026-09-06 predate this
-convention and are all closed.
+live document until execution finishes. Execution finishes when the plan's branch merges to
+`main`, and the branch's final commit before that merge appends an execution note to the plan file
+itself ("Executed: <date>, merged to main"); appending it is part of finishing the branch, not a
+later chore. A plan carrying the note is frozen; a plan without it on an unmerged branch is live;
+plans dated before 2026-09-06 predate this convention and are all closed.
 
 `captures/` holds real device traffic and is **gitignored**. It is the operator's own data. The
 golden test (`cargo test -p wh-proto --test golden`) decodes every frame in it; a missing directory
