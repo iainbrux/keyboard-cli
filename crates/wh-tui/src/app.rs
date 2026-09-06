@@ -78,9 +78,10 @@ impl Tab {
     }
 }
 
-/// ADVANCED's own sub-tab, the vendor's own order (`08`-`11-advanced-*.png`). Selected the same
-/// way as `Tab`: click-only, no arrow-key binding, since Left/Right already cycle `Tab` itself and
-/// the vendor's own sub-tab row has no keyboard equivalent in the captured screenshots either.
+/// ADVANCED's own sub-tab, the vendor's own order (`08`-`11-advanced-*.png`). Cycled and clicked
+/// exactly like `Tab`: Up and Down cycle it while `Tab::Advanced` is selected (Left/Right stay
+/// with the top-level tabs, so the two cycles never compete for the same keys), no wrapping past
+/// either end, same as `Tab`'s own Left/Right cycling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdvancedTab {
     General,
@@ -104,6 +105,13 @@ impl AdvancedTab {
             AdvancedTab::Device => "DEVICE",
             AdvancedTab::Share => "SHARE",
         }
+    }
+
+    fn index(self) -> usize {
+        ADVANCED_TABS
+            .iter()
+            .position(|t| *t == self)
+            .expect("every AdvancedTab is in ADVANCED_TABS")
     }
 }
 
@@ -166,6 +174,18 @@ impl App {
                 let i = self.tab.index();
                 if i > 0 {
                     self.tab = TABS[i - 1];
+                }
+            }
+            KeyCode::Down if self.tab == Tab::Advanced => {
+                let i = self.advanced_tab.index();
+                if i + 1 < ADVANCED_TABS.len() {
+                    self.advanced_tab = ADVANCED_TABS[i + 1];
+                }
+            }
+            KeyCode::Up if self.tab == Tab::Advanced => {
+                let i = self.advanced_tab.index();
+                if i > 0 {
+                    self.advanced_tab = ADVANCED_TABS[i - 1];
                 }
             }
             _ => {}

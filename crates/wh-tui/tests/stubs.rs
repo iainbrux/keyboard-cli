@@ -1,7 +1,9 @@
 mod support;
 
-use crossterm::event::{MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::style::Modifier;
 use ratatui::Terminal;
 use support::two_key_board;
 use wh_tui::app::{
@@ -39,6 +41,27 @@ fn new_terminal() -> Terminal<TestBackend> {
 /// never drift together silently.
 fn dots(label: &str, control: &str) -> String {
     ".".repeat(56 - label.chars().count() - control.chars().count())
+}
+
+/// Asserts the row whose rendered line starts with `label` is dim across its whole width (both
+/// the leftmost and, within the 56-column left pane, the rightmost cell), the same shape
+/// `tests/rows.rs`'s `rt_sub_rows_render_dim_while_global_rt_is_off` checks for RT's sub-rows.
+/// Reads the row's `y` back from the rendered text rather than a hardcoded index, so a row moved
+/// out from under its own label is still caught.
+fn assert_row_dim(buf: &Buffer, lines: &[String], label: &str) {
+    let left_last_col = 55u16; // left pane is 56 columns wide (area.width.min(56)), 0-indexed
+    let y = lines
+        .iter()
+        .position(|l| l.starts_with(label))
+        .unwrap_or_else(|| panic!("the {label} row must render: {lines:?}")) as u16;
+    assert!(
+        buf[(0, y)].modifier.contains(Modifier::DIM),
+        "{label}'s leftmost cell must be dim, its control must be disabled: {lines:?}"
+    );
+    assert!(
+        buf[(left_last_col, y)].modifier.contains(Modifier::DIM),
+        "{label}'s rightmost cell (within the left pane) must be dim too: {lines:?}"
+    );
 }
 
 #[test]
@@ -251,4 +274,146 @@ fn clicking_an_advanced_sub_tab_selects_it() {
     assert_eq!(app.advanced_tab, AdvancedTab::General);
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), col, sub_tab_row_y);
     assert_eq!(app.advanced_tab, AdvancedTab::Device);
+}
+
+#[test]
+fn up_and_down_cycle_the_advanced_subtab_without_wrapping_past_the_ends() {
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    assert_eq!(app.advanced_tab, AdvancedTab::General);
+
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.advanced_tab, AdvancedTab::Gamepad);
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.advanced_tab, AdvancedTab::Device);
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.advanced_tab, AdvancedTab::Share);
+    app.handle_key(KeyCode::Down);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::Share,
+        "Down at the last sub-tab must not wrap"
+    );
+
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.advanced_tab, AdvancedTab::Device);
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.advanced_tab, AdvancedTab::Gamepad);
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.advanced_tab, AdvancedTab::General);
+    app.handle_key(KeyCode::Up);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::General,
+        "Up at the first sub-tab must not wrap"
+    );
+}
+
+#[test]
+fn up_and_down_do_nothing_when_a_non_advanced_tab_is_selected() {
+    let mut app = new_app();
+    assert_eq!(app.tab, Tab::ActuationPoint);
+    assert_eq!(app.advanced_tab, AdvancedTab::General);
+
+    app.handle_key(KeyCode::Down);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::General,
+        "Down must not touch advanced_tab while a non-ADVANCED tab is selected"
+    );
+    app.handle_key(KeyCode::Up);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::General,
+        "Up must not touch advanced_tab while a non-ADVANCED tab is selected"
+    );
+
+    // Also confirm it while parked on a sub-tab other than the default, so the guard is checked
+    // against `app.tab`, not merely against `advanced_tab` already being at its ends.
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Gamepad;
+    app.tab = Tab::Mapping;
+    app.handle_key(KeyCode::Down);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::Gamepad,
+        "Down must not touch advanced_tab from a different tab even mid-cycle"
+    );
+    app.handle_key(KeyCode::Up);
+    assert_eq!(
+        app.advanced_tab,
+        AdvancedTab::Gamepad,
+        "Up must not touch advanced_tab from a different tab even mid-cycle"
+    );
+}
+
+#[test]
+fn general_gamepad_share_and_switches_rows_render_dim_disabled() {
+    // GENERAL: every row from disabled_button/disabled_stepper, including SOCD.
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::General;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    for label in [
+        "RESET PROFILE",
+        "FACTORY RESET",
+        "POLLING RATE",
+        "LED SLEEP TIMER",
+        "LED BRIGHTNESS",
+        "SYSTEM TYPE",
+        "SHOW ANALOG OUTPUT",
+        "SAFETY ZONE",
+        "SHOW MAPPED KEY LABELS",
+        "LOCALIZED KEY LABELS",
+        "SOCD",
+        "DYNAMIC KEYSTROKE (DKS)",
+        "MOD TAP",
+        "WALKTHROUGH",
+    ] {
+        assert_row_dim(&buf, &lines, label);
+    }
+
+    // GAMEPAD
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Gamepad;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    for label in [
+        "GAMEPAD MODE",
+        "ENABLE MAPPED KEYBOARD KEYS",
+        "DISABLE MAPPED KEY INPUT",
+        "SQUARE JOYSTICK OUTPUT",
+        "DEPTH-BASED JOYSTICK",
+    ] {
+        assert_row_dim(&buf, &lines, label);
+    }
+
+    // SHARE
+    let mut app = new_app();
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Share;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    for label in ["EXPORT PROFILE SETTINGS", "IMPORT PROFILE SETTINGS"] {
+        assert_row_dim(&buf, &lines, label);
+    }
+
+    // SWITCHES
+    let mut app = new_app();
+    app.tab = Tab::Switches;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    for label in ["CALIBRATE SWITCHES", "CURRENT SWITCHES"] {
+        assert_row_dim(&buf, &lines, label);
+    }
 }
