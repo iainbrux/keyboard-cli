@@ -284,14 +284,15 @@ fn a_shared_border_row_is_styled_by_the_cap_below_not_above() {
 /// The operator's own defect (2026-09-06 23:51): a real board's rows rarely line up their cap
 /// boundaries, so the row below's own top border simply overwrote the row above's own bottom
 /// border wholesale, erasing corners and leaving stray verticals wherever the two rows' widths
-/// differed. Three plain 1u caps (widths 7,7,7, boundaries at columns 0,6,7,13,14,20) sit over a
-/// row whose middle cap is TAB at 1.5u (widths 7,11,7, boundaries at 0,6,7,17,18,24): the two
-/// rows agree at 0, 6, 7 (`┼`, `┼`, `┼`... only 6 and 7 are interior, 0 is the shared line's own
-/// left end, `├`), diverge where only the upper row has a boundary (13, 14: `┴`, `┴`), diverge
-/// again where only the lower row does (17, 18: `┬`, `┬`), and the lower row's own trailing cap
-/// (18-24) has nothing above it at all, so 21-23 stay a plain rule and 24, the shared line's own
-/// right end, is a genuine corner-turned-`┐` from the lower row's own untouched rendering.
-/// Asserted as one exact string: a partial fix that gets some columns right would still fail this.
+/// differed. Three plain 1u caps sharing borders (widths 7,7,7, boundaries at columns 0,6,12,18,
+/// since each cap's own right border is the next cap's own left border) sit over a row whose
+/// middle cap is TAB at 1.5u (widths 7,11,7, boundaries at 0,6,16,22): the two rows agree at 0
+/// (the shared line's own left end, `├`) and 6 (`┼`), diverge where only the upper row has a
+/// boundary (12, 18: `┴`, `┴`), diverge again where only the lower row does (16: `┬`), and the
+/// lower row's own trailing cap (16-22) has nothing above it past column 18, so 19-21 stay a
+/// plain rule and 22, the shared line's own right end, is a genuine corner-turned-`┐` from the
+/// lower row's own untouched rendering. Asserted as one exact string: a partial fix that gets some
+/// columns right would still fail this.
 #[test]
 fn a_misaligned_shared_border_merges_into_one_continuous_rule() {
     let rows = vec![
@@ -325,9 +326,163 @@ fn a_misaligned_shared_border_merges_into_one_continuous_rule() {
     // The shared row: the upper row's own bottom border, CAP_HEIGHT - 1 (3) rows below its own
     // top at y=0, which is also the lower row's own top border.
     assert_eq!(
-        lines[3], "├─────┼┼─────┴┴──┬┬─┴───┐",
+        lines[3], "├─────┼─────┴───┬─┴───┐",
         "the shared line must merge into one continuous rule, containing at least one ┬, ┴ \
          and ┼, with correct end characters: {lines:?}"
+    );
+}
+
+/// The operator's own defect (2026-09-07 00:13), vendor-verified against
+/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`: `wh-tui` drew each cap as
+/// its own independent `Block`, so two adjacent caps in a row occupied two distinct border columns
+/// and every within-row seam rendered doubled (`││`), where the vendor draws one continuous lattice
+/// with single-pixel shared borders. Three plain 1u caps (w, s, a) in one row: the label line must
+/// read as one lattice, not three independent boxes glued together.
+#[test]
+fn adjacent_caps_in_a_row_share_a_single_border_column_not_a_doubled_one() {
+    let rows = vec![DefKeyRow {
+        row: 0,
+        keys: vec![(0, 0x1A), (1, 0x16), (2, 0x04)], // w, s, a
+    }];
+    let area = Rect::new(0, 0, 40, 10);
+    let mut buf = Buffer::empty(area);
+    let mut rects = Vec::new();
+    let selected = HashSet::new();
+
+    render_matrix(
+        area,
+        &mut buf,
+        &rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected,
+        &mut rects,
+    );
+
+    let lines = buffer_lines(&buf);
+    assert!(
+        !lines.iter().any(|l| l.contains("\u{2502}\u{2502}")),
+        "no rendered line may contain a doubled vertical bar: {lines:?}"
+    );
+    assert_eq!(
+        lines[1], "│  W  │  S  │  A  │",
+        "the whole row's label line must be one lattice with single-bar seams: {lines:?}"
+    );
+}
+
+/// The shared column between two caps in the same row belongs to the left cap, by insertion order
+/// and `key_at`'s first-match (see its own doc comment): rows are pushed left to right, so the
+/// left cap's rect (which reaches the shared column too, as its own right border) is found first.
+/// Mirrors the existing rule that a shared border *row* belongs to the cap above it.
+#[test]
+fn a_click_on_the_shared_column_between_two_row_caps_resolves_to_the_left_cap() {
+    let rows = vec![DefKeyRow {
+        row: 0,
+        keys: vec![(0, 0x1A), (1, 0x16), (2, 0x04)], // w, s, a
+    }];
+    let area = Rect::new(0, 0, 40, 10);
+    let mut buf = Buffer::empty(area);
+    let mut rects = Vec::new();
+    let selected = HashSet::new();
+
+    render_matrix(
+        area,
+        &mut buf,
+        &rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected,
+        &mut rects,
+    );
+
+    let w_rect = rects.iter().find(|&&(_, u)| u == 0x1A).unwrap().0;
+    let s_rect = rects.iter().find(|&&(_, u)| u == 0x16).unwrap().0;
+    let shared_col = w_rect.x + w_rect.width - 1;
+    assert_eq!(
+        shared_col, s_rect.x,
+        "the shared column must be both w's own right border and s's own left border"
+    );
+
+    let hit = key_at(&rects, shared_col, w_rect.y + 1);
+    assert_eq!(
+        hit,
+        Some(0x1A),
+        "a click on the shared column must resolve to w (the left cap), not s"
+    );
+}
+
+/// A selected cap's own right border column, shared with the cap that follows it in the row, is
+/// excluded from its own `REVERSED` region: that column is the next cap's own left border too,
+/// and the next cap's `block.render` redraws it, unstyled, on the very next loop iteration (see
+/// `render_matrix`'s own comment). So the shared column ends up styled by whichever of the pair
+/// draws last, the cap on the right, not the cap on the left, mirroring the existing rule for a
+/// shared border *row* (styled by the cap below, drawn last there too).
+#[test]
+fn adjacent_selections_style_the_shared_column_from_the_cap_that_draws_it_last() {
+    let rows = vec![DefKeyRow {
+        row: 0,
+        keys: vec![(0, 0x1A), (1, 0x16), (2, 0x04)], // w, s, a
+    }];
+    let area = Rect::new(0, 0, 40, 10);
+
+    let selected_w = {
+        let mut s = HashSet::new();
+        s.insert(0x1Au8);
+        s
+    };
+    let mut buf_w = Buffer::empty(area);
+    let mut rects_w = Vec::new();
+    render_matrix(
+        area,
+        &mut buf_w,
+        &rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected_w,
+        &mut rects_w,
+    );
+    let w_rect = rects_w
+        .iter()
+        .find(|&&(_, u)| u == 0x1A)
+        .expect("w's cap must be recorded")
+        .0;
+    let shared_col = w_rect.x + w_rect.width - 1;
+    assert!(
+        !buf_w[(shared_col, w_rect.y + 1)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "w alone selected must not reverse the column it shares with s, drawn after it"
+    );
+
+    let selected_s = {
+        let mut s = HashSet::new();
+        s.insert(0x16u8);
+        s
+    };
+    let mut buf_s = Buffer::empty(area);
+    let mut rects_s = Vec::new();
+    render_matrix(
+        area,
+        &mut buf_s,
+        &rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected_s,
+        &mut rects_s,
+    );
+    assert!(
+        buf_s[(shared_col, w_rect.y + 1)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "s alone selected must reverse the column it shares with w, as s's own left border"
     );
 }
 
@@ -401,7 +556,7 @@ fn caps_show_the_vendors_display_labels_for_punctuation_modifiers_and_fn() {
 fn arrow_caps_render_a_single_column_wide_glyph_and_still_abut() {
     // left (0x50) then right (0x4F) in one row: both plain 1.0-unit caps, so if the glyph were
     // double-width (or otherwise miscounted) the second cap's rect would not start exactly where
-    // the first one's ends.
+    // the lattice seam puts it.
     let rows = vec![DefKeyRow {
         row: 0,
         keys: vec![(0, 0x50), (1, 0x4F)],
@@ -430,8 +585,9 @@ fn arrow_caps_render_a_single_column_wide_glyph_and_still_abut() {
     assert_eq!(left_rect.width, 7, "left's cap is a plain 1.0-unit cap");
     assert_eq!(
         right_rect.x,
-        left_rect.x + left_rect.width,
-        "right's cap must abut left's, no gap column between them"
+        left_rect.x + left_rect.width - 1,
+        "right's cap must share left's own right border column as its own left one, the lattice \
+         seam, not a gap column or a doubled one"
     );
     assert_eq!(
         cap_line(&lines, left_rect, 1),
@@ -472,18 +628,24 @@ fn every_1u_cap_is_the_same_width_and_adjacent_caps_abut_exactly() {
     assert_eq!(w_rect.width, q_rect.width, "every 1u cap is the same width");
     assert_eq!(
         w_rect.x,
-        q_rect.x + q_rect.width,
-        "adjacent caps abut exactly, x2 == x1 + width"
+        q_rect.x + q_rect.width - 1,
+        "adjacent caps share their border column, x2 == x1 + width - 1"
     );
 }
 
-/// The vendor's rows all share one right edge (measured against
-/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`: every row's border
-/// starts and ends at the same pixel column). All five `ansi_dk_board` rows sum to the same 16.0
-/// `cap_units` total (`lctrl`/`lgui`/`lalt` at 1.25 make the bottom row's total match too), so
-/// once widths stop drifting from per-key rounding all five rows' right edges land on one column.
+/// All five `ansi_dk_board` rows sum to the same 16.0 `cap_units` total (`lctrl`/`lgui`/`lalt` at
+/// 1.25 make the bottom row's total match too), and before this round that alone was enough for
+/// every row's right edge to land on one column (measured against
+/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`). Sharing a border
+/// column between adjacent caps (this round) breaks that: a row's own physical width is
+/// `sum(widths) - (k - 1)`, so a row's own key count now matters too, not just its `cap_units`
+/// total. The number row (15 keys) and QWERTY row (15 keys) still share a right edge with each
+/// other, and the home row (14 keys) and bottom letter row (14 keys) share one with each other,
+/// but the space row (10 keys, the fewest, so the fewest merges) ends up wider than all four:
+/// fewer merges lose fewer columns, so it is now the actual widest row `needed_width` must fit,
+/// not a tied one among the rest as it was before this round.
 #[test]
-fn rows_with_equal_cap_units_totals_end_at_the_same_right_edge() {
+fn rows_of_matching_key_counts_share_a_right_edge_but_the_space_row_ends_up_widest() {
     let board = ansi_dk_board();
     let area = Rect::new(0, 0, 120, 30);
     let mut buf = Buffer::empty(area);
@@ -518,14 +680,24 @@ fn rows_with_equal_cap_units_totals_end_at_the_same_right_edge() {
     let space_row_end = row_right_edge(0x4F); // right
 
     assert_eq!(
-        [
-            qwerty_row_end,
-            home_row_end,
-            bottom_letter_row_end,
-            space_row_end
-        ],
-        [number_row_end; 4],
-        "rows summing to the same cap_units total must end at the same column"
+        number_row_end, qwerty_row_end,
+        "the two 15-key rows must still end at the same column"
+    );
+    assert_eq!(
+        home_row_end, bottom_letter_row_end,
+        "the two 14-key rows must still end at the same column"
+    );
+    assert_eq!(
+        number_row_end, 98,
+        "a 15-key row's own physical width, 112 - 14 merges"
+    );
+    assert_eq!(
+        home_row_end, 99,
+        "a 14-key row's own physical width, 112 - 13 merges"
+    );
+    assert_eq!(
+        space_row_end, 103,
+        "the 10-key space row's own physical width, 112 - 9 merges, now the widest row"
     );
 }
 
@@ -566,10 +738,10 @@ fn terminal_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
-/// The whole refusal, as one literal. Deliberately not `too_narrow_text(178)`: a test that
+/// The whole refusal, as one literal. Deliberately not `too_narrow_text(169)`: a test that
 /// compares rendered text against the generator that produced it passes whatever the generator
 /// says, including a generator that stopped naming the width at all.
-const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 178 COLUMNS";
+const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 169 COLUMNS";
 
 /// Reassembles the body's message block from whatever `draw` rendered: finds the line holding
 /// `needle`, takes every following line's slice from that same column until a blank one, and
@@ -606,35 +778,36 @@ fn body_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 /// The 68-key ANSI-DK layout's widest row, computed from `cap_units` through `needed_width`: the
-/// QWERTY row, tab (1.5) plus twelve 1.0 caps plus backslash (1.5) plus the row-end key, at 7
-/// columns per unit, summing to the same 16.0 units as every other row (measured against the
-/// vendor's own rendering, `research/vendor-bundle/2026-09-05/screenshots/`, whose rows all share
-/// one right edge). The whole frame therefore wants this plus the 64-column left pane and its own
-/// 2-column gutter, and the refusal in the width sweep below states exactly that total.
+/// bottom (space) row, the fewest keys (10, so the fewest merges, 9) of the five rows sharing the
+/// same 16.0 `cap_units` total, so it loses the fewest columns to the lattice's shared borders and
+/// ends up wider than the other four (see
+/// `rows_of_matching_key_counts_share_a_right_edge_but_the_space_row_ends_up_widest` for the full
+/// row-by-row arithmetic). The whole frame therefore wants this plus the 64-column left pane and
+/// its own 2-column gutter, and the refusal in the width sweep below states exactly that total.
 #[test]
-fn a_full_ansi_dk_board_needs_112_columns_for_its_widest_row() {
+fn a_full_ansi_dk_board_needs_103_columns_for_its_widest_row() {
     let board = ansi_dk_board();
     assert_eq!(
         board.rows.iter().map(|r| r.keys.len()).sum::<usize>(),
         68,
         "the fixture must be a full 68-key board"
     );
-    assert_eq!(needed_width(&board.rows), 112);
+    assert_eq!(needed_width(&board.rows), 103);
 }
 
-/// The refusal at real terminal widths. 178 is the first width that fits the matrix (112 plus
+/// The refusal at real terminal widths. 169 is the first width that fits the matrix (103 plus
 /// the 64-column left pane plus its own 2-column gutter); every width below it must show the
 /// whole sentence, wherever it has to go: the matrix pane at 67 columns is one column wide, and
 /// at 66 or less it does not exist.
 #[test]
 fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
-    for width in [52u16, 66, 67, 74, 81, 82, 90, 103, 104, 177, 178] {
+    for width in [52u16, 66, 67, 74, 81, 82, 90, 103, 104, 168, 169] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
         let mut terminal = Terminal::new(TestBackend::new(width, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = body_lines(&terminal);
 
-        if width >= 178 {
+        if width >= 169 {
             assert_eq!(
                 app.key_rects.len(),
                 68,
@@ -839,8 +1012,8 @@ fn a_click_on_a_shared_border_row_resolves_to_the_cap_above() {
 
 /// [RESET KEYSETS] right-aligns to the matrix's own right edge (`left_width + gutter +
 /// needed_width`), not the frame's: the vendor aligns the action to the keyboard, and a frame
-/// wider than the matrix needs (200 here, matrix needs 64 + 2 + 112 = 178) previously left the
-/// button hugging column 200 instead of 178, past the matrix entirely.
+/// wider than the matrix needs (200 here, matrix needs 64 + 2 + 103 = 169) previously left the
+/// button hugging column 200 instead of 169, past the matrix entirely.
 #[test]
 fn the_reset_keysets_action_aligns_to_the_matrixs_right_edge_not_the_frames() {
     let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");

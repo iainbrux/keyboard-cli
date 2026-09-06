@@ -94,16 +94,23 @@ fn row_widths(usages: &[u8]) -> Vec<u16> {
     widths
 }
 
-/// Columns the widest of `rows` needs, before `render_matrix` draws anything. A full ANSI-DK
-/// 68-key board's widest row needs 112 (every row sums to the same 16.0 `cap_units` total,
-/// measured against `research/vendor-bundle/2026-09-05/screenshots/`), so with the 64-column
-/// left pane and its own 2-column gutter beside it the whole frame wants 178; the refusal states
-/// the figure for the rows read.
+/// Columns the widest of `rows` needs, before `render_matrix` draws anything. A row of `k` caps
+/// merges `k - 1` shared border columns (see `render_matrix`'s own horizontal advance), so a row's
+/// own physical width is `sum(widths) - (k - 1)`, not `sum(widths)`: rows with the same
+/// `cap_units` total but fewer, wider keys lose fewer columns to merging and end up wider than
+/// rows with more, narrower ones. A full ANSI-DK 68-key board's widest row is now the bottom
+/// (space) row, 103 (every row sums to the same 16.0 `cap_units` total, measured against
+/// `research/vendor-bundle/2026-09-05/screenshots/`, but the space row's 10 keys merge only 9
+/// columns against the number and QWERTY rows' 15 keys merging 14), so with the 64-column left
+/// pane and its own 2-column gutter beside it the whole frame wants 169; the refusal states the
+/// figure for the rows read.
 pub fn needed_width(rows: &[DefKeyRow]) -> u16 {
     rows.iter()
+        .filter(|row| !row.keys.is_empty())
         .map(|row| {
             let units: f32 = row.keys.iter().map(|&(_, u)| cap_units(u)).sum();
-            (units * CAP_UNIT_COLS).round() as u16
+            let total = (units * CAP_UNIT_COLS).round() as u16;
+            total.saturating_sub((row.keys.len() as u16).saturating_sub(1))
         })
         .max()
         .unwrap_or(0)
@@ -157,7 +164,7 @@ pub fn render_matrix(
         }
         let mut x = area.x;
         let mut row_rects: Vec<Rect> = Vec::with_capacity(caps.len());
-        for &(usage, width) in caps {
+        for (i, &(usage, width)) in caps.iter().enumerate() {
             if width == 0 || x + width > area.x + area.width {
                 break;
             }
@@ -181,7 +188,15 @@ pub fn render_matrix(
                 // Top border, label, value: never the bottom border, which the row below draws
                 // over on the very next iteration regardless (default style), silently erasing
                 // anything set here. See the report for the full reasoning.
-                let styled = Rect::new(rect.x, rect.y, rect.width, CAP_HEIGHT - 1);
+                //
+                // The right border column, too, whenever a cap follows in this row: that column
+                // is the shared lattice seam (see the `x +=` comment below), and the next cap's
+                // own `block.render` redraws it, unstyled, on the very next loop iteration, the
+                // same fate as the bottom border. Only the last cap of a row keeps its own right
+                // border in the styled region, since nothing draws over it afterward.
+                let has_next = i + 1 < caps.len();
+                let styled_width = if has_next { rect.width - 1 } else { rect.width };
+                let styled = Rect::new(rect.x, rect.y, styled_width, CAP_HEIGHT - 1);
                 buf.set_style(styled, Style::default().add_modifier(Modifier::REVERSED));
             }
 
@@ -190,7 +205,12 @@ pub fn render_matrix(
             // needed, the vendor's own hit-test convention.
             rects.push((rect, usage));
             row_rects.push(rect);
-            x += width;
+            // Not `width`: the next cap's own left border column reuses this cap's own right
+            // border column, the horizontal analogue of the row cadence below (`CAP_HEIGHT - 1`),
+            // so only `width - 1` columns are actually spent advancing past this cap. `key_at`'s
+            // first-match search (see its own doc comment) resolves the shared column to this
+            // cap, not the one that follows, since this cap's rect is pushed to `rects` first.
+            x += width - 1;
         }
         // The row below's own top border just overwrote the row above's own bottom border,
         // wholesale, on the very same physical line: `merge_shared_border` reconciles the two
@@ -208,8 +228,9 @@ pub fn render_matrix(
 
 /// The columns where `row`'s own caps have a vertical border, the two edge columns of every cap
 /// in it (`x` and `x + width - 1`; identical when a cap is exactly one column wide). Two adjacent
-/// caps abut without sharing a column (see `render_matrix`'s own rect maths), so a join between
-/// them contributes two distinct, adjacent boundary columns here, not one.
+/// caps within a row share their join column (see `render_matrix`'s own rect maths: the right edge
+/// of cap n is the left edge of cap n+1), so it is inserted into this `HashSet` twice but counted
+/// once: a join contributes one boundary column here, not two.
 fn row_boundaries(row: &[Rect]) -> HashSet<u16> {
     let mut set = HashSet::new();
     for r in row {

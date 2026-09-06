@@ -359,8 +359,8 @@ wh profile 2
 
 Open the full-screen terminal UI, a read-only view of the whole board in the vendor
 configurator's own layout. It needs an interactive terminal and refuses a redirected or piped
-stdout before it opens the device at all. The key matrix on the right needs a 178-column
-terminal to draw a 68-key board (112 columns for the widest key row, plus the 64-column settings
+stdout before it opens the device at all. The key matrix on the right needs a 169-column
+terminal to draw a 68-key board (103 columns for the widest key row, plus the 64-column settings
 pane and its own 2-column gutter); below that it says so, naming the width, and the settings pane
 still works. Nothing in it writes yet: every stepper and button renders a value only, and the
 tabs that have no read behind them say so in as many words:
