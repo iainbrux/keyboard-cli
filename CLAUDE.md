@@ -249,8 +249,9 @@ of what was decided at the time. The one exception is a plan still being execute
 are extracted from it, so a wrong byte in it flows into the next task, and it is corrected like any
 live document while its branch is unmerged. The state is merge status and nothing else: a plan on
 `main` is closed, a plan on an unmerged branch is live, no third case exists. The execution note
-appended before merge ("Executed: <date>, merged to main") is a record of the date, not the
-signal; a plan on `main` missing one gets it as an ordinary docs fix.
+appended before merge ("Executed: <date>") records when execution finished and claims nothing
+about the merge, which git states by itself; a plan on `main` missing one gets it as an ordinary
+docs fix.
 
 `captures/` holds real device traffic and is **gitignored**. It is the operator's own data. The
 golden test (`cargo test -p wh-proto --test golden`) decodes every frame in it; a missing directory
