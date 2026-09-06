@@ -365,9 +365,14 @@ for an actuation point edit and a rapid trigger one. Note this read is **nine** 
 membership, where the sweep before a single-key value change is six and excludes it
 (`docs/keysets.md`).
 
-**While the board is in adjust mode it stops being a keyboard.** The operator reports it will not
-type, and pressing the AP key again is what unlocks it. That is what makes `0xbe` worth having: the
-host is being told the device has gone modal, not merely that a value may change.
+**While the board is in adjust mode it stops being a keyboard, but the wire stays fully alive.**
+The operator reports it will not type, and pressing the AP key again is what unlocks it. Measured
+2026-09-06 on hardware, both directions: a full `wh dump` mid-lock answered normally with unchanged
+values, and a `wh set ap` mid-lock was accepted, applied, verified, and still held after the
+concluding AP press (no knob turn in either probe, so knob-versus-host conflict is untested). So
+the lock is input-only, nothing in a frame reveals it, and the host cannot detect it passively:
+hearing the `0xbe` edges is the only route. That is what makes `0xbe` worth having: the host is
+being told the device has gone modal, not merely that a value may change.
 
 The `be 00` and `be 01` reading rests on two captures plus the operator's account of what their
 hands did, which explains the ten-second gap. It is well supported rather than exhaustively
