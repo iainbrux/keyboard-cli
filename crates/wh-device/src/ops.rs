@@ -2,7 +2,7 @@
 
 use crate::session::Session;
 use crate::transport::{DeviceError, Transport};
-use wh_proto::cmds::{self, layout, KeyRecord, Mode, TouchMode};
+use wh_proto::cmds::{self, layout, DefKeyRow, KeyRecord, Mode, TouchMode};
 use wh_proto::value::Um;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,17 +30,25 @@ impl KeySettings {
     }
 }
 
-/// All key usages on the board, from the 6x21 default-key matrix.
-pub fn read_matrix<T: Transport>(s: &mut Session<T>) -> Result<Vec<u8>, DeviceError> {
-    let mut usages = Vec::new();
+/// The board's six DEFKEY rows, in wire order, with each row's column data intact.
+pub fn read_matrix_rows<T: Transport>(s: &mut Session<T>) -> Result<Vec<DefKeyRow>, DeviceError> {
+    let mut rows = Vec::new();
     for (a, b) in [(0u8, 1u8), (2, 3), (4, 5)] {
         let payload = s.roundtrip(&cmds::read_defkey_rows(a, b))?;
-        let rows = cmds::parse_defkey(&payload).map_err(|e| DeviceError::Decode(e.to_string()))?;
-        for row in rows {
-            for (_, usage) in row.keys {
-                if !usages.contains(&usage) {
-                    usages.push(usage);
-                }
+        let pair = cmds::parse_defkey(&payload).map_err(|e| DeviceError::Decode(e.to_string()))?;
+        rows.extend(pair);
+    }
+    Ok(rows)
+}
+
+/// All key usages on the board, from the 6x21 default-key matrix. A flatten of
+/// `read_matrix_rows`, so the two can never disagree on order.
+pub fn read_matrix<T: Transport>(s: &mut Session<T>) -> Result<Vec<u8>, DeviceError> {
+    let mut usages = Vec::new();
+    for row in read_matrix_rows(s)? {
+        for (_, usage) in row.keys {
+            if !usages.contains(&usage) {
+                usages.push(usage);
             }
         }
     }
@@ -467,6 +475,25 @@ mod tests {
         let m = read_matrix(&mut s).unwrap();
         assert_eq!(m, vec![0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F]);
         assert!(s.into_inner().finished());
+    }
+
+    /// `matrix_script()` above is already the encoder-built two-key-per-row DEFKEY fixture this
+    /// test needs (three `read_defkey_rows` roundtrips, each row pair with a distinct usage at
+    /// col 0), so it is reused rather than duplicated under a second name.
+    #[test]
+    fn read_matrix_rows_preserves_rows_and_matches_read_matrix_order() {
+        // Two scripts with identical frames: read_matrix_rows consumes one, read_matrix the other.
+        let lines = matrix_script().join("\n");
+        let mut s = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let rows = read_matrix_rows(&mut s).unwrap();
+        let mut s2 = Session::new(ReplayTransport::from_jsonl(&lines).unwrap());
+        let flat = read_matrix(&mut s2).unwrap();
+        let flattened: Vec<u8> = rows
+            .iter()
+            .flat_map(|r| r.keys.iter().map(|&(_, u)| u))
+            .collect();
+        assert_eq!(flattened, flat);
+        assert_eq!(rows.len(), 6);
     }
 
     #[test]
