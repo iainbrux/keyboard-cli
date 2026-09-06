@@ -234,6 +234,115 @@ pub fn wasd_board() -> BoardModel {
     }
 }
 
+/// A full 68-key ANSI-DK board in the `DefKeyRow` shape `BoardModel::read` returns: five rows of
+/// 15, 15, 14, 14 and 10 keys. Assembled here from the ANSI-DK layout the design spec names, not
+/// read off a board (`captures/` is the operator's own data and gitignored), so it is what that
+/// physical layout implies rather than a measured DEFKEY read. `keys` is empty: the matrix draws
+/// its geometry from `rows` alone, and the tests this feeds assert widths, not values.
+#[allow(dead_code)]
+pub fn ansi_dk_board() -> BoardModel {
+    let row = |index: u8, names: &[&str]| DefKeyRow {
+        row: index,
+        keys: names
+            .iter()
+            .enumerate()
+            .map(|(col, name)| {
+                (
+                    col as u8,
+                    wh_proto::keys::usage_for_name(name)
+                        .unwrap_or_else(|| panic!("{name} must be in wh_proto::keys::TABLE")),
+                )
+            })
+            .collect(),
+    };
+    BoardModel {
+        serial: "SNTUITEST0000001".to_string(),
+        firmware: "V1.0.0.001".to_string(),
+        profile: ProfileNumber::from_wire_index(0).unwrap(),
+        global: GlobalTravel {
+            travel: Um(500),
+            press_dead: Um(200),
+            release_dead: Um(200),
+        },
+        rows: vec![
+            row(
+                0,
+                &[
+                    "esc",
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "0",
+                    "minus",
+                    "equals",
+                    "backspace",
+                    "delete",
+                ],
+            ),
+            row(
+                1,
+                &[
+                    "tab",
+                    "q",
+                    "w",
+                    "e",
+                    "r",
+                    "t",
+                    "y",
+                    "u",
+                    "i",
+                    "o",
+                    "p",
+                    "lbracket",
+                    "rbracket",
+                    "backslash",
+                    "home",
+                ],
+            ),
+            row(
+                2,
+                &[
+                    "capslock",
+                    "a",
+                    "s",
+                    "d",
+                    "f",
+                    "g",
+                    "h",
+                    "j",
+                    "k",
+                    "l",
+                    "semicolon",
+                    "quote",
+                    "enter",
+                    "pageup",
+                ],
+            ),
+            row(
+                3,
+                &[
+                    "lshift", "z", "x", "c", "v", "b", "n", "m", "comma", "period", "slash",
+                    "rshift", "up", "pagedown",
+                ],
+            ),
+            row(
+                4,
+                &[
+                    "lctrl", "lgui", "lalt", "space", "ralt", "rgui", "rctrl", "left", "down",
+                    "right",
+                ],
+            ),
+        ],
+        keys: Vec::new(),
+    }
+}
+
 /// Composes, in order, exactly the frames `BoardModel::read` sends against the two-key board:
 /// sync, profile, global travel, matrix, then six KEY reads per key. Built with `wh_proto::cmds`
 /// encoders, not hand-written hex, so the test breaks if an encoder changes.

@@ -1,5 +1,5 @@
 use crate::board::{ap_keysets, rt_keysets, BoardModel, DEVICE_NAME};
-use crate::matrix::{render_matrix, CapValue};
+use crate::matrix::{needed_width, render_matrix, too_narrow_text, CapValue};
 use crate::rows::{self, render_prompt, render_row};
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::prelude::*;
@@ -330,6 +330,12 @@ fn render_tab_like_row<T: Copy>(
     rects
 }
 
+/// The left pane's width. 46 (task 6's placeholder, explicitly ledgered as unpinned) is too
+/// narrow for the mandated prompt line: "> CLICK ON THE KEYS TO MAKE A KEYSET" (36) plus
+/// "[RESET KEYSETS]" (15) is 51 columns with no gap between them at all. 56 leaves that gap a
+/// visible 5 columns.
+const LEFT_WIDTH: u16 = 56;
+
 /// Word-wraps `text` to fit `width` columns, greedy, breaking only at spaces. Every stub constant
 /// above fits `left_area`'s 56 columns on one line except `MAPPING_STUB`, whose own cited
 /// docs/tasks.md task number pushes it past that width; wrapping keeps the exact text intact
@@ -357,19 +363,25 @@ fn wrap_stub(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
-/// Renders `text` word-wrapped (see `wrap_stub`) starting at `*ry` within `left_area`, advancing
-/// `*ry` one row per wrapped line and stopping once `left_area`'s bottom is reached.
-fn render_stub(f: &mut Frame, left_area: Rect, ry: &mut u16, text: &str) {
-    for line in wrap_stub(text, left_area.width) {
-        if *ry >= left_area.y + left_area.height {
+/// Renders `text` word-wrapped (see `wrap_stub`) starting at `*ry` within `area`, advancing
+/// `*ry` one row per wrapped line and stopping once `area`'s bottom is reached.
+fn render_stub(f: &mut Frame, area: Rect, ry: &mut u16, text: &str) {
+    for line in wrap_stub(text, area.width) {
+        if *ry >= area.y + area.height {
             break;
         }
-        f.render_widget(
-            Line::raw(line),
-            Rect::new(left_area.x, *ry, left_area.width, 1),
-        );
+        f.render_widget(Line::raw(line), Rect::new(area.x, *ry, area.width, 1));
         *ry += 1;
     }
+}
+
+/// The longest single word in `text`: the narrowest a pane can be and still hold `text` whole,
+/// since `wrap_stub` breaks only at spaces and a word wider than the pane would be clipped.
+fn longest_word(text: &str) -> u16 {
+    text.split(' ')
+        .map(|w| w.chars().count() as u16)
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -407,11 +419,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let body_y = y + 1;
     let footer_y = area.height.saturating_sub(1);
     let body_height = footer_y.saturating_sub(body_y);
-    // 46 (task 6's placeholder, explicitly ledgered as unpinned) is too narrow for this task's
-    // own mandated prompt line: "> CLICK ON THE KEYS TO MAKE A KEYSET" (36) plus
-    // "[RESET KEYSETS]" (15) is 51 columns with no gap between them at all. 56 leaves that gap
-    // a visible 5 columns.
-    let left_width = area.width.min(56);
+    // ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane, the vendor's own
+    // layout (see the design spec): there is no per-key value on any of them, so the left pane
+    // takes the whole width and no cap is drawn or recorded.
+    let show_matrix = match app.tab {
+        Tab::Advanced => app.advanced_tab == AdvancedTab::General,
+        _ => true,
+    };
+    let left_width = if show_matrix {
+        area.width.min(LEFT_WIDTH)
+    } else {
+        area.width
+    };
     let matrix_area = Rect::new(
         left_width,
         body_y,
@@ -547,14 +566,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     };
     let mut key_rects = Vec::new();
-    render_matrix(
-        matrix_area,
-        f.buffer_mut(),
-        &app.board.rows,
-        value_of,
-        &app.selection,
-        &mut key_rects,
-    );
+    if show_matrix {
+        // A board with no rows (nothing to draw) is not a refusal: `needed` is 0 and the pane
+        // stays empty. Anything else either fits or gets the refusal, never a clipped grid.
+        let needed = needed_width(&app.board.rows);
+        let fits = needed <= matrix_area.width && matrix_area.height > 0;
+        if fits {
+            render_matrix(
+                matrix_area,
+                f.buffer_mut(),
+                &app.board.rows,
+                value_of,
+                &app.selection,
+                &mut key_rects,
+            );
+        } else if needed > 0 {
+            // The refusal, whole, wherever it fits whole: the matrix pane when that pane can
+            // hold the message's longest word, otherwise the left pane below the note row, which
+            // at those widths is the frame's full width. A clipped half-sentence, or a blank
+            // right half with no explanation, leaves the operator nothing to act on.
+            let text = too_narrow_text(LEFT_WIDTH.saturating_add(needed));
+            if matrix_area.height > 0 && matrix_area.width >= longest_word(&text) {
+                let mut my = matrix_area.y;
+                render_stub(f, matrix_area, &mut my, &text);
+            } else {
+                let mut my = note_row + 1;
+                render_stub(f, left_area, &mut my, &text);
+            }
+        }
+    }
     app.key_rects = key_rects;
 
     // Rendered after the matrix, and space-padded to the full frame width by hand rather than

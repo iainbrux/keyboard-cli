@@ -791,12 +791,17 @@ right `shift` 1.75, `space` 6.25, everything else 1.0 (check the actual name str
 `wh_proto::keys::TABLE` for the modifier and special keys before matching on them; the table's
 names are the authority, and left and right variants have distinct usages). Label is
 `wh_proto::keys::label(usage)` uppercased, truncated to the cap's inner width. Selected caps
-render with `Modifier::REVERSED` over the whole cell. If `area` is too narrow for a row, render
-the single line `TERMINAL TOO NARROW FOR THE KEY MATRIX` centred in the pane instead and record
-no rects. `app::draw` splits the body horizontally (left pane min 46 columns, rest to the
-matrix) and calls `render_matrix` with `value_of` chosen by tab: ActuationPoint shows every
-key's `ap` as `format!("{:.2}", um.to_mm())`; RapidTrigger shows `rt_press` only for keys with
-`rt_keyset != 0`; other tabs show none.
+render with `Modifier::REVERSED` over the whole cell. If `area` is too narrow for a row,
+`render_matrix` draws nothing and records no rects, and `app::draw` renders
+`matrix::too_narrow_text` in its place, word-wrapped so the whole sentence reaches the operator:
+in the matrix pane when that pane can hold the message's longest word, in the left pane below the
+note row otherwise (at 56 columns or less there is no matrix pane at all). The message names the
+frame width the board's own rows need, 169 columns for a full ANSI-DK 68-key board.
+`app::draw` splits the body horizontally (left pane 56 columns, rest to the matrix) and calls
+`render_matrix` with `value_of` chosen by tab: ActuationPoint shows every key's `ap` as
+`format!("{:.2}", um.to_mm())`; RapidTrigger shows `rt_press` only for keys with
+`rt_keyset != 0`; other tabs show none. ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the
+keyboard pane entirely and give the left pane the full width.
 
 - [ ] **Step 4: Run the tests, watch them pass** (`cargo test -p wh-tui`).
 

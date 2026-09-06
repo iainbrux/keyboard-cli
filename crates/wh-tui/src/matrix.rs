@@ -36,13 +36,39 @@ pub struct CapValue {
 const CAP_HEIGHT: u16 = 4;
 /// Columns in one standard (1.0 unit) cap.
 const CAP_UNIT_COLS: f32 = 7.0;
-const TOO_NARROW: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX";
+
+/// One cap's width in columns.
+fn cap_cols(usage: u8) -> u16 {
+    (cap_units(usage) * CAP_UNIT_COLS).round() as u16
+}
+
+/// Columns the widest of `rows` needs, which is the width the pane must have before
+/// `render_matrix` draws anything. Computed from `cap_units`, a full ANSI-DK 68-key board's
+/// widest row (tab 1.5, twelve 1.0 caps, backslash 1.5, and the row-end key) needs 113 columns,
+/// so with the 56-column left pane beside it the whole frame wants 169: more than a 120-column
+/// terminal has, which is why the refusal names the number rather than only refusing. The 113 is
+/// what the ANSI-DK layout implies, not a DEFKEY read; the refusal always states the figure for
+/// the rows the board itself reported.
+pub fn needed_width(rows: &[DefKeyRow]) -> u16 {
+    rows.iter()
+        .map(|row| row.keys.iter().map(|&(_, u)| cap_cols(u)).sum::<u16>())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The refusal shown in the matrix's place, naming the frame width the operator has to reach.
+/// `frame_cols` is the whole frame, left pane included, not the matrix pane alone: resizing a
+/// terminal is the only thing the operator can do about it.
+pub fn too_narrow_text(frame_cols: u16) -> String {
+    format!("TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS {frame_cols} COLUMNS")
+}
 
 /// Renders `rows` as a grid of bordered caps into `area`, left to right per row in column order,
-/// rows stacked with no gap. If the widest row does not fit `area`'s width, renders a single
-/// centred warning line instead and leaves `rects` empty: a clipped or wrapped matrix would be
-/// worse than an honest refusal. `selected` caps render with `Modifier::REVERSED` over the whole
-/// cell (border included).
+/// rows stacked with no gap. If the widest row does not fit `area`'s width, draws nothing and
+/// leaves `rects` empty: a clipped matrix would be worse than none. Callers check `needed_width`
+/// first and render `too_narrow_text` themselves, because at the widths where this refuses the
+/// message often does not fit this pane either. `selected` caps render with `Modifier::REVERSED`
+/// over the whole cell (border included).
 pub fn render_matrix(
     area: Rect,
     buf: &mut Buffer,
@@ -59,24 +85,12 @@ pub fn render_matrix(
             let mut keys = row.keys.clone();
             keys.sort_by_key(|&(col, _)| col);
             keys.into_iter()
-                .map(|(_, usage)| (usage, (cap_units(usage) * CAP_UNIT_COLS).round() as u16))
+                .map(|(_, usage)| (usage, cap_cols(usage)))
                 .collect()
         })
         .collect();
 
-    let widest = row_caps
-        .iter()
-        .map(|caps| caps.iter().map(|&(_, w)| w).sum::<u16>())
-        .max()
-        .unwrap_or(0);
-
-    if area.width == 0 || area.height == 0 || widest > area.width {
-        if area.width > 0 && area.height > 0 {
-            let text_width = TOO_NARROW.chars().count() as u16;
-            let x = area.x + area.width.saturating_sub(text_width) / 2;
-            let y = area.y + area.height / 2;
-            buf.set_string(x, y, TOO_NARROW, Style::default());
-        }
+    if area.width == 0 || area.height == 0 || needed_width(rows) > area.width {
         return;
     }
 

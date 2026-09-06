@@ -5,10 +5,10 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
-use support::two_key_board;
+use support::{two_key_board, wasd_board};
 use wh_tui::app::{
     draw, AdvancedTab, App, Tab, ADVANCED_GAMEPAD_STUB, ADVANCED_GENERAL_STUB, ADVANCED_SHARE_STUB,
-    MAPPING_LABELS_ROW_1, MAPPING_LABELS_ROW_2, MAPPING_STUB, SWITCHES_STUB,
+    MAPPING_LABELS_ROW_1, MAPPING_LABELS_ROW_2, MAPPING_STUB, SWITCHES_STUB, TABS,
 };
 
 /// Every rendered line of the buffer, right-trimmed, so tests assert whole lines. Copied from
@@ -132,6 +132,70 @@ fn switches_renders_rows_and_the_stub_line() {
     );
 }
 
+/// The same shape as `dots`, for the three ADVANCED sub-tabs that drop the keyboard pane: their
+/// left pane is the whole 160-column frame, not 56 columns, so their rows carry that many more
+/// leaders.
+fn wide_dots(label: &str, control: &str) -> String {
+    ".".repeat(160 - label.chars().count() - control.chars().count())
+}
+
+/// ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane (the design spec's own
+/// layout): no cap may be drawn, none recorded for click-to-select, and the left pane takes the
+/// full width. Every other tab, GENERAL included, keeps the matrix.
+#[test]
+fn gamepad_device_and_share_drop_the_keyboard_pane() {
+    for sub in [
+        AdvancedTab::Gamepad,
+        AdvancedTab::Device,
+        AdvancedTab::Share,
+    ] {
+        let mut app = App::new(wasd_board(), "0.5.0-alpha");
+        app.tab = Tab::Advanced;
+        app.advanced_tab = sub;
+        let mut terminal = new_terminal();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let lines = buffer_lines(&terminal);
+
+        assert!(
+            app.key_rects.is_empty(),
+            "{sub:?} must record no key rects: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains('┌')),
+            "{sub:?} must draw no cap at all: {lines:?}"
+        );
+    }
+
+    // The left pane takes the width the matrix gave up: a DEVICE row's leaders fill all 160
+    // columns, not 56.
+    let mut app = App::new(wasd_board(), "0.5.0-alpha");
+    app.tab = Tab::Advanced;
+    app.advanced_tab = AdvancedTab::Device;
+    let mut terminal = new_terminal();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let lines = buffer_lines(&terminal);
+    let full_width_name = format!("NAME{}WALLHACK K-001", wide_dots("NAME", "WALLHACK K-001"));
+    assert!(
+        lines.iter().any(|l| l == &full_width_name),
+        "DEVICE's rows must fill the full frame width: {lines:?}"
+    );
+
+    // Every top-level tab keeps the matrix, and so does ADVANCED > GENERAL.
+    for tab in TABS {
+        let mut app = App::new(wasd_board(), "0.5.0-alpha");
+        app.tab = tab;
+        app.advanced_tab = AdvancedTab::General;
+        let mut terminal = new_terminal();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let lines = buffer_lines(&terminal);
+        assert_eq!(
+            app.key_rects.len(),
+            4,
+            "{tab:?} must render the whole four-key matrix: {lines:?}"
+        );
+    }
+}
+
 #[test]
 fn advanced_device_shows_live_name_serial_firmware() {
     let mut app = new_app();
@@ -141,14 +205,15 @@ fn advanced_device_shows_live_name_serial_firmware() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
-    let name_line = format!("NAME{}WALLHACK K-001", dots("NAME", "WALLHACK K-001"));
+    // DEVICE drops the keyboard pane, so its left pane is the full 160 columns.
+    let name_line = format!("NAME{}WALLHACK K-001", wide_dots("NAME", "WALLHACK K-001"));
     let serial_line = format!(
         "SERIAL NUMBER{}SNTUITEST0000001",
-        dots("SERIAL NUMBER", "SNTUITEST0000001")
+        wide_dots("SERIAL NUMBER", "SNTUITEST0000001")
     );
     let firmware_line = format!(
         "FIRMWARE VERSION{}V1.0.0.001",
-        dots("FIRMWARE VERSION", "V1.0.0.001")
+        wide_dots("FIRMWARE VERSION", "V1.0.0.001")
     );
 
     assert!(

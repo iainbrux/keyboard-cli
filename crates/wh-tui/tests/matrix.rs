@@ -1,11 +1,14 @@
 mod support;
+use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use ratatui::Terminal;
 use std::collections::HashSet;
-use support::wasd_board;
+use support::{ansi_dk_board, wasd_board};
 use wh_proto::cmds::DefKeyRow;
-use wh_tui::matrix::{key_at, render_matrix, CapValue};
+use wh_tui::app::{draw, App};
+use wh_tui::matrix::{key_at, needed_width, render_matrix, too_narrow_text, CapValue};
 
 /// Every rendered line of a raw `Buffer`, right-trimmed. Copied from `app::tests::buffer_lines`
 /// and `chrome.rs`'s own copy, kept in sync deliberately rather than shared, for the same reason
@@ -208,6 +211,96 @@ fn a_selected_cap_renders_reversed() {
             .contains(Modifier::REVERSED),
         "an unselected cap's cell must not render reversed"
     );
+}
+
+/// Every rendered line of a `Terminal`, right-trimmed. The width sweep below draws through
+/// `app::draw`, not `render_matrix` alone: where the refusal lands is `draw`'s decision.
+fn terminal_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    let buf = terminal.backend().buffer().clone();
+    let area = buf.area;
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Reassembles the too-narrow refusal from whatever `draw` rendered: finds the line where it
+/// starts, takes every following line's slice from that same column until a blank one, and joins
+/// the pieces with single spaces. A clipped message, a message missing its tail, or no message at
+/// all all fail to reproduce the expected sentence, which is the point: the operator must never
+/// be left with a fragment.
+fn refusal_text(lines: &[String]) -> String {
+    let (y, x0) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(y, l)| l.find("TERMINAL TOO NARROW").map(|x| (y, x)))
+        .unwrap_or_else(|| panic!("the too-narrow refusal must render somewhere: {lines:?}"));
+    let mut parts = Vec::new();
+    for line in lines.iter().skip(y) {
+        let chars: Vec<char> = line.chars().collect();
+        let piece: String = chars.iter().skip(x0).collect::<String>().trim().to_string();
+        if piece.is_empty() {
+            break;
+        }
+        parts.push(piece);
+    }
+    parts.join(" ")
+}
+
+/// The 68-key ANSI-DK layout's widest row, computed from `cap_units` through `needed_width`: the
+/// QWERTY row, tab (1.5) plus twelve 1.0 caps plus backslash (1.5) plus the row-end key, at 7
+/// columns per unit. The whole frame therefore wants this plus the 56-column left pane, and the
+/// refusal in the width sweep below states exactly that total.
+#[test]
+fn a_full_ansi_dk_board_needs_113_columns_for_its_widest_row() {
+    let board = ansi_dk_board();
+    assert_eq!(
+        board.rows.iter().map(|r| r.keys.len()).sum::<usize>(),
+        68,
+        "the fixture must be a full 68-key board"
+    );
+    assert_eq!(needed_width(&board.rows), 113);
+}
+
+/// The refusal at real terminal widths. 169 is the first width that fits the matrix (113 plus
+/// the 56-column left pane); every width below it must show the whole sentence, wherever it has
+/// to go: the matrix pane at 57 columns is one column wide, and at 56 or less it does not exist.
+#[test]
+fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
+    let expected = too_narrow_text(169);
+    for width in [50u16, 56, 57, 80, 93, 94, 168, 169] {
+        let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+        let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let lines = terminal_lines(&terminal);
+
+        if width >= 169 {
+            assert_eq!(
+                app.key_rects.len(),
+                68,
+                "at {width} columns the matrix itself must render: {lines:?}"
+            );
+            assert!(
+                !lines.iter().any(|l| l.contains("TOO NARROW")),
+                "at {width} columns there must be no refusal: {lines:?}"
+            );
+        } else {
+            assert!(
+                app.key_rects.is_empty(),
+                "at {width} columns no cap fits, so none may be recorded: {lines:?}"
+            );
+            assert_eq!(
+                refusal_text(&lines),
+                expected,
+                "at {width} columns the operator must read the whole refusal: {lines:?}"
+            );
+        }
+    }
 }
 
 #[test]
