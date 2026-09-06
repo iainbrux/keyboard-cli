@@ -1,3 +1,4 @@
+use crate::board::BoardModel;
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
@@ -12,13 +13,15 @@ pub const LOGO: &[&str] = &[
 ];
 
 pub struct App {
+    pub board: BoardModel,
     pub wh_version: String,
     pub quit: bool,
 }
 
 impl App {
-    pub fn new(wh_version: &str) -> Self {
+    pub fn new(board: BoardModel, wh_version: &str) -> Self {
         Self {
+            board,
             wh_version: wh_version.to_string(),
             quit: false,
         }
@@ -49,6 +52,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Line::raw("NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS"),
         Rect::new(0, y, area.width, 1),
     );
+    y += 2;
+    f.render_widget(
+        Line::raw(format!("[X] WALLHACK K-001 - {}", app.board.firmware)),
+        Rect::new(0, y, area.width, 1),
+    );
+    y += 1;
+    f.render_widget(
+        Line::raw(format!("PROFILE < {} >", app.board.profile)),
+        Rect::new(0, y, area.width, 1),
+    );
 }
 
 #[cfg(test)]
@@ -74,7 +87,7 @@ mod tests {
 
     #[test]
     fn the_banner_line_renders_whole_and_exact() {
-        let mut app = App::new("0.5.0-alpha");
+        let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = buffer_lines(&terminal);
@@ -87,11 +100,35 @@ mod tests {
     }
 
     #[test]
+    fn the_device_line_renders_the_firmware_from_the_board_model() {
+        let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let lines = buffer_lines(&terminal);
+        assert!(
+            lines.iter().any(|l| l == "[X] WALLHACK K-001 - V1.0.0.001"),
+            "device line missing or wrong: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_profile_line_renders_the_one_based_profile_number() {
+        let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let lines = buffer_lines(&terminal);
+        assert!(
+            lines.iter().any(|l| l == "PROFILE < 1 >"),
+            "profile line missing or wrong: {lines:?}"
+        );
+    }
+
+    #[test]
     fn q_and_esc_quit() {
-        let mut app = App::new("x");
+        let mut app = App::new(crate::board::test_fixture(), "x");
         app.handle_key(crossterm::event::KeyCode::Char('q'));
         assert!(app.quit);
-        let mut app = App::new("x");
+        let mut app = App::new(crate::board::test_fixture(), "x");
         app.handle_key(crossterm::event::KeyCode::Esc);
         assert!(app.quit);
     }
