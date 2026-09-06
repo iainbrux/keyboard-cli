@@ -305,13 +305,32 @@ mod tests {
 
     #[test]
     fn counted_wait_serves_that_many_timeouts() {
-        let mut t = ReplayTransport::from_jsonl("{\"dir\":\"wait\",\"count\":3}").unwrap();
-        for _ in 0..3 {
-            assert!(matches!(
-                t.recv(Duration::from_millis(1)),
-                Err(DeviceError::Timeout)
-            ));
-        }
+        // A trailing `In` entry after the wait, and a `finished()` check at every step, so an
+        // implementation that consumes the whole `Wait` on the first `recv` cannot pass by
+        // having its extra recv calls land on an exhausted script (which is Timeout too).
+        let f = wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x00]).unwrap();
+        let script = format!(
+            "{{\"dir\":\"wait\",\"count\":3}}\n{{\"dir\":\"in\",\"hex\":\"{}\"}}",
+            hex(&f)
+        );
+        let mut t = ReplayTransport::from_jsonl(&script).unwrap();
+        assert!(!t.finished());
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert!(!t.finished());
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert!(!t.finished());
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert!(!t.finished());
+        assert_eq!(t.recv(Duration::from_millis(1)).unwrap(), f);
         assert!(t.finished());
     }
 
@@ -320,7 +339,10 @@ mod tests {
         let mut t = ReplayTransport::from_jsonl("{\"dir\":\"wait\"}").unwrap();
         let out = wh_proto::cmds::read_profile();
         match t.send(&out) {
-            Err(DeviceError::Replay(msg)) => assert!(msg.starts_with("unexpected send at 0")),
+            Err(DeviceError::Replay(msg)) => assert_eq!(
+                msg,
+                "unexpected send at 0: script expects 1 more empty polls here"
+            ),
             other => panic!("expected Replay error, got {other:?}"),
         }
     }
