@@ -497,6 +497,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         area.width.saturating_sub(left_width),
         body_height,
     );
+    // Read once, used both to size the prompt row below and to decide whether the matrix itself
+    // fits, further down: a board with no rows is 0, never a refusal, just an empty pane.
+    let matrix_needed = needed_width(&app.board.rows);
 
     // The left pane: for MAPPING and ADVANCED, sub-tab label rows above the settings rows (the
     // latter interactive, its own rect-recording pattern); then settings rows for whichever tab
@@ -587,15 +590,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The right pane's prompt or stub shares the tab row, past the left pane's own width, one
     // row tall: a stub that needed to wrap here would have nowhere to go but the matrix's own
     // first row, so `render_stub` stopping after one line is the safer failure. While locked
-    // there is nothing to click, so nothing renders here.
+    // there is nothing to click, so nothing renders here. Its own width stops at the matrix's own
+    // right edge, not the frame's: the vendor right-aligns RESET KEYSETS to the keyboard, not the
+    // window, and a board with no rows yet (nothing to align to) keeps the old full-width
+    // fallback rather than collapsing to zero.
     app.prompt_action_rect = None;
     if show_matrix && !app.locked {
-        let right_area = Rect::new(
-            left_width,
-            tab_row_y,
-            area.width.saturating_sub(left_width),
-            1,
-        );
+        let right_width = if matrix_needed > 0 {
+            matrix_needed.min(area.width.saturating_sub(left_width))
+        } else {
+            area.width.saturating_sub(left_width)
+        };
+        let right_area = Rect::new(left_width, tab_row_y, right_width, 1);
         match app.tab {
             Tab::ActuationPoint | Tab::RapidTrigger => {
                 let keysets_empty = match app.tab {
@@ -663,10 +669,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut refusal: Option<String> = None;
     let mut matrix_rendered = false;
     if show_matrix {
-        // A board with no rows (nothing to draw) is not a refusal: `needed` is 0 and the pane
-        // stays empty. Anything else either fits or gets the refusal, never a clipped grid.
-        let needed = needed_width(&app.board.rows);
-        let fits = needed <= matrix_area.width && matrix_area.height > 0;
+        // A board with no rows (nothing to draw) is not a refusal: `matrix_needed` is 0 and the
+        // pane stays empty. Anything else either fits or gets the refusal, never a clipped grid.
+        let fits = matrix_needed <= matrix_area.width && matrix_area.height > 0;
         if fits {
             matrix_rendered = true;
             render_matrix(
@@ -677,8 +682,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 &app.selection,
                 &mut key_rects,
             );
-        } else if needed > 0 {
-            refusal = Some(too_narrow_text(LEFT_WIDTH.saturating_add(needed)));
+        } else if matrix_needed > 0 {
+            refusal = Some(too_narrow_text(LEFT_WIDTH.saturating_add(matrix_needed)));
         }
     }
     app.key_rects = key_rects;

@@ -585,6 +585,96 @@ fn the_prompt_shares_the_tab_row_and_the_matrix_starts_at_body_y() {
     );
 }
 
+/// The ESC cap's own rect, tied to the left pane's own first settings row rather than a hardcoded
+/// row number: reads `GLOBAL ACTUATION POINT`'s rendered `y` back from the buffer, the same
+/// literal `rows.rs` pins, so a header change that moved both would still leave this test
+/// checking a real invariant instead of two numbers that happened to match once.
+#[test]
+fn the_esc_cap_is_level_with_the_first_settings_row() {
+    let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let lines = terminal_lines(&terminal);
+
+    let settings_row_y = lines
+        .iter()
+        .position(|l| l.starts_with("GLOBAL ACTUATION POINT"))
+        .expect("the first settings row must render") as u16;
+    let esc_rect = app
+        .key_rects
+        .iter()
+        .find(|&&(_, usage)| usage == 0x29)
+        .expect("ESC's cap must be recorded")
+        .0;
+    assert_eq!(
+        esc_rect.y, settings_row_y,
+        "ESC's top border must be level with the left pane's first settings row"
+    );
+}
+
+/// Adjacent cap rows abut with no gap row between them: row n+1's top is exactly row n's own
+/// bottom (`y + height`), not one row further down. Plain 4-row caps, not the vendor's own
+/// border-shared 3-row cadence: sharing would mean two rows' rects overlap by one row (the shared
+/// border), and `key_at` resolves overlapping rects by first match in `rects`, silently
+/// reassigning that row's clicks to whichever cap rendered first, an unannounced behaviour change
+/// this round does not take on.
+#[test]
+fn adjacent_cap_rows_abut_with_no_gap_row() {
+    let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+    // One cap from each of the five rows, in column 0: esc, tab, capslock, lshift, lctrl.
+    let row_top = |usage: u8| {
+        app.key_rects
+            .iter()
+            .find(|&&(_, u)| u == usage)
+            .unwrap_or_else(|| panic!("{usage:#04x}'s cap must be recorded"))
+            .0
+            .y
+    };
+    let tops = [
+        row_top(0x29), // esc
+        row_top(0x2B), // tab
+        row_top(0x39), // capslock
+        row_top(0xE1), // lshift
+        row_top(0xE0), // lctrl
+    ];
+    for pair in tops.windows(2) {
+        assert_eq!(
+            pair[1],
+            pair[0] + 4,
+            "row n+1 must start exactly 4 rows (one cap's height) after row n, no gap: {tops:?}"
+        );
+    }
+}
+
+/// [RESET KEYSETS] right-aligns to the matrix's own right edge (`left_width + needed_width`), not
+/// the frame's: the vendor aligns the action to the keyboard, and a frame wider than the matrix
+/// needs (200 here, matrix needs 64 + 112 = 176) previously left the button hugging column 200
+/// instead of 176, past the matrix entirely.
+#[test]
+fn the_reset_keysets_action_aligns_to_the_matrixs_right_edge_not_the_frames() {
+    let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+    let matrix_right_edge = app
+        .key_rects
+        .iter()
+        .map(|(rect, _)| rect.x + rect.width)
+        .max()
+        .expect("the matrix must render at this width");
+    let action_rect = app
+        .prompt_action_rect
+        .expect("the AP tab must record a prompt action rect");
+    assert_eq!(
+        action_rect.x + action_rect.width,
+        matrix_right_edge,
+        "RESET KEYSETS must end flush with the matrix's own right edge, not the frame's (200)"
+    );
+}
+
 /// Reproduces an operator-reported defect (2026-09-06): with the matrix back at `body_y`, a
 /// status note's `note_row` can land mid-matrix (here, on `w`'s own value line), and the message
 /// block used to paint it at the frame's full width, blanking whatever cap cell sat there. Uses
