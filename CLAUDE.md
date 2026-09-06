@@ -51,9 +51,10 @@ above.
 without the host involved, and while that is happening the board stops being a keyboard at all: it
 will not type until the key is pressed again. It announces both edges with an unsolicited `cmd 0x00`
 sub-order `0xbe`, `be 00` entering and `be 01` leaving, and the vendor configurator ignores the
-first and re-reads the whole board on the second. Measured, see `docs/protocol.md`. `Transport` is
-strictly request-then-response today and cannot receive it, which is the one real blocker for any
-long-running interface.
+first and re-reads the whole board on the second. Measured, see `docs/protocol.md`. As of 3.4,
+`Session` queues these edges instead of discarding them (`poll_event`/`pending_events`), and the
+lock is measured input-only: reads and writes both work mid-lock, so hearing the edges is the only
+detection there is.
 
 **The board has four profiles and every per-key layout is per profile.** `cmd 0x00` payload
 `70 0xFF` reads the active profile; `70 <index>` selects one. A snapshot belongs to the profile it
