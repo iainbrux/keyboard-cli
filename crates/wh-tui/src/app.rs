@@ -295,6 +295,74 @@ mod tests {
         );
     }
 
+    /// One rendered cap's line at `rect`'s column span, `row_offset` rows below `rect.y`: the
+    /// whole cap-cell content (border included), not a substring search. Mirrors
+    /// `tests/matrix.rs`'s own `cap_line`, kept separate deliberately: that one reads a raw
+    /// `Buffer` from `render_matrix` directly, this one reads a `Terminal` through the full
+    /// `draw`, and the two must never drift together silently.
+    fn cap_line(lines: &[String], rect: Rect, row_offset: u16) -> String {
+        let line = &lines[(rect.y + row_offset) as usize];
+        let chars: Vec<char> = line.chars().collect();
+        let start = rect.x as usize;
+        let end = (rect.x + rect.width) as usize;
+        (start..end)
+            .map(|i| chars.get(i).copied().unwrap_or(' '))
+            .collect()
+    }
+
+    #[test]
+    fn the_matrix_shows_each_keys_actuation_point_on_the_actuation_point_tab() {
+        let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let w_rect = app
+            .key_rects
+            .iter()
+            .find(|&&(_, u)| u == 0x1A)
+            .expect("w's cap must be recorded")
+            .0;
+        let lines = buffer_lines(&terminal);
+        assert_eq!(
+            cap_line(&lines, w_rect, 2),
+            "│1.20 │",
+            "w's AP value line, whole cap-cell: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_matrix_shows_rt_press_only_for_keys_in_an_rt_keyset_on_the_rapid_trigger_tab() {
+        let mut app = App::new(crate::board::test_fixture(), "0.5.0-alpha");
+        app.tab = Tab::RapidTrigger;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let lines = buffer_lines(&terminal);
+        let a_rect = app
+            .key_rects
+            .iter()
+            .find(|&&(_, u)| u == 0x04)
+            .expect("a's cap must be recorded")
+            .0;
+        let w_rect = app
+            .key_rects
+            .iter()
+            .find(|&&(_, u)| u == 0x1A)
+            .expect("w's cap must be recorded")
+            .0;
+
+        assert_eq!(
+            cap_line(&lines, a_rect, 2),
+            "│0.30 │",
+            "a is in an rt keyset, must show rt_press: {lines:?}"
+        );
+        assert_eq!(
+            cap_line(&lines, w_rect, 2),
+            "│     │",
+            "w is outside any rt keyset, must show a blank value line: {lines:?}"
+        );
+    }
+
     #[test]
     fn q_and_esc_quit() {
         let mut app = App::new(crate::board::test_fixture(), "x");

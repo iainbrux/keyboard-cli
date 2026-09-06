@@ -131,7 +131,8 @@ pub fn rt_keysets(keys: &[KeySettings]) -> Vec<KeysetView> {
 
 /// A `BoardModel` literal with two keys and no wire, for `app`'s unit tests: those exercise
 /// `draw`, not the read path, so they need a model to hold rather than a `Session` to read one
-/// from.
+/// from. 'a' (0x04) carries a non-zero `rt_keyset` and a `rt_press` distinct from 'w's, so a test
+/// that switches to the RapidTrigger tab can tell the two keys' matrix cells apart.
 #[cfg(test)]
 pub(crate) fn test_fixture() -> BoardModel {
     use wh_proto::cmds::Mode;
@@ -169,10 +170,10 @@ pub(crate) fn test_fixture() -> BoardModel {
                 usage: 0x04,
                 ap: Um(1500),
                 mode: Mode::from_value(0x0010),
-                rt_press: Um(0),
-                rt_release: Um(0),
+                rt_press: Um(300),
+                rt_release: Um(300),
                 ap_keyset: 0,
-                rt_keyset: 0,
+                rt_keyset: 1,
             },
         ],
     }

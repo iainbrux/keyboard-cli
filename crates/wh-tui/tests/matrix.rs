@@ -4,6 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use std::collections::HashSet;
 use support::wasd_board;
+use wh_proto::cmds::DefKeyRow;
 use wh_tui::matrix::{key_at, render_matrix, CapValue};
 
 /// Every rendered line of a raw `Buffer`, right-trimmed. Copied from `app::tests::buffer_lines`
@@ -192,10 +193,61 @@ fn a_selected_cap_renders_reversed() {
             .contains(Modifier::REVERSED),
         "a selected cap's cell must render reversed"
     );
+    // Sample the top-left border cell too, not just an inner one: `REVERSED` must cover the
+    // whole cap (border included), so a fix that only restyles the inner rect would still pass
+    // the inner-cell assertion above.
+    assert!(
+        buf[(w_rect.x, w_rect.y)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "a selected cap's border cell must render reversed too"
+    );
     assert!(
         !buf[(a_rect.x + 1, a_rect.y + 1)]
             .modifier
             .contains(Modifier::REVERSED),
         "an unselected cap's cell must not render reversed"
+    );
+}
+
+#[test]
+fn caps_within_a_row_render_in_column_order_not_input_order() {
+    // A single row whose keys are deliberately out of column order: col 5 listed before col 0.
+    // The row-pair's `Vec<(col, usage)>` isn't guaranteed sorted by whoever built it, so
+    // `render_matrix` must sort by column itself rather than trusting input order.
+    let rows = vec![DefKeyRow {
+        row: 0,
+        keys: vec![(5, 0x16), (0, 0x1A)],
+    }];
+    let area = Rect::new(0, 0, 40, 10);
+    let mut buf = Buffer::empty(area);
+    let mut rects = Vec::new();
+    let selected = HashSet::new();
+
+    render_matrix(
+        area,
+        &mut buf,
+        &rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected,
+        &mut rects,
+    );
+
+    let col0_rect = rects
+        .iter()
+        .find(|&&(_, usage)| usage == 0x1A)
+        .expect("the col-0 key (0x1A) must be recorded")
+        .0;
+    let col5_rect = rects
+        .iter()
+        .find(|&&(_, usage)| usage == 0x16)
+        .expect("the col-5 key (0x16) must be recorded")
+        .0;
+    assert!(
+        col0_rect.x < col5_rect.x,
+        "the col-0 cap must render left of the col-5 cap: col0 {col0_rect:?}, col5 {col5_rect:?}"
     );
 }
