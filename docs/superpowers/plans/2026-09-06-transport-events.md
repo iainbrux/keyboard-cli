@@ -478,3 +478,7 @@ existing "board can change under you" material describing the note and what it m
 git add crates/wh-cli/src/run.rs crates/wh-cli/tests/dump.rs docs/tasks.md README.md
 git commit -m "[feat] - Report the board's adjust-mode edges after every command, once per kind"
 ```
+
+---
+
+Executed: 2026-09-06
