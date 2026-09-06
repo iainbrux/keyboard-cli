@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use support::{ansi_dk_board, wasd_board};
 use wh_proto::cmds::DefKeyRow;
 use wh_tui::app::{draw, App, LOCKED_BANNER};
-use wh_tui::matrix::{key_at, needed_width, render_matrix, CapValue};
+use wh_tui::matrix::{cap_units, key_at, needed_width, render_matrix, CapValue};
 
 /// Every rendered line of a raw `Buffer`, right-trimmed. Copied from `app::tests::buffer_lines`
 /// and `chrome.rs`'s own copy, kept in sync deliberately rather than shared, for the same reason
@@ -361,11 +361,9 @@ fn every_1u_cap_is_the_same_width_and_adjacent_caps_abut_exactly() {
 
 /// The vendor's rows all share one right edge (measured against
 /// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`: every row's border
-/// starts and ends at the same pixel column). The number row, the QWERTY row, the home row and
-/// the bottom-letter row all sum to the same 16.0 `cap_units` total in `ansi_dk_board`, so once
-/// widths stop drifting from per-key rounding those four rows' right edges must land on the same
-/// column. The row carrying the space bar is not asserted here: it is a genuinely different
-/// content shape (see the report), not a rounding question.
+/// starts and ends at the same pixel column). All five `ansi_dk_board` rows sum to the same 16.0
+/// `cap_units` total (`lctrl`/`lgui`/`lalt` at 1.25 make the bottom row's total match too), so
+/// once widths stop drifting from per-key rounding all five rows' right edges land on one column.
 #[test]
 fn rows_with_equal_cap_units_totals_end_at_the_same_right_edge() {
     let board = ansi_dk_board();
@@ -394,18 +392,44 @@ fn rows_with_equal_cap_units_totals_end_at_the_same_right_edge() {
             .unwrap_or_else(|| panic!("{usage_in_row:#04x}'s cap must be recorded"))
     };
 
-    // One key from each of the number row, the QWERTY row, the home row and the bottom-letter
-    // row, each the last key `render_matrix` draws for its row.
+    // One key from each row, each the last key `render_matrix` draws for its row.
     let number_row_end = row_right_edge(0x4C); // delete
     let qwerty_row_end = row_right_edge(0x4A); // home
     let home_row_end = row_right_edge(0x4B); // pageup
-    let bottom_row_end = row_right_edge(0x4E); // pagedown
+    let bottom_letter_row_end = row_right_edge(0x4E); // pagedown
+    let space_row_end = row_right_edge(0x4F); // right
 
     assert_eq!(
-        [qwerty_row_end, home_row_end, bottom_row_end],
-        [number_row_end; 3],
+        [
+            qwerty_row_end,
+            home_row_end,
+            bottom_letter_row_end,
+            space_row_end
+        ],
+        [number_row_end; 4],
         "rows summing to the same cap_units total must end at the same column"
     );
+}
+
+/// The row every `cap_units` proportion edit must keep flush: five rows of a real board sum to
+/// the same total, a fact this crate leans on for right-edge alignment (see the test above), so
+/// a future edit to any one entry (say widening `enter` without touching anything else) must fail
+/// this test before it ships a row that no longer lines up.
+#[test]
+fn every_rows_cap_units_sum_to_the_same_total() {
+    let board = ansi_dk_board();
+    assert_eq!(board.rows.len(), 5, "the fixture must be five rows");
+    let totals: Vec<f32> = board
+        .rows
+        .iter()
+        .map(|row| row.keys.iter().map(|&(_, u)| cap_units(u)).sum())
+        .collect();
+    for &total in &totals {
+        assert_eq!(
+            total, totals[0],
+            "every row must sum to the same cap_units total: {totals:?}"
+        );
+    }
 }
 
 /// Every rendered line of a `Terminal`, right-trimmed. The width sweep below draws through
@@ -424,10 +448,10 @@ fn terminal_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
-/// The whole refusal, as one literal. Deliberately not `too_narrow_text(168)`: a test that
+/// The whole refusal, as one literal. Deliberately not `too_narrow_text(176)`: a test that
 /// compares rendered text against the generator that produced it passes whatever the generator
 /// says, including a generator that stopped naming the width at all.
-const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 168 COLUMNS";
+const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 176 COLUMNS";
 
 /// Reassembles the body's message block from whatever `draw` rendered: finds the line holding
 /// `needle`, takes every following line's slice from that same column until a blank one, and
@@ -467,7 +491,7 @@ fn body_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
 /// QWERTY row, tab (1.5) plus twelve 1.0 caps plus backslash (1.5) plus the row-end key, at 7
 /// columns per unit, summing to the same 16.0 units as every other row (measured against the
 /// vendor's own rendering, `research/vendor-bundle/2026-09-05/screenshots/`, whose rows all share
-/// one right edge). The whole frame therefore wants this plus the 56-column left pane, and the
+/// one right edge). The whole frame therefore wants this plus the 64-column left pane, and the
 /// refusal in the width sweep below states exactly that total.
 #[test]
 fn a_full_ansi_dk_board_needs_112_columns_for_its_widest_row() {
@@ -480,18 +504,18 @@ fn a_full_ansi_dk_board_needs_112_columns_for_its_widest_row() {
     assert_eq!(needed_width(&board.rows), 112);
 }
 
-/// The refusal at real terminal widths. 168 is the first width that fits the matrix (112 plus
-/// the 56-column left pane); every width below it must show the whole sentence, wherever it has
-/// to go: the matrix pane at 57 columns is one column wide, and at 56 or less it does not exist.
+/// The refusal at real terminal widths. 176 is the first width that fits the matrix (112 plus
+/// the 64-column left pane); every width below it must show the whole sentence, wherever it has
+/// to go: the matrix pane at 65 columns is one column wide, and at 64 or less it does not exist.
 #[test]
 fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
-    for width in [50u16, 56, 57, 64, 71, 72, 80, 93, 94, 167, 168] {
+    for width in [50u16, 64, 65, 72, 79, 80, 88, 101, 102, 175, 176] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
         let mut terminal = Terminal::new(TestBackend::new(width, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = body_lines(&terminal);
 
-        if width >= 168 {
+        if width >= 176 {
             assert_eq!(
                 app.key_rects.len(),
                 68,
@@ -515,25 +539,38 @@ fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
     }
 }
 
-/// The vendor's two top-aligned panes (measured 2026-09-06 against
-/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`): the right pane's own
-/// prompt sits level with the left pane's first settings row, and the matrix starts the row
-/// beneath it, not at that same first row. The tab row itself is a fixed y (25, pinned
-/// independently by `chrome.rs`'s own row-render test), so the body starts at 26.
+/// The vendor's two top-aligned panes, pixel-scanned against
+/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png` and `05-mapping.png`:
+/// the right pane's own prompt shares the TAB ROW itself (y=25, pinned independently by
+/// `chrome.rs`'s own row-render test), past the 64-column left pane; the matrix's first cap row
+/// starts at `body_y` (26), level with the left pane's first settings row, unchanged from before
+/// this round.
 #[test]
-fn the_prompt_shares_the_left_panes_first_row_and_the_matrix_starts_the_row_below_it() {
+fn the_prompt_shares_the_tab_row_and_the_matrix_starts_at_body_y() {
+    let tab_row_y = 25u16;
     let body_y = 26u16;
     let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
     let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
 
-    let prompt_y = app
+    let prompt_rect = app
         .prompt_action_rect
-        .expect("the AP tab must record a prompt action rect")
-        .y;
+        .expect("the AP tab must record a prompt action rect");
     assert_eq!(
-        prompt_y, body_y,
-        "the prompt must render on the left pane's first row, not below the settings block"
+        prompt_rect.y, tab_row_y,
+        "the prompt must render on the tab row, not a row of its own below it"
+    );
+
+    // The prompt's own status text starts exactly at column 64, right after the left pane: not
+    // just that the prompt renders somewhere on the tab row, but that it starts where the left
+    // pane ends.
+    let buf = terminal.backend().buffer().clone();
+    let tab_row_line: String = (0..buf.area.width)
+        .map(|x| buf[(x, tab_row_y)].symbol().to_string())
+        .collect();
+    assert!(
+        tab_row_line[64..].starts_with("> CLICK ON THE KEYS TO MAKE A KEYSET"),
+        "the prompt must start at column 64: {tab_row_line:?}"
     );
 
     let matrix_top = app
@@ -543,9 +580,8 @@ fn the_prompt_shares_the_left_panes_first_row_and_the_matrix_starts_the_row_belo
         .min()
         .expect("the matrix must render at this width");
     assert_eq!(
-        matrix_top,
-        body_y + 1,
-        "the matrix's first cap row must start the row after the prompt, not level with it"
+        matrix_top, body_y,
+        "the matrix's first cap row must start at body_y, level with the settings, not below the prompt"
     );
 }
 

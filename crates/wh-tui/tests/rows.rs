@@ -113,7 +113,7 @@ fn the_ap_tab_body_renders_global_custom_value_and_keyset_rows() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
-    let left_width = 56usize; // area.width.min(56) in app::draw
+    let left_width = 64usize; // area.width.min(64) in app::draw
     let dots = |label: &str, control: &str| ".".repeat(left_width - label.len() - control.len());
 
     let global_line = format!(
@@ -126,21 +126,10 @@ fn the_ap_tab_body_renders_global_custom_value_and_keyset_rows() {
     );
     let keyset_line = format!("[X] W,A{}[^]", dots("[X] W,A", "[^]"));
 
-    // GLOBAL ACTUATION POINT is the left pane's first settings row, and the right pane's own
-    // prompt shares that exact row (both panes start at the same y, the vendor's own top-aligned
-    // layout): asserted here in two column-bounded slices of the one rendered line, not by
-    // asserting the whole line equals either half alone.
-    let global_row_y = lines
-        .iter()
-        .position(|l| l.starts_with("GLOBAL ACTUATION POINT"))
-        .unwrap_or_else(|| panic!("global AP row missing: {lines:?}"));
-    let full_row: Vec<char> = lines[global_row_y].chars().collect();
-    let left_slice: String = full_row.iter().take(left_width).collect();
-    assert_eq!(
-        left_slice, global_line,
-        "global AP row (left pane), whole slice: {lines:?}"
+    assert!(
+        lines.iter().any(|l| l == &global_line),
+        "global AP row missing or wrong, whole line: {lines:?}"
     );
-
     assert!(
         lines.iter().any(|l| l == &custom_value_line),
         "\"MM\" CUSTOM VALUE row missing or wrong, whole line: {lines:?}"
@@ -150,6 +139,8 @@ fn the_ap_tab_body_renders_global_custom_value_and_keyset_rows() {
         "AP keyset row missing or wrong, whole line: {lines:?}"
     );
 
+    // The prompt now shares the tab row (y=25), not the first settings row asserted above, so it
+    // renders as its own whole line here with nothing else on it.
     let status = "> CLICK ON THE KEYS TO MAKE A KEYSET";
     let action = "[RESET KEYSETS]";
     let right_width = 120 - left_width;
@@ -157,10 +148,11 @@ fn the_ap_tab_body_renders_global_custom_value_and_keyset_rows() {
         "{status}{}{action}",
         " ".repeat(right_width - status.len() - action.len())
     );
-    let right_slice: String = full_row.iter().skip(left_width).collect();
+    let tab_row = &lines[25];
+    let right_slice: String = tab_row.chars().skip(left_width).collect();
     assert_eq!(
         right_slice, prompt_line,
-        "right pane's prompt, same row as the left pane's first settings row: {lines:?}"
+        "right pane's prompt, on the tab row past the left pane's own width: {lines:?}"
     );
 }
 
@@ -175,7 +167,7 @@ fn rt_sub_rows_render_dim_while_global_rt_is_off() {
 
     let buf = terminal.backend().buffer().clone();
     let lines = buffer_lines(&terminal);
-    let left_last_col = 55u16; // left pane is 56 columns wide (area.width.min(56)), 0-indexed
+    let left_last_col = 63u16; // left pane is 64 columns wide (area.width.min(64)), 0-indexed
 
     let global_y = lines
         .iter()
@@ -207,10 +199,10 @@ fn rt_sub_rows_render_dim_while_global_rt_is_off() {
     }
 }
 
-/// The row line `app::draw` renders in the 56-column left pane: label, dot leaders, control.
+/// The row line `app::draw` renders in the 64-column left pane: label, dot leaders, control.
 /// Mirrors `tests/stubs.rs`'s own `dots` helper, kept separate for the same reason.
 fn row_line(label: &str, control: &str) -> String {
-    let dots = ".".repeat(56 - label.chars().count() - control.chars().count());
+    let dots = ".".repeat(64 - label.chars().count() - control.chars().count());
     format!("{label}{dots}{control}")
 }
 
@@ -259,17 +251,13 @@ fn rt_lines(keys: Vec<KeySettings>) -> Vec<String> {
 /// states, and RT SENSITIVITY keeping its millimetres alongside the ON one.
 #[test]
 fn global_rapid_trigger_reads_on_off_or_mixed_and_never_a_measurement() {
-    // GLOBAL RAPID TRIGGER is the tab's first settings row, and the right pane's own prompt
-    // shares that same row (both panes start at the same y): asserted by `starts_with` against
-    // the row's exact, whole left-pane reconstruction, not a loosened fragment match, so the
-    // right pane's own content can follow without this test caring what it says.
     let on = rt_lines(vec![
         outside_key(0x1A, 0x0030, 300),
         outside_key(0x04, 0x0030, 300),
     ]);
     assert!(
         on.iter()
-            .any(|l| l.starts_with(&row_line("GLOBAL RAPID TRIGGER", "< ON >"))),
+            .any(|l| l == &row_line("GLOBAL RAPID TRIGGER", "< ON >")),
         "every outside key has rapid trigger on: {on:?}"
     );
     assert!(
@@ -284,7 +272,7 @@ fn global_rapid_trigger_reads_on_off_or_mixed_and_never_a_measurement() {
     ]);
     assert!(
         off.iter()
-            .any(|l| l.starts_with(&row_line("GLOBAL RAPID TRIGGER", "< OFF >"))),
+            .any(|l| l == &row_line("GLOBAL RAPID TRIGGER", "< OFF >")),
         "no outside key has rapid trigger on: {off:?}"
     );
 
@@ -295,7 +283,7 @@ fn global_rapid_trigger_reads_on_off_or_mixed_and_never_a_measurement() {
     assert!(
         mixed
             .iter()
-            .any(|l| l.starts_with(&row_line("GLOBAL RAPID TRIGGER", "< MIXED >"))),
+            .any(|l| l == &row_line("GLOBAL RAPID TRIGGER", "< MIXED >")),
         "one outside key on and one off is MIXED, not either end: {mixed:?}"
     );
 }

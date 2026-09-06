@@ -57,6 +57,10 @@ pub fn cap_units(usage: u8) -> f32 {
         Some("lshift") => 2.25,
         Some("rshift") => 1.75,
         Some("space") => 6.25,
+        // Measured at ~1.257 against the baseline 1u cap on the vendor's own bottom row
+        // (research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png): the only
+        // value that also makes that row's units sum to 16.0, the same total as every other row.
+        Some("lctrl") | Some("lgui") | Some("lalt") => 1.25,
         _ => 1.0,
     }
 }
@@ -73,15 +77,10 @@ const CAP_HEIGHT: u16 = 4;
 /// Columns in one standard (1.0 unit) cap.
 const CAP_UNIT_COLS: f32 = 7.0;
 
-/// A row's per-key column widths, in the order given. Each key's width is the difference between
-/// two roundings of the row's own running unit total, not `cap_units(usage) * CAP_UNIT_COLS`
-/// rounded in isolation: rounding every key independently drifts by up to a column whenever a
-/// row's fractional units (`tab`'s 1.5, `capslock`'s 1.75, and so on) do not clear to a whole
-/// number until a later key, which is what left one row a column wider than its neighbours despite
-/// `cap_units` summing to the same total for every row of a real board. This way the row's own
-/// total always lands on `round(total_units * CAP_UNIT_COLS)` exactly, with no drift left for the
-/// last key to absorb, and every plain 1.0-unit key still renders at exactly `CAP_UNIT_COLS`
-/// regardless of position: adding a whole number never changes what an earlier fraction rounds to.
+/// A row's per-key column widths: each key's width is the difference between two roundings of
+/// the row's own running unit total, not `cap_units(usage) * CAP_UNIT_COLS` rounded per key in
+/// isolation, which drifts by up to a column whenever a row's fractional units do not clear to a
+/// whole number until a later key. A plain 1.0-unit key still renders at `CAP_UNIT_COLS` always.
 fn row_widths(usages: &[u8]) -> Vec<u16> {
     let mut widths = Vec::with_capacity(usages.len());
     let mut prev_cols = 0u16;
@@ -95,14 +94,10 @@ fn row_widths(usages: &[u8]) -> Vec<u16> {
     widths
 }
 
-/// Columns the widest of `rows` needs, which is the width the pane must have before
-/// `render_matrix` draws anything. Computed from `cap_units`: a full ANSI-DK 68-key board's
-/// widest row (measured 2026-09-06 against `research/vendor-bundle/2026-09-05/screenshots/`,
-/// tab, twelve 1.0 caps and backslash, all summing with the row-end key to the same 16.0 units
-/// as every other row) needs 112 columns, so with the 56-column left pane beside it the whole
-/// frame wants 168: more than a 120-column terminal has, which is why the refusal names the
-/// number rather than only refusing. The 112 is what the ANSI-DK layout implies, not a DEFKEY
-/// read; the refusal always states the figure for the rows the board itself reported.
+/// Columns the widest of `rows` needs, before `render_matrix` draws anything. A full ANSI-DK
+/// 68-key board's widest row needs 112 (every row sums to the same 16.0 `cap_units` total,
+/// measured against `research/vendor-bundle/2026-09-05/screenshots/`), so with the 64-column
+/// left pane beside it the whole frame wants 176; the refusal states the figure for the rows read.
 pub fn needed_width(rows: &[DefKeyRow]) -> u16 {
     rows.iter()
         .map(|row| {

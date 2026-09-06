@@ -47,13 +47,14 @@ Frame, top to bottom:
 - Tab row: ACTUATION POINT, RAPID TRIGGER, MAPPING, SWITCHES, ADVANCED. The selected tab renders
   boxed or inverted; the others plain; disabled things dim.
 - Two-pane body, both top-aligned: settings on the left, the 68-key ANSI-DK matrix on the right.
-  The right pane's own first row is a prompt line, level with the left pane's first settings row:
-  a `> message` status on the left half, contextual actions on the right half (RESET KEYSETS, or
-  ADD KEYSET [ENTER] and CANCEL [ESC] during a selection); the matrix starts the row beneath it.
-  Only ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane (and with it, this
-  prompt row: their own stub, if any, stays in the left pane instead). Corrected 2026-09-06 from a
-  UI-polish pass: the prompt used to sit in the left pane's own flow, after the settings rows,
-  leaving the matrix floating low with dead space beneath a short settings block.
+  Pixel-scanned against `01-actuation-point.png` and `05-mapping.png`: the prompt line (a
+  `> message` status, contextual actions right-aligned, RESET KEYSETS or ADD KEYSET [ENTER] and
+  CANCEL [ESC] during a selection) shares the TAB ROW itself, not a row of its own; the matrix's
+  first cap row is level with the left pane's first settings row, one row below the tab row. Only
+  ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane (and with it, the tab-row
+  prompt: their own stub, if any, stays in the left pane instead). Corrected 2026-09-06 twice: a
+  first UI-polish pass moved the prompt off the left pane's own flow but placed it and the matrix
+  one row too low; a review of the same screenshots put both back where they are stated above.
 - Footer: HELP drawer bottom left, EN JA CH language row, support email.
 
 Widget inventory, in order of leverage:

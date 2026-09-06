@@ -36,20 +36,20 @@ fn new_terminal() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(160, 50)).unwrap()
 }
 
-/// `left_width` is `area.width.min(56)` in `app::draw`, 56 here since the terminal is 160 wide.
+/// `left_width` is `area.width.min(64)` in `app::draw`, 64 here since the terminal is 160 wide.
 /// Mirrors `tests/rows.rs`'s own `dots` helper, kept separate deliberately: the two suites must
 /// never drift together silently.
 fn dots(label: &str, control: &str) -> String {
-    ".".repeat(56 - label.chars().count() - control.chars().count())
+    ".".repeat(64 - label.chars().count() - control.chars().count())
 }
 
 /// Asserts the row whose rendered line starts with `label` is dim across its whole width (both
-/// the leftmost and, within the 56-column left pane, the rightmost cell), the same shape
+/// the leftmost and, within the 64-column left pane, the rightmost cell), the same shape
 /// `tests/rows.rs`'s `rt_sub_rows_render_dim_while_global_rt_is_off` checks for RT's sub-rows.
 /// Reads the row's `y` back from the rendered text rather than a hardcoded index, so a row moved
 /// out from under its own label is still caught.
 fn assert_row_dim(buf: &Buffer, lines: &[String], label: &str) {
-    let left_last_col = 55u16; // left pane is 56 columns wide (area.width.min(56)), 0-indexed
+    let left_last_col = 63u16; // left pane is 64 columns wide (area.width.min(64)), 0-indexed
     let y = lines
         .iter()
         .position(|l| l.starts_with(label))
@@ -72,12 +72,8 @@ fn mapping_renders_its_subtab_labels_and_the_stub_line() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
-    // BASE LAYER / FN LAYER is the left pane's first row, and the right pane's own stub shares
-    // that exact row (both panes start at the same y, the vendor's own top-aligned layout, see
-    // `05-mapping.png`): asserted by `starts_with` against the row's whole left-pane
-    // reconstruction, not a loosened fragment match.
     assert!(
-        lines.iter().any(|l| l.starts_with(MAPPING_LABELS_ROW_1)),
+        lines.iter().any(|l| l == MAPPING_LABELS_ROW_1),
         "the BASE LAYER / FN LAYER label row is missing or wrong: {lines:?}"
     );
     assert!(
@@ -85,11 +81,13 @@ fn mapping_renders_its_subtab_labels_and_the_stub_line() {
         "the character sub-tab label row is missing or wrong: {lines:?}"
     );
 
-    // MAPPING_STUB (62 chars) now renders in the right pane (104 columns wide at this terminal
-    // size), not the 56-column left pane, so it fits on one line rather than wrapping.
-    assert!(
-        lines.iter().any(|l| l.ends_with(MAPPING_STUB)),
-        "the mapping stub line is missing or wrong: {lines:?}"
+    // MAPPING_STUB now shares the tab row (y=25) with the tab titles, past the 64-column left
+    // pane: asserted by its exact starting column, not just that it appears somewhere on the row.
+    let tab_row = &lines[25];
+    assert_eq!(
+        &tab_row[64..],
+        MAPPING_STUB,
+        "the mapping stub must start at column 64, right after the left pane: {lines:?}"
     );
 }
 
@@ -107,11 +105,8 @@ fn switches_renders_rows_and_the_stub_line() {
     );
     let current_line = format!("CURRENT SWITCHES{}< - >", dots("CURRENT SWITCHES", "< - >"));
 
-    // CALIBRATE SWITCHES is the left pane's first row, and the right pane's own stub shares that
-    // exact row (both panes start at the same y): asserted by `starts_with` against the row's
-    // whole left-pane reconstruction, not a loosened fragment match.
     assert!(
-        lines.iter().any(|l| l.starts_with(&calibrate_line)),
+        lines.iter().any(|l| l == &calibrate_line),
         "the CALIBRATE SWITCHES row is missing or wrong: {lines:?}"
     );
     assert!(
@@ -121,14 +116,18 @@ fn switches_renders_rows_and_the_stub_line() {
     // Guards against a blanked constant matching a blank padded row by coincidence: a wiped
     // `SWITCHES_STUB` renders no line at all, which `.any(|l| l == "")` would otherwise accept.
     assert!(!SWITCHES_STUB.is_empty(), "SWITCHES_STUB must not be blank");
-    assert!(
-        lines.iter().any(|l| l.ends_with(SWITCHES_STUB)),
-        "the switches stub line is missing or wrong: {lines:?}"
+    // SWITCHES_STUB shares the tab row (y=25) with the tab titles: asserted by its exact starting
+    // column, not just that it appears somewhere on the row.
+    let tab_row = &lines[25];
+    assert_eq!(
+        &tab_row[64..],
+        SWITCHES_STUB,
+        "the switches stub must start at column 64, right after the left pane: {lines:?}"
     );
 }
 
 /// The same shape as `dots`, for the three ADVANCED sub-tabs that drop the keyboard pane: their
-/// left pane is the whole 160-column frame, not 56 columns, so their rows carry that many more
+/// left pane is the whole 160-column frame, not 64 columns, so their rows carry that many more
 /// leaders.
 fn wide_dots(label: &str, control: &str) -> String {
     ".".repeat(160 - label.chars().count() - control.chars().count())
@@ -162,7 +161,7 @@ fn gamepad_device_and_share_drop_the_keyboard_pane() {
     }
 
     // The left pane takes the width the matrix gave up: a DEVICE row's leaders fill all 160
-    // columns, not 56.
+    // columns, not 64.
     let mut app = App::new(wasd_board(), "0.5.0-alpha");
     app.tab = Tab::Advanced;
     app.advanced_tab = AdvancedTab::Device;
@@ -270,11 +269,13 @@ fn advanced_general_rows_render_with_stub_markers_where_unbuilt() {
         !ADVANCED_GENERAL_STUB.is_empty(),
         "ADVANCED_GENERAL_STUB must not be blank"
     );
-    // GENERAL shows the matrix, so its stub moved to the right pane, sharing the sub-tab row (the
-    // left pane's own first row) rather than rendering as its own separate line.
-    assert!(
-        lines.iter().any(|l| l.ends_with(ADVANCED_GENERAL_STUB)),
-        "the advanced general stub line is missing or wrong: {lines:?}"
+    // GENERAL shows the matrix, so its stub shares the tab row (y=25), not the sub-tab row below
+    // it: asserted by its exact starting column, not just that it appears somewhere on the row.
+    let tab_row = &lines[25];
+    assert_eq!(
+        &tab_row[64..],
+        ADVANCED_GENERAL_STUB,
+        "the advanced general stub must start at column 64, right after the left pane: {lines:?}"
     );
 }
 
@@ -322,15 +323,14 @@ fn clicking_an_advanced_sub_tab_selects_it() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
 
-    // The sub-tab row sits one line below the main tab row (y=25, see chrome.rs), at y=26. The
-    // right pane's own stub for GENERAL shares this exact row (both panes start at the same y),
-    // so only the left pane's own reconstruction is asserted whole, by `starts_with`, not the
-    // rest of the line. Find DEVICE's column in that literal rather than reading it back from
+    // The sub-tab row sits one line below the main tab row (y=25, see chrome.rs), at y=26; the
+    // right pane's own stub for GENERAL shares the tab row instead, so this row is its own line
+    // again. Find DEVICE's column in that literal rather than reading it back from
     // app.advanced_rects, so a rect moved out from under the visible text is still caught.
     let sub_tab_row_y = 26u16;
     let sub_tab_line = &lines[sub_tab_row_y as usize];
-    assert!(
-        sub_tab_line.starts_with("[GENERAL]  GAMEPAD  DEVICE  SHARE"),
+    assert_eq!(
+        sub_tab_line, "[GENERAL]  GAMEPAD  DEVICE  SHARE",
         "the sub-tab row: {lines:?}"
     );
     let col = sub_tab_line.find("DEVICE").unwrap() as u16;

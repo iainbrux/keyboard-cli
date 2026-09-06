@@ -52,8 +52,11 @@ fn the_tab_row_renders_all_five_titles_and_marks_the_selected_one() {
     let mut terminal = new_terminal();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
-    assert_eq!(
-        lines[25], "[ACTUATION POINT]  RAPID TRIGGER  MAPPING  SWITCHES  ADVANCED",
+    // The AP tab's own prompt shares this row too, past the left pane's own width (see
+    // `rows.rs`'s and `matrix.rs`'s own tests for that half): only the tab titles themselves are
+    // asserted whole here, by `starts_with`, not the rest of the line.
+    assert!(
+        lines[25].starts_with("[ACTUATION POINT]  RAPID TRIGGER  MAPPING  SWITCHES  ADVANCED"),
         "tab row: {lines:?}"
     );
 }
