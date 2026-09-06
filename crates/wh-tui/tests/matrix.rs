@@ -7,8 +7,8 @@ use ratatui::Terminal;
 use std::collections::HashSet;
 use support::{ansi_dk_board, wasd_board};
 use wh_proto::cmds::DefKeyRow;
-use wh_tui::app::{draw, App};
-use wh_tui::matrix::{key_at, needed_width, render_matrix, too_narrow_text, CapValue};
+use wh_tui::app::{draw, App, LOCKED_BANNER};
+use wh_tui::matrix::{key_at, needed_width, render_matrix, CapValue};
 
 /// Every rendered line of a raw `Buffer`, right-trimmed. Copied from `app::tests::buffer_lines`
 /// and `chrome.rs`'s own copy, kept in sync deliberately rather than shared, for the same reason
@@ -229,17 +229,25 @@ fn terminal_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
-/// Reassembles the too-narrow refusal from whatever `draw` rendered: finds the line where it
-/// starts, takes every following line's slice from that same column until a blank one, and joins
-/// the pieces with single spaces. A clipped message, a message missing its tail, or no message at
-/// all all fail to reproduce the expected sentence, which is the point: the operator must never
-/// be left with a fragment.
-fn refusal_text(lines: &[String]) -> String {
+/// The whole refusal, as one literal. Deliberately not `too_narrow_text(169)`: a test that
+/// compares rendered text against the generator that produced it passes whatever the generator
+/// says, including a generator that stopped naming the width at all.
+const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 169 COLUMNS";
+
+/// Reassembles the body's message block from whatever `draw` rendered: finds the line holding
+/// `needle`, takes every following line's slice from that same column until a blank one, and
+/// joins the pieces with single spaces. The block is contiguous, so starting at the locked
+/// banner returns the banner and the refusal below it together, which is exactly the claim worth
+/// asserting. The footer row is excluded by the caller, so a message that ran into it cannot
+/// borrow the footer's text to look complete. A clipped message, a message missing its tail, or
+/// no message at all all fail to reproduce the expected sentence, which is the point: the
+/// operator must never be left with a fragment.
+fn message_from(lines: &[String], needle: &str) -> String {
     let (y, x0) = lines
         .iter()
         .enumerate()
-        .find_map(|(y, l)| l.find("TERMINAL TOO NARROW").map(|x| (y, x)))
-        .unwrap_or_else(|| panic!("the too-narrow refusal must render somewhere: {lines:?}"));
+        .find_map(|(y, l)| l.find(needle).map(|x| (y, x)))
+        .unwrap_or_else(|| panic!("{needle:?} must render somewhere: {lines:?}"));
     let mut parts = Vec::new();
     for line in lines.iter().skip(y) {
         let chars: Vec<char> = line.chars().collect();
@@ -250,6 +258,14 @@ fn refusal_text(lines: &[String]) -> String {
         parts.push(piece);
     }
     parts.join(" ")
+}
+
+/// The body's rendered lines: everything above the footer row. The refusal must be complete
+/// within the body, never running into the footer for its own last word.
+fn body_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    let mut lines = terminal_lines(terminal);
+    lines.pop();
+    lines
 }
 
 /// The 68-key ANSI-DK layout's widest row, computed from `cap_units` through `needed_width`: the
@@ -272,12 +288,11 @@ fn a_full_ansi_dk_board_needs_113_columns_for_its_widest_row() {
 /// to go: the matrix pane at 57 columns is one column wide, and at 56 or less it does not exist.
 #[test]
 fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
-    let expected = too_narrow_text(169);
-    for width in [50u16, 56, 57, 80, 93, 94, 168, 169] {
+    for width in [50u16, 56, 57, 64, 71, 72, 80, 93, 94, 168, 169] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
         let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let lines = terminal_lines(&terminal);
+        let lines = body_lines(&terminal);
 
         if width >= 169 {
             assert_eq!(
@@ -295,11 +310,35 @@ fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
                 "at {width} columns no cap fits, so none may be recorded: {lines:?}"
             );
             assert_eq!(
-                refusal_text(&lines),
-                expected,
+                message_from(&lines, "TERMINAL TOO NARROW"),
+                REFUSAL,
                 "at {width} columns the operator must read the whole refusal: {lines:?}"
             );
         }
+    }
+}
+
+/// The same rule on the height axis, and with the locked banner competing for the same rows.
+/// 50x20 leaves the body four rows for two settings rows, the banner and a two-line refusal;
+/// 64x24 fits the refusal on one line but only just; 64x40 has room to spare. At all three the
+/// banner must be whole (it is a sentence too, and half of one is worse than none) and the
+/// refusal must be whole, neither run into the footer nor overwritten by the other.
+#[test]
+fn a_locked_board_shows_both_the_banner_and_the_whole_refusal_at_every_height() {
+    for (width, height) in [(50u16, 20u16), (64, 24), (64, 40)] {
+        let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+        app.locked = true;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let lines = body_lines(&terminal);
+
+        // One assertion over the whole block: the banner entire, then the refusal entire, in
+        // that order, with nothing lost between them and nothing clipped at either end.
+        assert_eq!(
+            message_from(&lines, "BOARD LOCKED"),
+            format!("{LOCKED_BANNER} {REFUSAL}"),
+            "at {width}x{height} both sentences must render whole: {lines:?}"
+        );
     }
 }
 

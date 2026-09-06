@@ -1,17 +1,49 @@
 mod support;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::Duration;
 use support::*;
 use wh_device::replay::ReplayTransport;
 use wh_device::session::Session;
+use wh_device::transport::{DeviceError, Transport};
 use wh_tui::app::{draw, App, LOCKED_BANNER, STATUS_REREADING, STATUS_UNKNOWN_EVENT};
 use wh_tui::board::BoardModel;
 
 /// `App::tick` with a redraw callback that does nothing, for the tests that are about the model
 /// rather than about the frame `tick` draws before its blocking re-read (that one is pinned by
-/// `the_leaving_edge_draws_a_re_reading_frame_before_the_read` below).
+/// `the_leaving_edge_draws_a_re_reading_frame_before_the_read_sends_anything` below).
 fn tick(app: &mut App, s: &mut Session<ReplayTransport>) -> bool {
     app.tick(s, &mut |_| {}).unwrap()
+}
+
+/// A `ReplayTransport` that counts the frames sent through it, so a test can ask how far the wire
+/// had got at the moment something else happened. `tick` hands `redraw` no access to the session,
+/// and the model it does hand over is replaced only after the read returns, so the model alone
+/// cannot tell a frame drawn before the read from one drawn after it.
+struct CountingTransport {
+    inner: ReplayTransport,
+    sends: Rc<Cell<usize>>,
+}
+
+impl Transport for CountingTransport {
+    fn send(&mut self, report: &[u8; 64]) -> Result<(), DeviceError> {
+        self.sends.set(self.sends.get() + 1);
+        self.inner.send(report)
+    }
+    fn recv(&mut self, timeout: Duration) -> Result<[u8; 64], DeviceError> {
+        self.inner.recv(timeout)
+    }
+}
+
+/// How many frames a script sends: its `out` entries, counted from the script itself rather than
+/// hard-coded, so a change to what `BoardModel::read` reads cannot leave the expectation stale.
+fn out_frames(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .filter(|l| l.contains("\"dir\":\"out\""))
+        .count()
 }
 
 /// Every rendered line of the buffer, right-trimmed, so tests assert whole lines. Copied from
@@ -158,31 +190,47 @@ fn a_successful_reread_clears_a_status_note_left_over_from_before_the_edge() {
 
 /// The re-read blocks the whole UI, Ctrl-C included, so `tick` draws one frame before it starts
 /// and that frame has to say so. Pinned through `draw`, not just off `app.status`: the operator
-/// only ever sees the rendered line. The callback runs before the read, which is proved by the
-/// model still carrying the first read's firmware at that moment.
+/// only ever sees the rendered line.
+///
+/// The discriminator is the wire, not the model. `self.board` is only assigned once the read has
+/// returned, so a frame drawn *after* the read still sees the old model: that proves nothing.
+/// Counting the frames the re-read has sent at the moment of the draw does, since a re-read moved
+/// ahead of the announce has already spent its whole block of sends by then.
 #[test]
-fn the_leaving_edge_draws_a_re_reading_frame_before_the_read() {
-    let mut lines = build_script();
+fn the_leaving_edge_draws_a_re_reading_frame_before_the_read_sends_anything() {
+    let open = build_script();
+    let second = second_read_script();
+    let mut lines = open.clone();
     lines.push("{\"dir\":\"wait\"}".to_string());
     lines.push(adjust_edge_line(false));
-    lines.extend(second_read_script());
+    lines.extend(second.clone());
 
-    let t = ReplayTransport::from_jsonl(&lines.join("\n")).unwrap();
+    let sends = Rc::new(Cell::new(0usize));
+    let t = CountingTransport {
+        inner: ReplayTransport::from_jsonl(&lines.join("\n")).unwrap(),
+        sends: Rc::clone(&sends),
+    };
     let mut s = Session::new(t);
     let board = BoardModel::read(&mut s).unwrap();
     let mut app = App::new(board, "0.5.0-alpha");
 
+    let after_open = sends.get();
+    assert_eq!(
+        after_open,
+        out_frames(&open),
+        "the open read must have sent exactly the script's own out frames"
+    );
+
     // A `RefCell` so the frames can be read between the two ticks while the callback that fills
     // them is still alive.
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    let frames: std::cell::RefCell<Vec<(String, Vec<String>)>> =
-        std::cell::RefCell::new(Vec::new());
+    let frames: std::cell::RefCell<Vec<(usize, Vec<String>)>> = std::cell::RefCell::new(Vec::new());
     let mut redraw = |a: &mut App| {
-        let firmware = a.board.firmware.clone();
+        let sends_so_far = sends.get();
         terminal.draw(|f| draw(f, a)).unwrap();
         frames
             .borrow_mut()
-            .push((firmware, buffer_lines(&terminal)));
+            .push((sends_so_far, buffer_lines(&terminal)));
     };
 
     assert!(
@@ -202,10 +250,15 @@ fn the_leaving_edge_draws_a_re_reading_frame_before_the_read() {
 
     let frames = frames.into_inner();
     assert_eq!(frames.len(), 1, "exactly one frame before the read");
-    let (firmware_at_draw, rendered) = &frames[0];
+    let (sends_at_draw, rendered) = &frames[0];
     assert_eq!(
-        firmware_at_draw, "V1.0.0.001",
-        "the frame must be drawn before the re-read lands, not after"
+        *sends_at_draw, after_open,
+        "the frame must be drawn before the re-read has sent one single frame"
+    );
+    assert_eq!(
+        sends.get(),
+        after_open + out_frames(&second),
+        "and the re-read must then send its whole block, after that frame"
     );
     assert!(
         rendered.iter().any(|l| l == STATUS_REREADING),

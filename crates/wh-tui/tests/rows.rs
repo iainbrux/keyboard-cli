@@ -320,6 +320,20 @@ fn continuous_rapid_trigger_reads_mixed_when_the_outside_keys_disagree() {
             .any(|l| l == &row_line("CONTINUOUS RAPID TRIGGER", "< MIXED >")),
         "one outside key continuous and one not is MIXED: {mixed:?}"
     );
+
+    // The population, not just the flag: a key with rapid trigger off has no continuous state to
+    // disagree with, so it must not drag the row to MIXED. Drop `rt_enabled()` from the fold's
+    // filter and this reads MIXED instead of ON.
+    let one_off = rt_lines(vec![
+        outside_key(0x1A, 0x0040, 300),
+        outside_key(0x04, 0x0010, 300),
+    ]);
+    assert!(
+        one_off
+            .iter()
+            .any(|l| l == &row_line("CONTINUOUS RAPID TRIGGER", "< ON >")),
+        "an rt-off key outside the keysets must not count towards continuous: {one_off:?}"
+    );
 }
 
 /// Locates `"[RESET KEYSETS]"` on whichever rendered line contains it and returns its row and

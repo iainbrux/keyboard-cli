@@ -396,13 +396,39 @@ fn render_stub(f: &mut Frame, area: Rect, ry: &mut u16, text: &str) {
     }
 }
 
-/// The longest single word in `text`: the narrowest a pane can be and still hold `text` whole,
-/// since `wrap_stub` breaks only at spaces and a word wider than the pane would be clipped.
-fn longest_word(text: &str) -> u16 {
-    text.split(' ')
-        .map(|w| w.chars().count() as u16)
-        .max()
-        .unwrap_or(0)
+/// Renders the body's full-width message lines (see `draw`), starting at `note_row`, where the
+/// tab's own prompt or stub would otherwise sit, and running down from there. When the block
+/// will not fit before the body ends it is pushed up over the rows above instead of being cut
+/// off at the footer: a settings row hidden on a twenty-row terminal costs the operator less
+/// than half a sentence, and half a sentence is what a bottom-clipped block leaves.
+///
+/// Every line is padded to `width` by hand rather than rendered through `Line::raw`: a widget
+/// writes only as many cells as its text holds, so a shorter line would leave whatever it covers
+/// showing through as a tail.
+fn render_message_block(f: &mut Frame, width: u16, body: Rect, note_row: u16, lines: &[String]) {
+    if lines.is_empty() || body.height == 0 {
+        return;
+    }
+    let body_end = body.y + body.height;
+    let needed = lines.len() as u16;
+    let start = if note_row.saturating_add(needed) <= body_end {
+        note_row
+    } else {
+        body_end.saturating_sub(needed).max(body.y)
+    };
+    for (i, text) in lines.iter().enumerate() {
+        let y = start + i as u16;
+        if y >= body_end {
+            break;
+        }
+        let mut chars: Vec<char> = text.chars().collect();
+        chars.truncate(width as usize);
+        while chars.len() < width as usize {
+            chars.push(' ');
+        }
+        let line: String = chars.into_iter().collect();
+        f.buffer_mut().set_string(0, y, &line, Style::default());
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -561,10 +587,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             },
         }
     }
-    // The row the locked banner or the status note lands on: right where the tab's own prompt or
-    // stub would otherwise sit (or, while locked, right where it was skipped above). Rendered
-    // after the matrix below, full frame width, so it is never cut back by the matrix pane's own
-    // render over the same row.
+    // The row the body's own message block starts on: right where the tab's prompt or stub would
+    // otherwise sit (or, while locked, right where it was skipped above). Rendered after the
+    // matrix below, full frame width, so it is never cut back by the matrix pane's own render.
     let note_row = ry;
 
     let value_of = |usage: u8| -> CapValue {
@@ -599,6 +624,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     };
     let mut key_rects = Vec::new();
+    let mut refusal: Option<String> = None;
     if show_matrix {
         // A board with no rows (nothing to draw) is not a refusal: `needed` is 0 and the pane
         // stays empty. Anything else either fits or gets the refusal, never a clipped grid.
@@ -614,44 +640,32 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 &mut key_rects,
             );
         } else if needed > 0 {
-            // The refusal, whole, wherever it fits whole: the matrix pane when that pane can
-            // hold the message's longest word, otherwise the left pane below the note row, which
-            // at those widths is the frame's full width. A clipped half-sentence, or a blank
-            // right half with no explanation, leaves the operator nothing to act on.
-            let text = too_narrow_text(LEFT_WIDTH.saturating_add(needed));
-            if matrix_area.height > 0 && matrix_area.width >= longest_word(&text) {
-                let mut my = matrix_area.y;
-                render_stub(f, matrix_area, &mut my, &text);
-            } else {
-                let mut my = note_row + 1;
-                render_stub(f, left_area, &mut my, &text);
-            }
+            refusal = Some(too_narrow_text(LEFT_WIDTH.saturating_add(needed)));
         }
     }
     app.key_rects = key_rects;
 
-    // Rendered after the matrix, and space-padded to the full frame width by hand rather than
-    // through `Line::raw`: a widget only writes as many cells as its text holds, so a text
-    // shorter than the matrix pane's own column would otherwise leave that pane's characters
-    // showing through on the same row.
-    if note_row < left_area.y + left_area.height {
-        let note_text = if app.locked {
-            Some(LOCKED_BANNER)
-        } else {
-            app.status.as_deref()
-        };
-        if let Some(text) = note_text {
-            let width = area.width as usize;
-            let mut chars: Vec<char> = text.chars().collect();
-            chars.truncate(width);
-            while chars.len() < width {
-                chars.push(' ');
-            }
-            let line: String = chars.into_iter().collect();
-            f.buffer_mut()
-                .set_string(0, note_row, &line, Style::default());
-        }
+    // The body's message block: the locked banner or the status note, then the too-narrow
+    // refusal wrapped to the frame's full width. They are stacked and placed together rather
+    // than each finding its own row, because both are full-width lines and two of them
+    // competing for one row is how the banner came to overwrite the refusal's last word. The
+    // refusal takes the frame's width, never the matrix pane's, so it also never butts up
+    // against a settings row's own value with no gap between them.
+    let mut message: Vec<String> = Vec::new();
+    let note = if app.locked {
+        Some(LOCKED_BANNER)
+    } else {
+        app.status.as_deref()
+    };
+    // The banner is a sentence too, and it is 97 columns long: on a narrow terminal it wraps
+    // rather than being cut off mid-clause, the same as the refusal below it.
+    if let Some(text) = note {
+        message.extend(wrap_stub(text, area.width));
     }
+    if let Some(text) = &refusal {
+        message.extend(wrap_stub(text, area.width));
+    }
+    render_message_block(f, area.width, left_area, note_row, &message);
 
     f.render_widget(
         Line::raw(FOOTER),
