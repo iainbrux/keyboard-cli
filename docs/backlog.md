@@ -135,11 +135,12 @@ layout closely enough that someone who knows the website can drive it without re
 The vendor UI is already terminal-styled, so this is a far smaller leap than it would be for a
 typical configurator.
 
-**The header is this project's own mark, not a copy.** The vendor's ASCII logo at the top is
-replaced by a `wh` mark in ASCII art, with `brux` named as text in the banner line under it
-(`WALLHACK TERMINAL BY "@BRUX" - V<version>`) rather than drawn. Do not reproduce Wallhack's
-logo. The Wallhack name and logo are theirs, this project is independent and unendorsed, and the
-header is the most visible place that distinction gets made.
+**The header is the vendor's own mark, used with permission.** The operator holds permission from
+Wallhack to use their ASCII logo (stated 2026-09-06), so the header renders it verbatim, extracted
+from the vendor bundle; `brux` is named as text in the banner line under it
+(`WALLHACK TERMINAL BY "@BRUX" - V<version>`) rather than drawn. The Wallhack name and logo remain
+theirs, this project is independent and unendorsed, and the banner line is the departure that
+still makes the distinction.
 
 **The structure to match**, read off the vendor UI:
 

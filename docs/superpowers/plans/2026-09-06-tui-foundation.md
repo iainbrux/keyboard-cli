@@ -36,9 +36,10 @@ code.
   `Session` and calls `wh-device` ops.
 - The banner line is exactly `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's ruling,
   2026-09-06).
-- The TUI renders its own ASCII logo, not a copy of the vendor's mark: the Wallhack logo is
-  Wallhack's, and this project is independent and unendorsed. The logo block in Task 4 is the
-  project's own.
+- The TUI renders Wallhack's own mark, extracted verbatim from the vendor bundle, used with
+  Wallhack's permission (held by the operator, stated 2026-09-06): the earlier own-mark ruling
+  in this bullet is overturned. The logo block in Task 4 must be the vendor's own bytes, never
+  redrawn.
 - Gates before every commit: `cargo test --workspace --no-fail-fast`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`.
 - This plan performs no device writes anywhere. Every fixture script is reads only.

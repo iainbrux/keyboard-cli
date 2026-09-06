@@ -16,7 +16,10 @@ Wallhack
 The Wallhack K-001 keyboard, its firmware, its hardware design, its
 communication protocol, the Wallhack name and logo, and the web configurator
 at https://terminal.wallhack.com/ are the work of Wallhack and belong solely
-to Wallhack.
+to Wallhack. The `wh tui` command renders that logo verbatim, extracted from
+Wallhack's own web configurator, with Wallhack's permission (held by the
+author, stated 2026-09-06); the mark itself is not licensed to this project
+under any open licence and remains Wallhack's alone.
 
 This project is independent and unofficial. It is not affiliated with,
 endorsed by, sponsored by, or supported by Wallhack. It is an independently

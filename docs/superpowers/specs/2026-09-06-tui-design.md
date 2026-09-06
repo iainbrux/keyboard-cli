@@ -35,9 +35,10 @@ colour system. The vendor body font is monospace, so the web layout is already t
 
 Frame, top to bottom:
 
-- ASCII logo block, then the banner line. These are the two deliberate departures from the
-  vendor's chrome. The logo is the project's own ASCII art, not the vendor's mark: the Wallhack
-  logo is Wallhack's, and this project is independent and unendorsed. The vendor's banner reads
+- ASCII logo block, then the banner line. The logo is Wallhack's own mark, extracted verbatim
+  from the vendor bundle and used with Wallhack's permission (held by the operator, stated
+  2026-09-06); it is the vendor's own chrome, not a departure from it. The banner is the one
+  deliberate departure that remains. The vendor's banner reads
   `WH_TERMINAL V1.0.0 - WALLHACK 2026`; `wh tui`'s reads
   `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's choice, 2026-09-06). Then
   `NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS`.
