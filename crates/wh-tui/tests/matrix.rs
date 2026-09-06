@@ -7,7 +7,7 @@ use ratatui::Terminal;
 use std::collections::HashSet;
 use support::{ansi_dk_board, wasd_board};
 use wh_proto::cmds::DefKeyRow;
-use wh_tui::app::{draw, App, LOCKED_BANNER};
+use wh_tui::app::{draw, App, Tab, LOCKED_BANNER};
 use wh_tui::matrix::{cap_units, key_at, needed_width, render_matrix, CapValue};
 
 /// Every rendered line of a raw `Buffer`, right-trimmed. Copied from `app::tests::buffer_lines`
@@ -583,6 +583,145 @@ fn the_prompt_shares_the_tab_row_and_the_matrix_starts_at_body_y() {
         matrix_top, body_y,
         "the matrix's first cap row must start at body_y, level with the settings, not below the prompt"
     );
+}
+
+/// Reproduces an operator-reported defect (2026-09-06): with the matrix back at `body_y`, a
+/// status note's `note_row` can land mid-matrix (here, on `w`'s own value line), and the message
+/// block used to paint it at the frame's full width, blanking whatever cap cell sat there. Uses
+/// `wasd_board`'s `w` (first cap, first row) rather than a real board's ESC: no fixture combines
+/// the full ANSI-DK rows with populated per-key AP values, and `w` sits at the same relative
+/// position (first settings row's own y) that the operator's ESC row did.
+#[test]
+fn a_status_note_renders_left_of_the_matrix_and_never_overwrites_a_cap() {
+    let mut app = App::new(wasd_board(), "0.5.0-alpha");
+    app.status = Some(wh_tui::app::STATUS_UNKNOWN_EVENT.to_string());
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let lines = terminal_lines(&terminal);
+
+    let w_rect = app
+        .key_rects
+        .iter()
+        .find(|&&(_, usage)| usage == 0x1A)
+        .expect("w's cap must be recorded")
+        .0;
+    assert_eq!(
+        cap_line(&lines, w_rect, 1),
+        "│  W  │",
+        "w's label line must survive the note: {lines:?}"
+    );
+    assert_eq!(
+        cap_line(&lines, w_rect, 2),
+        "│2.00 │",
+        "w's value line must survive the note, not be blanked by it: {lines:?}"
+    );
+
+    // The note itself still renders, within the first 64 columns of its own row: not a separate
+    // row from w's cap (both are row 28, w's value line), just the left pane's own share of it.
+    let note_y = lines
+        .iter()
+        .position(|l| l.contains("UNRECOGNISED BOARD EVENT"))
+        .expect("the status note must render somewhere");
+    let left_slice: String = lines[note_y].chars().take(64).collect();
+    assert!(
+        left_slice.starts_with(wh_tui::app::STATUS_UNKNOWN_EVENT),
+        "the note must render within the left pane's own 64 columns: {:?}",
+        lines[note_y]
+    );
+}
+
+/// Asserts none of `key_rects` was overwritten: the perimeter only, not the interior (a cap's own
+/// value line is legitimately blank when the board carries no per-key settings, but its border is
+/// a box-drawing glyph on every cell, always, so any blank there proves something else painted
+/// over it), plus the label row, which is never blank since every key has a non-empty `cap_label`.
+fn assert_no_cap_overwritten(buf: &Buffer, lines: &[String], key_rects: &[(Rect, u8)]) {
+    for &(rect, usage) in key_rects {
+        for x in rect.x..rect.x + rect.width {
+            assert_ne!(
+                buf[(x, rect.y)].symbol(),
+                " ",
+                "usage {usage:#04x}'s top border ({x},{}) must not be blanked: {lines:?}",
+                rect.y
+            );
+            assert_ne!(
+                buf[(x, rect.y + rect.height - 1)].symbol(),
+                " ",
+                "usage {usage:#04x}'s bottom border ({x},{}) must not be blanked: {lines:?}",
+                rect.y + rect.height - 1
+            );
+        }
+        for y in rect.y..rect.y + rect.height {
+            assert_ne!(
+                buf[(rect.x, y)].symbol(),
+                " ",
+                "usage {usage:#04x}'s left border ({},{y}) must not be blanked: {lines:?}",
+                rect.x
+            );
+            assert_ne!(
+                buf[(rect.x + rect.width - 1, y)].symbol(),
+                " ",
+                "usage {usage:#04x}'s right border ({},{y}) must not be blanked: {lines:?}",
+                rect.x + rect.width - 1
+            );
+        }
+        let label_line = cap_line(lines, rect, 1);
+        assert!(
+            label_line.chars().any(|c| c != '│' && c != ' '),
+            "usage {usage:#04x}'s label row must not be blank: {label_line:?}"
+        );
+    }
+}
+
+/// The locked banner is 96 columns, wider than the 64-column left pane, so on a frame wide enough
+/// for the matrix to render it must wrap there rather than paint across it: this is the same
+/// defect as the status-note test above, mutated to the multi-line case, and it must not overwrite
+/// any of the 68 recorded cap rects.
+#[test]
+fn a_locked_banner_on_a_wide_frame_never_overwrites_a_cap() {
+    let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+    app.locked = true;
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let lines = terminal_lines(&terminal);
+
+    assert_eq!(
+        app.key_rects.len(),
+        68,
+        "the matrix must render whole at this width: {lines:?}"
+    );
+    assert_no_cap_overwritten(&buf, &lines, &app.key_rects);
+}
+
+/// `render_message_block`'s push-up (see its own doc comment) still has to hold once the message
+/// is bounded to the left pane's own width: at these heights the two-line banner does not fit
+/// after the settings rows and gets pushed up over them, while the matrix (wide enough to render
+/// its first row, RAPID TRIGGER's own four fixed settings rows put `note_row` past the body's end
+/// at these exact heights) sits untouched to the right throughout.
+#[test]
+fn the_locked_banner_pushes_up_over_settings_without_touching_the_matrix() {
+    for height in [31u16, 32, 33] {
+        let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+        app.tab = Tab::RapidTrigger;
+        app.locked = true;
+        let mut terminal = Terminal::new(TestBackend::new(200, height)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let lines = terminal_lines(&terminal);
+
+        assert!(
+            !app.key_rects.is_empty(),
+            "at height {height} the matrix's first row must still render: {lines:?}"
+        );
+        let left_slices: Vec<String> = lines.iter().map(|l| l.chars().take(64).collect()).collect();
+        assert!(
+            left_slices
+                .windows(2)
+                .any(|w| format!("{} {}", w[0].trim(), w[1].trim()) == LOCKED_BANNER),
+            "at height {height} the whole banner must appear, wrapped, in the left pane: {lines:?}"
+        );
+        assert_no_cap_overwritten(&buf, &lines, &app.key_rects);
+    }
 }
 
 /// The same rule on the height axis, and with the locked banner competing for the same rows.

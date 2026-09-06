@@ -408,12 +408,12 @@ fn render_stub(f: &mut Frame, area: Rect, ry: &mut u16, text: &str) {
     }
 }
 
-/// Renders the body's full-width message lines (see `draw`), starting at `note_row`, where the
-/// tab's own prompt or stub would otherwise sit, and running down from there. When the block
-/// will not fit before the body ends it is pushed up over the rows above instead of being cut
-/// off at the footer: a settings row hidden on a thirty-one-row terminal (the chrome above the
-/// body is 26 rows, plus the footer's own row) costs the operator less than half a sentence, and
-/// half a sentence is what a bottom-clipped block leaves.
+/// Renders the body's message lines at `width` (see `draw`: the left pane's own width whenever a
+/// matrix is drawn beside it, the frame's full width otherwise), starting at `note_row` and
+/// running down from there. When the block will not fit before the body ends it is pushed up over
+/// the rows above instead of being cut off at the footer: a settings row hidden on a thirty-one-
+/// row terminal costs the operator less than half a sentence, and half a sentence is what a
+/// bottom-clipped block leaves.
 ///
 /// Every line is padded to `width` by hand rather than rendered through `Line::raw`: a widget
 /// writes only as many cells as its text holds, so a shorter line would leave whatever it covers
@@ -661,12 +661,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     let mut key_rects = Vec::new();
     let mut refusal: Option<String> = None;
+    let mut matrix_rendered = false;
     if show_matrix {
         // A board with no rows (nothing to draw) is not a refusal: `needed` is 0 and the pane
         // stays empty. Anything else either fits or gets the refusal, never a clipped grid.
         let needed = needed_width(&app.board.rows);
         let fits = needed <= matrix_area.width && matrix_area.height > 0;
         if fits {
+            matrix_rendered = true;
             render_matrix(
                 matrix_area,
                 f.buffer_mut(),
@@ -682,26 +684,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.key_rects = key_rects;
 
     // The body's message block: the locked banner or the status note, then the too-narrow
-    // refusal wrapped to the frame's full width. They are stacked and placed together rather
-    // than each finding its own row, because both are full-width lines and two of them
-    // competing for one row is how the banner came to overwrite the refusal's last word. The
-    // refusal takes the frame's width, never the matrix pane's, so it also never butts up
-    // against a settings row's own value with no gap between them.
+    // refusal. Width is the left pane's own whenever the matrix is actually drawn, never the
+    // frame's, so a settings-row count that puts `note_row` mid-matrix cannot paint over a cap;
+    // it is the frame's full width only when there is no matrix to protect (no right pane at
+    // all, or the too-narrow refusal itself, which is the one case with nothing there to hit).
+    let message_width = if matrix_rendered {
+        left_width
+    } else {
+        area.width
+    };
     let mut message: Vec<String> = Vec::new();
     let note = if app.locked {
         Some(LOCKED_BANNER)
     } else {
         app.status.as_deref()
     };
-    // The banner is a sentence too, and it is 96 columns long: on a narrow terminal it wraps
-    // rather than being cut off mid-clause, the same as the refusal below it.
     if let Some(text) = note {
-        message.extend(wrap_stub(text, area.width));
+        message.extend(wrap_stub(text, message_width));
     }
     if let Some(text) = &refusal {
-        message.extend(wrap_stub(text, area.width));
+        message.extend(wrap_stub(text, message_width));
     }
-    render_message_block(f, area.width, left_area, note_row, &message);
+    render_message_block(f, message_width, left_area, note_row, &message);
 
     f.render_widget(
         Line::raw(FOOTER),

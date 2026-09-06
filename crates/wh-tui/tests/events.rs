@@ -46,6 +46,17 @@ fn out_frames(lines: &[String]) -> usize {
         .count()
 }
 
+/// A rendered line's own share of the left pane (columns 0..64), trimmed: the message block
+/// renders there, never over the matrix beside it, so this is what a note or the banner actually
+/// wrote on that line, with the matrix's own untouched content past column 64 cut away.
+fn left_slice(line: &str) -> String {
+    line.chars()
+        .take(64)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 /// Every rendered line of the buffer, right-trimmed, so tests assert whole lines. Copied from
 /// `app::tests::buffer_lines` and `chrome.rs`'s own copy, kept in sync deliberately rather than
 /// shared: this suite exercises the crate's public surface, not its internals.
@@ -120,9 +131,13 @@ fn a_be00_edge_raises_the_locked_banner_and_be01_rereads_and_lowers_it() {
     let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rendered = buffer_lines(&terminal);
+    // The message now renders within the left pane's own 64 columns (never over the matrix
+    // beside it), so the 96-column banner wraps there into two lines rather than fitting on one.
     assert!(
-        rendered.iter().any(|l| l == LOCKED_BANNER),
-        "the locked banner must render as a whole line: {rendered:?}"
+        rendered
+            .windows(2)
+            .any(|w| format!("{} {}", left_slice(&w[0]), left_slice(&w[1])) == LOCKED_BANNER),
+        "the locked banner must render whole, wrapped in the left pane: {rendered:?}"
     );
 
     // tick3: the scripted wait, still locked.
@@ -260,9 +275,11 @@ fn the_leaving_edge_draws_a_re_reading_frame_before_the_read_sends_anything() {
         after_open + out_frames(&second),
         "and the re-read must then send its whole block, after that frame"
     );
+    // The note renders within the left pane's own 64 columns; the rest of the line is whatever
+    // the matrix, untouched, drew beside it.
     assert!(
-        rendered.iter().any(|l| l == STATUS_REREADING),
-        "the re-reading note must render as a whole line: {rendered:?}"
+        rendered.iter().any(|l| left_slice(l) == STATUS_REREADING),
+        "the re-reading note must render whole in the left pane: {rendered:?}"
     );
 
     assert_eq!(
@@ -293,8 +310,12 @@ fn an_unknown_event_lands_in_the_status_line_and_does_not_lock() {
     let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rendered = buffer_lines(&terminal);
+    // The note renders within the left pane's own 64 columns; the rest of the line is whatever
+    // the matrix, untouched, drew beside it.
     assert!(
-        rendered.iter().any(|l| l == STATUS_UNKNOWN_EVENT),
-        "the unknown-event status must render as a whole line: {rendered:?}"
+        rendered
+            .iter()
+            .any(|l| left_slice(l) == STATUS_UNKNOWN_EVENT),
+        "the unknown-event status must render whole in the left pane: {rendered:?}"
     );
 }
