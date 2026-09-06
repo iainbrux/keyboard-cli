@@ -285,14 +285,14 @@ fn a_shared_border_row_is_styled_by_the_cap_below_not_above() {
 /// boundaries, so the row below's own top border simply overwrote the row above's own bottom
 /// border wholesale, erasing corners and leaving stray verticals wherever the two rows' widths
 /// differed. Three plain 1u caps sharing borders (widths 7,7,7, boundaries at columns 0,6,12,18,
-/// since each cap's own right border is the next cap's own left border) sit over a row whose
-/// middle cap is TAB at 1.5u (widths 7,11,7, boundaries at 0,6,16,22): the two rows agree at 0
-/// (the shared line's own left end, `├`) and 6 (`┼`), diverge where only the upper row has a
-/// boundary (12, 18: `┴`, `┴`), diverge again where only the lower row does (16: `┬`), and the
-/// lower row's own trailing cap (16-22) has nothing above it past column 18, so 19-21 stay a
-/// plain rule and 22, the shared line's own right end, is a genuine corner-turned-`┐` from the
-/// lower row's own untouched rendering. Asserted as one exact string: a partial fix that gets some
-/// columns right would still fail this.
+/// from `unit_boundaries`' own `round(cumulative_units * 6)`) sit over a row whose middle cap is
+/// TAB at 1.5u (widths 7,10,7, boundaries at 0,6,15,21): the two rows agree at 0 (the shared
+/// line's own left end, `├`) and 6 (`┼`), diverge where only the upper row has a boundary (12, 18:
+/// `┴`, `┴`), diverge again where only the lower row does (15: `┬`), and the lower row's own
+/// trailing cap (15-21) has nothing above it past column 18, so 19-20 stay a plain rule and 21,
+/// the shared line's own right end, is a genuine corner-turned-`┐` from the lower row's own
+/// untouched rendering. Asserted as one exact string: a partial fix that gets some columns right
+/// would still fail this.
 #[test]
 fn a_misaligned_shared_border_merges_into_one_continuous_rule() {
     let rows = vec![
@@ -326,7 +326,7 @@ fn a_misaligned_shared_border_merges_into_one_continuous_rule() {
     // The shared row: the upper row's own bottom border, CAP_HEIGHT - 1 (3) rows below its own
     // top at y=0, which is also the lower row's own top border.
     assert_eq!(
-        lines[3], "├─────┼─────┴───┬─┴───┐",
+        lines[3], "├─────┼─────┴──┬──┴──┐",
         "the shared line must merge into one continuous rule, containing at least one ┬, ┴ \
          and ┼, with correct end characters: {lines:?}"
     );
@@ -537,7 +537,7 @@ fn caps_show_the_vendors_display_labels_for_punctuation_modifiers_and_fn() {
     );
     assert_eq!(
         cap_line(&lines, rect_of(0xE1), 1),
-        "│    SHIFT     │",
+        "│    SHIFT    │",
         "left shift must show SHIFT: {lines:?}"
     );
     assert_eq!(
@@ -633,19 +633,20 @@ fn every_1u_cap_is_the_same_width_and_adjacent_caps_abut_exactly() {
     );
 }
 
-/// All five `ansi_dk_board` rows sum to the same 16.0 `cap_units` total (`lctrl`/`lgui`/`lalt` at
-/// 1.25 make the bottom row's total match too), and before this round that alone was enough for
-/// every row's right edge to land on one column (measured against
-/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`). Sharing a border
-/// column between adjacent caps (this round) breaks that: a row's own physical width is
-/// `sum(widths) - (k - 1)`, so a row's own key count now matters too, not just its `cap_units`
-/// total. The number row (15 keys) and QWERTY row (15 keys) still share a right edge with each
-/// other, and the home row (14 keys) and bottom letter row (14 keys) share one with each other,
-/// but the space row (10 keys, the fewest, so the fewest merges) ends up wider than all four:
-/// fewer merges lose fewer columns, so it is now the actual widest row `needed_width` must fit,
-/// not a tied one among the rest as it was before this round.
+/// The vendor's rows all share one right edge (measured against
+/// `research/vendor-bundle/2026-09-05/screenshots/01-actuation-point.png`: every row's border
+/// starts and ends at the same pixel column), regardless of how many keys got a row there: the
+/// number row (15 keys), QWERTY row (15 keys), home row (14 keys), bottom letter row (14 keys)
+/// and space row (10 keys) all sum to the same 16.0 `cap_units` total (`lctrl`/`lgui`/`lalt` at
+/// 1.25 make the bottom row's own total match too), and `needed_width`/`unit_boundaries` map a
+/// row's own cumulative unit total straight through one fixed scale, `round(units *
+/// LATTICE_COLS_PER_UNIT) + 1`, never a per-row telescoping sum of individually-rounded widths.
+/// That makes flushness an arithmetic identity of the row's own unit total alone: two rows whose
+/// totals agree are tied by construction, not merely by coincidence of key count, so all five
+/// land on column 96 (97 columns wide, `needed_width`'s own figure) regardless of whether a row
+/// got there in 10 keys or 15.
 #[test]
-fn rows_of_matching_key_counts_share_a_right_edge_but_the_space_row_ends_up_widest() {
+fn all_five_rows_of_the_same_cap_units_total_end_at_the_same_right_edge() {
     let board = ansi_dk_board();
     let area = Rect::new(0, 0, 120, 30);
     let mut buf = Buffer::empty(area);
@@ -680,24 +681,20 @@ fn rows_of_matching_key_counts_share_a_right_edge_but_the_space_row_ends_up_wide
     let space_row_end = row_right_edge(0x4F); // right
 
     assert_eq!(
-        number_row_end, qwerty_row_end,
-        "the two 15-key rows must still end at the same column"
+        [
+            qwerty_row_end,
+            home_row_end,
+            bottom_letter_row_end,
+            space_row_end
+        ],
+        [number_row_end; 4],
+        "rows summing to the same cap_units total must end at the same column regardless of key \
+         count: {number_row_end}, {qwerty_row_end}, {home_row_end}, {bottom_letter_row_end}, \
+         {space_row_end}"
     );
     assert_eq!(
-        home_row_end, bottom_letter_row_end,
-        "the two 14-key rows must still end at the same column"
-    );
-    assert_eq!(
-        number_row_end, 98,
-        "a 15-key row's own physical width, 112 - 14 merges"
-    );
-    assert_eq!(
-        home_row_end, 99,
-        "a 14-key row's own physical width, 112 - 13 merges"
-    );
-    assert_eq!(
-        space_row_end, 103,
-        "the 10-key space row's own physical width, 112 - 9 merges, now the widest row"
+        number_row_end, 97,
+        "round(16.0 * LATTICE_COLS_PER_UNIT) + 1, the full board's own needed_width"
     );
 }
 
@@ -738,10 +735,10 @@ fn terminal_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
-/// The whole refusal, as one literal. Deliberately not `too_narrow_text(169)`: a test that
+/// The whole refusal, as one literal. Deliberately not `too_narrow_text(163)`: a test that
 /// compares rendered text against the generator that produced it passes whatever the generator
 /// says, including a generator that stopped naming the width at all.
-const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 169 COLUMNS";
+const REFUSAL: &str = "TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS 163 COLUMNS";
 
 /// Reassembles the body's message block from whatever `draw` rendered: finds the line holding
 /// `needle`, takes every following line's slice from that same column until a blank one, and
@@ -777,37 +774,37 @@ fn body_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
     lines
 }
 
-/// The 68-key ANSI-DK layout's widest row, computed from `cap_units` through `needed_width`: the
-/// bottom (space) row, the fewest keys (10, so the fewest merges, 9) of the five rows sharing the
-/// same 16.0 `cap_units` total, so it loses the fewest columns to the lattice's shared borders and
-/// ends up wider than the other four (see
-/// `rows_of_matching_key_counts_share_a_right_edge_but_the_space_row_ends_up_widest` for the full
-/// row-by-row arithmetic). The whole frame therefore wants this plus the 64-column left pane and
-/// its own 2-column gutter, and the refusal in the width sweep below states exactly that total.
+/// The 68-key ANSI-DK layout's widest row, computed from `cap_units` through `needed_width`:
+/// `round(16.0 * LATTICE_COLS_PER_UNIT) + 1 == 97`. All five rows share the same 16.0 `cap_units`
+/// total (measured against `research/vendor-bundle/2026-09-05/screenshots/`), and `needed_width`
+/// maps a row's own total straight through one fixed scale, so all five are tied at 97, not merely
+/// close: see `all_five_rows_of_the_same_cap_units_total_end_at_the_same_right_edge` for the
+/// per-row proof. The whole frame therefore wants this plus the 64-column left pane and its own
+/// 2-column gutter, and the refusal in the width sweep below states exactly that total.
 #[test]
-fn a_full_ansi_dk_board_needs_103_columns_for_its_widest_row() {
+fn a_full_ansi_dk_board_needs_97_columns_for_its_widest_row() {
     let board = ansi_dk_board();
     assert_eq!(
         board.rows.iter().map(|r| r.keys.len()).sum::<usize>(),
         68,
         "the fixture must be a full 68-key board"
     );
-    assert_eq!(needed_width(&board.rows), 103);
+    assert_eq!(needed_width(&board.rows), 97);
 }
 
-/// The refusal at real terminal widths. 169 is the first width that fits the matrix (103 plus
+/// The refusal at real terminal widths. 163 is the first width that fits the matrix (97 plus
 /// the 64-column left pane plus its own 2-column gutter); every width below it must show the
 /// whole sentence, wherever it has to go: the matrix pane at 67 columns is one column wide, and
 /// at 66 or less it does not exist.
 #[test]
 fn every_width_shows_either_the_matrix_or_the_whole_refusal() {
-    for width in [52u16, 66, 67, 74, 81, 82, 90, 103, 104, 168, 169] {
+    for width in [52u16, 66, 67, 74, 81, 82, 90, 103, 104, 162, 163] {
         let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
         let mut terminal = Terminal::new(TestBackend::new(width, 50)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let lines = body_lines(&terminal);
 
-        if width >= 169 {
+        if width >= 163 {
             assert_eq!(
                 app.key_rects.len(),
                 68,
@@ -1012,8 +1009,8 @@ fn a_click_on_a_shared_border_row_resolves_to_the_cap_above() {
 
 /// [RESET KEYSETS] right-aligns to the matrix's own right edge (`left_width + gutter +
 /// needed_width`), not the frame's: the vendor aligns the action to the keyboard, and a frame
-/// wider than the matrix needs (200 here, matrix needs 64 + 2 + 103 = 169) previously left the
-/// button hugging column 200 instead of 169, past the matrix entirely.
+/// wider than the matrix needs (200 here, matrix needs 64 + 2 + 97 = 163) previously left the
+/// button hugging column 200 instead of 163, past the matrix entirely.
 #[test]
 fn the_reset_keysets_action_aligns_to_the_matrixs_right_edge_not_the_frames() {
     let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");

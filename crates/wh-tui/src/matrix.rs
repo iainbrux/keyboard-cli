@@ -74,43 +74,60 @@ pub struct CapValue {
 
 /// Each cap is this many rows tall: top border, label, value, bottom border.
 const CAP_HEIGHT: u16 = 4;
-/// Columns in one standard (1.0 unit) cap.
-const CAP_UNIT_COLS: f32 = 7.0;
+/// Columns per unit for the lattice's own interior-plus-one-shared-border, not 7 (the old,
+/// pre-lattice width of an isolated 1.0-unit cap, both its own borders counted): a join with a
+/// neighbour now reuses one border column instead of drawing a second one, so it costs one column
+/// less per unit than that. Chosen close to that previous density (7) rather than re-measured,
+/// since it is a rendering choice (how many columns represent one keycap unit), not a proportion
+/// read off the vendor's own screenshot the way `cap_units` itself is.
+const LATTICE_COLS_PER_UNIT: f32 = 6.0;
 
-/// A row's per-key column widths: each key's width is the difference between two roundings of
-/// the row's own running unit total, not `cap_units(usage) * CAP_UNIT_COLS` rounded per key in
-/// isolation, which drifts by up to a column whenever a row's fractional units do not clear to a
-/// whole number until a later key. A plain 1.0-unit key still renders at `CAP_UNIT_COLS` always.
-fn row_widths(usages: &[u8]) -> Vec<u16> {
-    let mut widths = Vec::with_capacity(usages.len());
-    let mut prev_cols = 0u16;
+/// A row's own column boundaries, one more entry than its own key count: `boundaries[i]` is where
+/// the cumulative unit total after `i` keys lands, `round(cumulative_units * LATTICE_COLS_PER_UNIT)`,
+/// relative to the row's own start (`boundaries[0] == 0`, always). Because this maps a cumulative
+/// unit total directly to a column through one fixed scale, not a per-row telescoping sum
+/// renormalised to that row's own total, two different rows whose cumulative unit totals agree
+/// land on the very same column, regardless of how many keys or which fractional key (1.75u
+/// `capslock`, 1.75u `rshift`, each in a different row) got them there: the drift a per-row-local
+/// sum could introduce depending on where in its own row a fractional key happened to sit cannot
+/// occur, since no row-local sum is ever computed.
+fn unit_boundaries(usages: &[u8]) -> Vec<u16> {
+    let mut boundaries = Vec::with_capacity(usages.len() + 1);
+    boundaries.push(0);
     let mut cum_units = 0.0f32;
     for &usage in usages {
         cum_units += cap_units(usage);
-        let cols = (cum_units * CAP_UNIT_COLS).round() as u16;
-        widths.push(cols - prev_cols);
-        prev_cols = cols;
+        boundaries.push((cum_units * LATTICE_COLS_PER_UNIT).round() as u16);
     }
-    widths
+    boundaries
 }
 
-/// Columns the widest of `rows` needs, before `render_matrix` draws anything. A row of `k` caps
-/// merges `k - 1` shared border columns (see `render_matrix`'s own horizontal advance), so a row's
-/// own physical width is `sum(widths) - (k - 1)`, not `sum(widths)`: rows with the same
-/// `cap_units` total but fewer, wider keys lose fewer columns to merging and end up wider than
-/// rows with more, narrower ones. A full ANSI-DK 68-key board's widest row is now the bottom
-/// (space) row, 103 (every row sums to the same 16.0 `cap_units` total, measured against
-/// `research/vendor-bundle/2026-09-05/screenshots/`, but the space row's 10 keys merge only 9
-/// columns against the number and QWERTY rows' 15 keys merging 14), so with the 64-column left
-/// pane and its own 2-column gutter beside it the whole frame wants 169; the refusal states the
-/// figure for the rows read.
+/// A row's per-key column widths, from `unit_boundaries`: key `i`'s own rect spans
+/// `boundaries[i]` to `boundaries[i + 1]` *inclusive*, both its own borders, so its width is that
+/// difference plus one. Consecutive keys therefore overlap by exactly one column, the shared
+/// lattice seam `render_matrix`'s own horizontal advance (`x += width - 1`) consumes.
+fn row_widths(usages: &[u8]) -> Vec<u16> {
+    unit_boundaries(usages)
+        .windows(2)
+        .map(|w| w[1] - w[0] + 1)
+        .collect()
+}
+
+/// Columns the widest of `rows` needs, before `render_matrix` draws anything: one row's own total
+/// unit count mapped straight through `unit_boundaries`' own scale, `round(units *
+/// LATTICE_COLS_PER_UNIT) + 1` (the `+ 1` for the row's own two outermost borders, only one of
+/// which is ever shared with anything). Because this is a pure function of a row's own unit total,
+/// **every row whose own total agrees lands on exactly the same width**, regardless of its own key
+/// count: the full ANSI-DK board's five rows all share the same 16.0 `cap_units` total (measured
+/// against `research/vendor-bundle/2026-09-05/screenshots/`), so they are all 97 columns wide,
+/// tied, not merely close. With the 64-column left pane and its own 2-column gutter beside it the
+/// whole frame wants 163; the refusal states the figure for the rows read.
 pub fn needed_width(rows: &[DefKeyRow]) -> u16 {
     rows.iter()
         .filter(|row| !row.keys.is_empty())
         .map(|row| {
             let units: f32 = row.keys.iter().map(|&(_, u)| cap_units(u)).sum();
-            let total = (units * CAP_UNIT_COLS).round() as u16;
-            total.saturating_sub((row.keys.len() as u16).saturating_sub(1))
+            ((units * LATTICE_COLS_PER_UNIT).round() as u16).saturating_add(1)
         })
         .max()
         .unwrap_or(0)
