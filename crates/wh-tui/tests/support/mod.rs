@@ -343,6 +343,45 @@ pub fn ansi_dk_board() -> BoardModel {
     }
 }
 
+/// Six `DefKeyRow`s, `ops::read_matrix_rows`' own real wire shape, with a leading empty row and
+/// a second between two populated ones: a real board leaves at least one row empty (measured via
+/// a controller probe at 187x80, 2026-09-06), and no other fixture here had one. Four populated
+/// rows, not `ansi_dk_board`'s five: two empty rows in six slots leaves four for real keys.
+#[allow(dead_code)]
+pub fn six_row_board_with_empty_rows() -> BoardModel {
+    let row = |index: u8, name: Option<&str>| DefKeyRow {
+        row: index,
+        keys: name
+            .map(|n| {
+                vec![(
+                    0,
+                    wh_proto::keys::usage_for_name(n)
+                        .unwrap_or_else(|| panic!("{n} must be in wh_proto::keys::TABLE")),
+                )]
+            })
+            .unwrap_or_default(),
+    };
+    BoardModel {
+        serial: "SNTUITEST0000001".to_string(),
+        firmware: "V1.0.0.001".to_string(),
+        profile: ProfileNumber::from_wire_index(0).unwrap(),
+        global: GlobalTravel {
+            travel: Um(500),
+            press_dead: Um(200),
+            release_dead: Um(200),
+        },
+        rows: vec![
+            row(0, None), // leading empty row
+            row(1, Some("esc")),
+            row(2, None), // empty row between populated rows
+            row(3, Some("tab")),
+            row(4, Some("capslock")),
+            row(5, Some("lshift")),
+        ],
+        keys: Vec::new(),
+    }
+}
+
 /// Composes, in order, exactly the frames `BoardModel::read` sends against the two-key board:
 /// sync, profile, global travel, matrix, then six KEY reads per key. Built with `wh_proto::cmds`
 /// encoders, not hand-written hex, so the test breaks if an encoder changes.

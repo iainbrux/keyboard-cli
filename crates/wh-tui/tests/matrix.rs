@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 use std::collections::HashSet;
-use support::{ansi_dk_board, wasd_board};
+use support::{ansi_dk_board, six_row_board_with_empty_rows, wasd_board};
 use wh_proto::cmds::DefKeyRow;
 use wh_tui::app::{draw, App, Tab, LOCKED_BANNER};
 use wh_tui::matrix::{cap_units, key_at, needed_width, render_matrix, CapValue};
@@ -210,6 +210,74 @@ fn a_selected_cap_renders_reversed() {
             .modifier
             .contains(Modifier::REVERSED),
         "an unselected cap's cell must not render reversed"
+    );
+}
+
+/// A cap's own shared bottom border row (the one physical row that is also the cap below's own
+/// top) is styled by the cap BELOW, not the cap above, when only one of the two is selected: `w`
+/// alone selected must not reverse the row it shares with `a`, but `a` alone selected must. This
+/// is the deliberate choice for the ambiguity the shared-border cadence creates (the alternative,
+/// styling it from the cap above, would be silently erased anyway: the cap below draws fresh,
+/// default-styled characters over that same row on the very next iteration).
+#[test]
+fn a_shared_border_row_is_styled_by_the_cap_below_not_above() {
+    let board = wasd_board();
+    let area = Rect::new(0, 0, 40, 20);
+    let selected_w = {
+        let mut s = HashSet::new();
+        s.insert(0x1Au8);
+        s
+    };
+    let selected_a = {
+        let mut s = HashSet::new();
+        s.insert(0x04u8);
+        s
+    };
+
+    let mut buf_w = Buffer::empty(area);
+    let mut rects_w = Vec::new();
+    render_matrix(
+        area,
+        &mut buf_w,
+        &board.rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected_w,
+        &mut rects_w,
+    );
+    let w_rect = rects_w
+        .iter()
+        .find(|&&(_, usage)| usage == 0x1A)
+        .expect("w's cap must be recorded")
+        .0;
+    let shared_row = w_rect.y + w_rect.height - 1;
+    assert!(
+        !buf_w[(w_rect.x + 1, shared_row)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "w alone selected must not reverse the row it shares with a below it"
+    );
+
+    let mut buf_a = Buffer::empty(area);
+    let mut rects_a = Vec::new();
+    render_matrix(
+        area,
+        &mut buf_a,
+        &board.rows,
+        |_usage| CapValue {
+            show: false,
+            text: String::new(),
+        },
+        &selected_a,
+        &mut rects_a,
+    );
+    assert!(
+        buf_a[(w_rect.x + 1, shared_row)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "a alone selected must reverse the row it shares with w above it, as a's own top border"
     );
 }
 
@@ -612,14 +680,40 @@ fn the_esc_cap_is_level_with_the_first_settings_row() {
     );
 }
 
-/// Adjacent cap rows abut with no gap row between them: row n+1's top is exactly row n's own
-/// bottom (`y + height`), not one row further down. Plain 4-row caps, not the vendor's own
-/// border-shared 3-row cadence: sharing would mean two rows' rects overlap by one row (the shared
-/// border), and `key_at` resolves overlapping rects by first match in `rects`, silently
-/// reassigning that row's clicks to whichever cap rendered first, an unannounced behaviour change
-/// this round does not take on.
+/// The root cause behind the operator's persistent misalignment: a real board's own DEFKEY read
+/// leaves at least one of its six logical rows empty (a controller probe at 187x80 found this),
+/// and no fixture in this crate had an empty row at all, so nothing exercised it. An empty
+/// `DefKeyRow` must consume no vertical space at all, leading or interior, so ESC (in the second
+/// logical row here, behind one leading empty row) still lands level with the first settings row.
 #[test]
-fn adjacent_cap_rows_abut_with_no_gap_row() {
+fn an_empty_leading_defkey_row_consumes_no_vertical_space() {
+    let mut app = App::new(six_row_board_with_empty_rows(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let lines = terminal_lines(&terminal);
+
+    let settings_row_y = lines
+        .iter()
+        .position(|l| l.starts_with("GLOBAL ACTUATION POINT"))
+        .expect("the first settings row must render") as u16;
+    let esc_rect = app
+        .key_rects
+        .iter()
+        .find(|&&(_, usage)| usage == 0x29)
+        .expect("ESC's cap must be recorded")
+        .0;
+    assert_eq!(
+        esc_rect.y, settings_row_y,
+        "ESC must render level with the first settings row, not pushed down by the leading \
+         empty DefKeyRow ahead of it"
+    );
+}
+
+/// Adjacent cap rows share a border, the vendor's own cadence: row n+1's own top is row n's own
+/// bottom, the same physical row, so row n+1 starts exactly 3 rows after row n, not 4. A 5-row
+/// board is therefore 16 lines tall (`4 + 4*3`), not 20.
+#[test]
+fn adjacent_cap_rows_share_a_border_row() {
     let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
     let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
     terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -643,10 +737,53 @@ fn adjacent_cap_rows_abut_with_no_gap_row() {
     for pair in tops.windows(2) {
         assert_eq!(
             pair[1],
-            pair[0] + 4,
-            "row n+1 must start exactly 4 rows (one cap's height) after row n, no gap: {tops:?}"
+            pair[0] + 3,
+            "row n+1 must start exactly 3 rows after row n, sharing row n's own bottom border \
+             as its own top: {tops:?}"
         );
     }
+    assert_eq!(
+        tops[4] + 4 - tops[0],
+        16,
+        "the whole five-row board (last row's own top plus its own height) must span exactly \
+         16 lines: {tops:?}"
+    );
+}
+
+/// The hit-test ambiguity a shared border row creates (it is simultaneously one row's own bottom
+/// and the next row's own top) resolves to the cap ABOVE: rows are pushed into `rects` top to
+/// bottom, so `key_at`'s first-match search reaches the row above's rect before the row below's,
+/// for any point both could claim.
+#[test]
+fn a_click_on_a_shared_border_row_resolves_to_the_cap_above() {
+    let mut app = App::new(ansi_dk_board(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+    let esc_rect = app
+        .key_rects
+        .iter()
+        .find(|&&(_, u)| u == 0x29)
+        .expect("esc's cap must be recorded")
+        .0;
+    let tab_rect = app
+        .key_rects
+        .iter()
+        .find(|&&(_, u)| u == 0x2B)
+        .expect("tab's cap must be recorded")
+        .0;
+    let shared_row = esc_rect.y + esc_rect.height - 1;
+    assert_eq!(
+        shared_row, tab_rect.y,
+        "esc's own bottom border and tab's own top border must be the same physical row"
+    );
+
+    let hit = key_at(&app.key_rects, esc_rect.x, shared_row);
+    assert_eq!(
+        hit,
+        Some(0x29),
+        "a click on the shared row must resolve to esc (the cap above), not tab"
+    );
 }
 
 /// [RESET KEYSETS] right-aligns to the matrix's own right edge (`left_width + needed_width`), not

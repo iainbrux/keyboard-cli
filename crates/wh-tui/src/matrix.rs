@@ -115,12 +115,11 @@ pub fn too_narrow_text(frame_cols: u16) -> String {
     format!("TERMINAL TOO NARROW FOR THE KEY MATRIX: IT NEEDS {frame_cols} COLUMNS")
 }
 
-/// Renders `rows` as a grid of bordered caps into `area`, left to right per row in column order,
-/// rows stacked with no gap. If the widest row does not fit `area`'s width, draws nothing and
-/// leaves `rects` empty: a clipped matrix would be worse than none. Callers check `needed_width`
-/// first and render `too_narrow_text` themselves, because at the widths where this refuses the
-/// message often does not fit this pane either. `selected` caps render with `Modifier::REVERSED`
-/// over the whole cell (border included).
+/// Renders `rows` as a grid of bordered caps into `area`, left to right per row in column order.
+/// An empty `DefKeyRow` (see the filter below) consumes no vertical space; populated rows share
+/// horizontal borders, the vendor's own cadence (see the `y +=` comment below for the arithmetic).
+/// If the widest row does not fit `area`'s width, draws nothing and leaves `rects` empty: a
+/// clipped matrix would be worse than none.
 pub fn render_matrix(
     area: Rect,
     buf: &mut Buffer,
@@ -139,6 +138,10 @@ pub fn render_matrix(
             let usages: Vec<u8> = keys.iter().map(|&(_, usage)| usage).collect();
             usages.iter().copied().zip(row_widths(&usages)).collect()
         })
+        // A real board's own DEFKEY read leaves at least one of its six logical rows empty
+        // (measured 2026-09-06); dropped here, before any row is positioned, not drawn as a
+        // blank `CAP_HEIGHT` gap.
+        .filter(|caps: &Vec<(u8, u16)>| !caps.is_empty())
         .collect();
 
     if area.width == 0 || area.height == 0 || needed_width(rows) > area.width {
@@ -172,13 +175,22 @@ pub fn render_matrix(
             buf.set_string(inner.x, inner.y + 1, &value_line, Style::default());
 
             if selected.contains(&usage) {
-                buf.set_style(rect, Style::default().add_modifier(Modifier::REVERSED));
+                // Top border, label, value: never the bottom border, which the row below draws
+                // over on the very next iteration regardless (default style), silently erasing
+                // anything set here. See the report for the full reasoning.
+                let styled = Rect::new(rect.x, rect.y, rect.width, CAP_HEIGHT - 1);
+                buf.set_style(styled, Style::default().add_modifier(Modifier::REVERSED));
             }
 
+            // The full drawn rect, unshrunk: rows are pushed top to bottom, so `key_at`'s
+            // first-match search resolves a shared row to the cap above with no shrinking
+            // needed, the vendor's own hit-test convention.
             rects.push((rect, usage));
             x += width;
         }
-        y += CAP_HEIGHT;
+        // Always 3, not 4: the next row's own top border reuses this row's own bottom border
+        // row, so only 3 new rows of vertical space are actually spent on it.
+        y += CAP_HEIGHT - 1;
     }
 }
 
