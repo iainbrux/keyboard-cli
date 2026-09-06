@@ -117,23 +117,24 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
   with an ordinary reply, so the routing has to be checked before the awaited reply's own match,
   not after, or the edge is read back as the reply it happens to resemble.
 
-  An edge arriving between two commands is expected to reach the next roundtrip's read loop, if
-  there is one, via the OS input buffer, which would make it the same mid-roundtrip path. That
-  buffering is expected, not measured: it is part of the pending hardware check below, and an edge
-  with no roundtrip after it is never seen, the limit `README.md` states (which also now notes
-  that a buffered edge is attributed to whichever later command's read consumes it).
-  `ReplayTransport`'s positional scripts represent that by placing the `In` entry after the next
+  An edge arriving between two commands was expected to reach the next command via the OS input
+  buffer. **Measured 2026-09-06: it does not.** Both edges were emitted and concluded with no
+  command running, and the next command (`wh dump`, live hardware) printed no note. The likely
+  mechanism, an inference and labelled as one: each command opens the device fresh, and HID input
+  reports are delivered per open handle, so a frame sent while no handle exists is never delivered.
+  Within one open session the buffering is real, which is what the mid-roundtrip fixtures and the
+  listener probe exercise. An edge with no read after it inside a session is never seen either, the
+  limit `README.md` states. `ReplayTransport`'s positional scripts represent that by placing the `In` entry after the next
   `Out`, which is exactly what this task's fixtures do; splicing it any earlier hits the script's loud
   mismatch rather than proving anything.
 
-  Still open for the operator, before 3.5 relies on this:
-  - FN+AP on the real board with `poll_event` running, expecting both edges over a real HID read
-    rather than a replay script.
-  - That `HidTransport::recv`'s zero-byte read maps to `DeviceError::Timeout` (`hid.rs:64-66`) the
-    way the real hidapi behaves on a timeout, not merely the way this build assumes it does.
-  - The between-commands buffering claim above: emit an edge with no command running, then run a
-    command, and check whether it surfaces in that command's note. A measured "no" is as much an
-    answer as a measured "yes"; either closes the open question.
+  The hardware check ran on 2026-09-06, all three items measured on the real board:
+  - Both edges arrived through `poll_event` over a real HID read (`AdjustModeEntered` at 4.98s,
+    `AdjustModeLeft` at 10.87s of a 60s listen, a throwaway probe binary since deleted).
+  - The timeout path held: the other ~54s of that listen were quiet `recv` timeouts handled as
+    `Ok(None)` with no error and no spurious frames, so `hid.rs`'s zero-byte mapping behaves on
+    hardware as the build assumes.
+  - Between-commands buffering: measured no, see above.
   **[hardware]**
 
 - [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,

@@ -392,9 +392,10 @@ underneath it` (and the same sentence with "left" for the other edge). This is i
 failure on its own; it exists because the board stopped being a keyboard for however long the edit
 took, and whatever the command read or wrote around that window may no longer match what is on the
 board now. `wh` only hears an edge while a command is actually waiting on the board, so one that
-lands after the command's last read is not reported; an edge that lands between two commands is
-attributed to whichever later command's own read consumes it, rather than the moment the board
-actually changed.
+lands after the command's last read is not reported, and one that lands between two commands is
+never reported at all (measured 2026-09-06: edges emitted with no command running produced no note
+on the next command). A long-running interface that holds the connection open, the planned TUI,
+is what hears everything.
 
 ### Running against a script instead of hardware (`WH_REPLAY`)
 
