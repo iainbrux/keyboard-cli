@@ -490,6 +490,9 @@ fn tui_refuses_without_an_interactive_terminal() {
 
 Check how anyhow errors print in this binary before finalising the expected line (run any failing
 command once and read its stderr shape); the assertion must be the whole line the operator sees.
+The error line alone is not enough, and the shipped test says so: it also asserts stderr carries no
+`transport:` line, since moving this check inside `with_session` would print the same refusal
+having first taken the exclusive vendor HID collection.
 
 - [ ] **Step 6: Run the tests, watch them pass**
 
