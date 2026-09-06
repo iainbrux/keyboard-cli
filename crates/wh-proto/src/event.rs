@@ -94,6 +94,17 @@ mod tests {
         );
     }
 
+    /// A payload shaped exactly like an edge under a different command must not read as one:
+    /// the cmd guard, not the payload match, is what makes these frames certainly unsolicited.
+    #[test]
+    fn adjust_event_ignores_an_edge_shaped_payload_under_another_cmd() {
+        // cmd 0xA3 (a KEY reply), payload 00 be 00, checksum per the formula:
+        // (0x35 + 0x5C + 0x03 + 0xA3 + 0x00) & 0xFF = 0x37.
+        let mut f = [0u8; 64];
+        f[..7].copy_from_slice(&[0x5c, 0x03, 0xa3, 0x37, 0x00, 0xbe, 0x00]);
+        assert_eq!(adjust_event(&f), None);
+    }
+
     #[test]
     fn any_event_wraps_an_unparseable_report_whole() {
         let f = [0xffu8; 64];
