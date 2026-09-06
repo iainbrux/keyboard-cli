@@ -8,6 +8,10 @@ use wh_device::transport::{DeviceError, Transport};
 use wh_proto::cmds::{DefKeyRow, GlobalTravel, ProfileNumber};
 use wh_proto::value::Um;
 
+/// The product name, not per-board data: the vendor's own device line and the ADVANCED > DEVICE
+/// sub-tab both show it, and it never varies with which board is plugged in.
+pub const DEVICE_NAME: &str = "WALLHACK K-001";
+
 pub struct BoardModel {
     pub serial: String,
     pub firmware: String,

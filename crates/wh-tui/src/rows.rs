@@ -1,23 +1,29 @@
-//! The settings row widget and the row lists it takes for the AP and RT tabs.
+//! The settings row widget and the row lists it takes for every tab.
 //!
 //! Every setting in the vendor UI is one line: a label, dot leaders filling the gap, then a
-//! control at the right, either a stepper (`< VALUE >`) or a button (`[LABEL]`). This module
-//! owns that one widget (`render_row`) and the pure functions that turn a board's keys into the
-//! rows each tab shows. Nothing here writes to the device: every control renders a value only,
-//! arrow and click interaction on it is a later plan.
+//! control at the right, a stepper (`< VALUE >`), a button (`[LABEL]`), or plain read-only text
+//! (ADVANCED > DEVICE's rows, which have no arrows or brackets because there is nothing to click).
+//! This module owns that one widget (`render_row`) and the pure functions that turn a board's
+//! keys into the rows each tab shows. Nothing here writes to the device: every stepper and button
+//! renders a value only, arrow and click interaction on it is a later plan.
 
-use crate::board::{ap_keysets, global_ap, global_rt, rt_keysets, GlobalValue, KeysetView};
+use crate::board::{
+    ap_keysets, global_ap, global_rt, rt_keysets, BoardModel, GlobalValue, KeysetView, DEVICE_NAME,
+};
 use ratatui::prelude::*;
 use wh_device::ops::KeySettings;
 use wh_proto::cmds::TouchMode;
 use wh_proto::keys::label;
 use wh_proto::value::Um;
 
-/// One row's right-hand control. Both variants render a value only in this phase; the stepper's
-/// `< >` arrows and the button are inert until a later plan wires clicks to them.
+/// One row's right-hand control. `Stepper` and `Button` render a value only in this phase; the
+/// stepper's `< >` arrows and the button are inert until a later plan wires clicks to them. `Text`
+/// is different in kind, not just in phase: it has no arrows or brackets because there is nothing
+/// to click, ever, the ADVANCED > DEVICE rows it renders are read-only device identity.
 pub enum Control {
     Stepper { value: String },
     Button { label: String },
+    Text { text: String },
 }
 
 /// One settings row: a label, then dot leaders, then its control, the vendor's own row shape.
@@ -48,6 +54,7 @@ pub fn render_row(area: Rect, buf: &mut Buffer, row: &SettingRow) {
     let control_text = match &row.control {
         Control::Stepper { value } => format!("< {value} >"),
         Control::Button { label } => button_text(label),
+        Control::Text { text } => text.clone(),
     };
     let label_text = format!("{}{}", " ".repeat(row.indent as usize), row.label);
     let width = area.width as usize;
@@ -235,4 +242,102 @@ pub fn rt_rows(keys: &[KeySettings]) -> Vec<SettingRow> {
         rows.push(keyset_row(&group));
     }
     rows
+}
+
+fn disabled_stepper(label: &str) -> SettingRow {
+    SettingRow {
+        label: label.to_string(),
+        control: Control::Stepper {
+            value: "-".to_string(),
+        },
+        disabled: true,
+        indent: 0,
+    }
+}
+
+fn disabled_button(label: &str, action: &str) -> SettingRow {
+    SettingRow {
+        label: label.to_string(),
+        control: Control::Button {
+            label: action.to_string(),
+        },
+        disabled: true,
+        indent: 0,
+    }
+}
+
+/// The SWITCHES tab's two rows. Neither reads the device: there is no task yet for switch
+/// calibration or reporting (see `docs/tasks.md`), so `CALIBRATE SWITCHES` stays a disabled
+/// `[START]` and `CURRENT SWITCHES` always reads `-`.
+pub fn switches_rows() -> Vec<SettingRow> {
+    vec![
+        disabled_button("CALIBRATE SWITCHES", "START"),
+        disabled_stepper("CURRENT SWITCHES"),
+    ]
+}
+
+/// ADVANCED > GENERAL's row list, the vendor's own order (measured from
+/// `research/vendor-bundle/2026-09-05/screenshots/08-advanced-general.png`). None of these are
+/// read from the device yet, so every stepper reads `-` and every control is disabled.
+pub fn advanced_general_rows() -> Vec<SettingRow> {
+    vec![
+        disabled_button("RESET PROFILE", "SELECT"),
+        disabled_button("FACTORY RESET", "SELECT"),
+        disabled_stepper("POLLING RATE"),
+        disabled_stepper("LED SLEEP TIMER"),
+        disabled_stepper("LED BRIGHTNESS"),
+        disabled_stepper("SYSTEM TYPE"),
+        disabled_stepper("SHOW ANALOG OUTPUT"),
+        disabled_stepper("SAFETY ZONE"),
+        disabled_stepper("SHOW MAPPED KEY LABELS"),
+        disabled_stepper("LOCALIZED KEY LABELS"),
+        disabled_button("SOCD", "SELECT"),
+        disabled_button("DYNAMIC KEYSTROKE (DKS)", "SELECT"),
+        disabled_button("MOD TAP", "SELECT"),
+        disabled_button("WALKTHROUGH", "START"),
+    ]
+}
+
+/// ADVANCED > GAMEPAD's row list (measured from `research/vendor-bundle/2026-09-05/screenshots/
+/// 09-advanced-gamepad.png`), minus the joystick curve graph: that is a plotted widget, not a
+/// settings row, and has no place in this row list. Every row is unread and disabled, the same
+/// honest-stub shape as `advanced_general_rows`.
+pub fn advanced_gamepad_rows() -> Vec<SettingRow> {
+    vec![
+        disabled_stepper("GAMEPAD MODE"),
+        disabled_stepper("ENABLE MAPPED KEYBOARD KEYS"),
+        disabled_stepper("DISABLE MAPPED KEY INPUT"),
+        disabled_stepper("SQUARE JOYSTICK OUTPUT"),
+        disabled_stepper("DEPTH-BASED JOYSTICK"),
+    ]
+}
+
+/// ADVANCED > SHARE's row list. The vendor names each button with the active profile number
+/// (measured from `research/vendor-bundle/2026-09-05/screenshots/11-advanced-share.png`); this
+/// stub leaves the number out rather than assert one, since neither export nor import is wired to
+/// any profile yet.
+pub fn advanced_share_rows() -> Vec<SettingRow> {
+    vec![
+        disabled_button("EXPORT PROFILE SETTINGS", "COPY"),
+        disabled_button("IMPORT PROFILE SETTINGS", "IMPORT"),
+    ]
+}
+
+/// ADVANCED > DEVICE's row list: read-only device identity, live from `board`. `NAME` is the
+/// product name (`DEVICE_NAME`), not per-board data, matching the fixed string the device line
+/// above the tabs already renders; `SERIAL NUMBER` and `FIRMWARE VERSION` come straight off
+/// `board`. None of these three rows is disabled: unlike every other row this task adds, they are
+/// not stubs, they are the one sub-tab that is actually built.
+pub fn advanced_device_rows(board: &BoardModel) -> Vec<SettingRow> {
+    let text_row = |label: &str, text: String| SettingRow {
+        label: label.to_string(),
+        control: Control::Text { text },
+        disabled: false,
+        indent: 0,
+    };
+    vec![
+        text_row("NAME", DEVICE_NAME.to_string()),
+        text_row("SERIAL NUMBER", board.serial.clone()),
+        text_row("FIRMWARE VERSION", board.firmware.clone()),
+    ]
 }
