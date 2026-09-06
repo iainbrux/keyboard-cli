@@ -25,21 +25,23 @@ pub fn run<T: Transport>(session: &mut Session<T>, wh_version: &str) -> Result<(
         ratatui::restore();
         return Err(e).context("could not enable mouse capture");
     }
-    let result = event_loop(&mut terminal, board, wh_version);
+    let result = event_loop(&mut terminal, session, board, wh_version);
     // Always disable mouse capture and restore, whether the loop returned an error or not.
     let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
 
-fn event_loop(
+fn event_loop<T: Transport>(
     terminal: &mut ratatui::DefaultTerminal,
+    session: &mut Session<T>,
     board: BoardModel,
     wh_version: &str,
 ) -> Result<()> {
     let mut app = app::App::new(board, wh_version);
+    terminal.draw(|f| app::draw(f, &mut app))?;
     while !app.quit {
-        terminal.draw(|f| app::draw(f, &mut app))?;
+        let mut input_changed = false;
         if event::poll(Duration::from_millis(15))? {
             match event::read()? {
                 Event::Key(k) => {
@@ -51,11 +53,19 @@ fn event_loop(
                         } else {
                             app.handle_key(k.code);
                         }
+                        input_changed = true;
                     }
                 }
-                Event::Mouse(m) => app.handle_mouse(m.kind, m.column, m.row),
+                Event::Mouse(m) => {
+                    app.handle_mouse(m.kind, m.column, m.row);
+                    input_changed = true;
+                }
                 _ => {}
             }
+        }
+        let tick_changed = app.tick(session)?;
+        if input_changed || tick_changed {
+            terminal.draw(|f| app::draw(f, &mut app))?;
         }
     }
     Ok(())

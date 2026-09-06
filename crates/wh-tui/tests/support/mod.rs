@@ -31,10 +31,7 @@ pub fn reply(cmd: u8, payload: &[u8]) -> [u8; 64] {
     wh_proto::frame::frame(cmd | wh_proto::frame::REPLY_BIT, payload).unwrap()
 }
 
-/// The unsolicited adjust-mode edge frames, exactly as measured in docs/protocol.md. Not read by
-/// this task's tests; kept here ahead of the event-handling test that needs it, so that test
-/// starts from the same fixture pattern rather than inventing its own.
-#[allow(dead_code)]
+/// The unsolicited adjust-mode edge frames, exactly as measured in docs/protocol.md.
 pub fn adjust_edge_line(entering: bool) -> String {
     let third = if entering { 0x00 } else { 0x01 };
     in_line(&reply(0x00, &[0x00, 0xbe, third]))

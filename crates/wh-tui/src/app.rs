@@ -4,6 +4,10 @@ use crate::rows::{self, render_prompt, render_row};
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::prelude::*;
 use std::collections::HashSet;
+use std::time::Duration;
+use wh_device::session::Session;
+use wh_device::transport::{DeviceError, Transport};
+use wh_proto::event::BoardEvent;
 
 /// The AP and RT tabs' prompt line, identical between them: both build keysets the same way
 /// (click keys, Enter or ADD KEYSET commits), so the vendor gives them the same status text.
@@ -39,6 +43,22 @@ pub const LOGO: &[&str] = &[
 /// The footer's fixed text, last row of the frame: help, language, then support contact, each
 /// separated by two spaces, matching the tab row's own separator.
 const FOOTER: &str = "HELP  EN JA CH  SUPPORT@WALLHACK.COM";
+
+/// The board's own adjust-mode edges (`docs/protocol.md`, "The board announces its own adjust
+/// mode") shown to the operator: while locked the board will not type until the key that started
+/// the edit is pressed again, measured, not inferred, so the banner says exactly that.
+pub const LOCKED_BANNER: &str =
+    "BOARD LOCKED: ADJUSTING ON THE KEYBOARD ITSELF. IT WILL NOT TYPE UNTIL THE KEY IS PRESSED AGAIN.";
+
+/// `tick`'s note for a `BoardEvent::Unknown`: an unmeasured `00 be` third byte, or any other
+/// device-initiated frame `wh` does not recognise. Named, not inferred: the frame arrived, its
+/// meaning did not.
+pub const STATUS_UNKNOWN_EVENT: &str = "NOTE: UNRECOGNISED BOARD EVENT RECEIVED";
+
+/// `tick`'s note when the re-read `BoardModel::read` triggers after `AdjustModeLeft` times out:
+/// the old model is kept rather than discarded, so the operator is told the screen may be stale
+/// rather than shown a mid-read model.
+const STATUS_REREAD_TIMED_OUT: &str = "NOTE: A READ TIMED OUT; VALUES MAY BE STALE";
 
 /// The five top-level tabs, in the vendor's own order. `TABS` is that order made iterable, for
 /// cycling and for rendering.
@@ -139,6 +159,15 @@ pub struct App {
     /// The prompt line's right-side action button rect, recorded during the last `draw`. `None`
     /// on a tab with no prompt line. The button is inert until a later plan wires it up.
     pub prompt_action_rect: Option<Rect>,
+    /// Set by `tick` on `BoardEvent::AdjustModeEntered`, cleared on `AdjustModeLeft`: the board is
+    /// mid on-keyboard edit and, measured, will not type until the key that started it is pressed
+    /// again. `draw` renders `LOCKED_BANNER` in the prompt line's place while this is set, and
+    /// `handle_key`/`handle_mouse` ignore everything except quit and top-level tab navigation.
+    pub locked: bool,
+    /// A one-line note `tick` sets, most recently for an unrecognised board event or a re-read
+    /// that timed out. Sticky: nothing clears it once set, since a stale note is still true until
+    /// the next one replaces it.
+    pub status: Option<String>,
 }
 
 impl App {
@@ -154,6 +183,39 @@ impl App {
             key_rects: Vec::new(),
             selection: HashSet::new(),
             prompt_action_rect: None,
+            locked: false,
+            status: None,
+        }
+    }
+
+    /// One event-poll step of the loop: at most one `poll_event`, routing edges. Returns
+    /// `Ok(true)` when the display changed (a redraw is due). `AdjustModeLeft` re-reads the whole
+    /// board, the same thing the vendor configurator does on that edge; if that read itself times
+    /// out, the old model is kept and a status note says so rather than the operator being shown
+    /// nothing or a half-read model. Queued events beyond the one this call drains stay queued,
+    /// the starvation ruling from the spec: this plan sets no cap on that queue.
+    pub fn tick<T: Transport>(&mut self, s: &mut Session<T>) -> Result<bool, DeviceError> {
+        match s.poll_event(Duration::from_millis(15))? {
+            Some(BoardEvent::AdjustModeEntered) => {
+                self.locked = true;
+                Ok(true)
+            }
+            Some(BoardEvent::AdjustModeLeft) => {
+                self.locked = false;
+                match BoardModel::read(s) {
+                    Ok(board) => self.board = board,
+                    Err(DeviceError::Timeout) => {
+                        self.status = Some(STATUS_REREAD_TIMED_OUT.to_string());
+                    }
+                    Err(e) => return Err(e),
+                }
+                Ok(true)
+            }
+            Some(BoardEvent::Unknown(_)) => {
+                self.status = Some(STATUS_UNKNOWN_EVENT.to_string());
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 
@@ -176,13 +238,13 @@ impl App {
                     self.tab = TABS[i - 1];
                 }
             }
-            KeyCode::Down if self.tab == Tab::Advanced => {
+            KeyCode::Down if self.tab == Tab::Advanced && !self.locked => {
                 let i = self.advanced_tab.index();
                 if i + 1 < ADVANCED_TABS.len() {
                     self.advanced_tab = ADVANCED_TABS[i + 1];
                 }
             }
-            KeyCode::Up if self.tab == Tab::Advanced => {
+            KeyCode::Up if self.tab == Tab::Advanced && !self.locked => {
                 let i = self.advanced_tab.index();
                 if i > 0 {
                     self.advanced_tab = ADVANCED_TABS[i - 1];
@@ -193,7 +255,9 @@ impl App {
     }
 
     /// Click-to-select over the rects `draw` recorded into `tab_rects`. Only a left button-down
-    /// selects; drags, releases and other buttons are ignored.
+    /// selects; drags, releases and other buttons are ignored. While `locked`, only the top-level
+    /// tab row still responds: `advanced_rects` (and every later click target) is ignored, the
+    /// same "quit and tab navigation only" rule `handle_key` applies.
     pub fn handle_mouse(&mut self, kind: MouseEventKind, col: u16, row: u16) {
         if !matches!(kind, MouseEventKind::Down(MouseButton::Left)) {
             return;
@@ -204,6 +268,9 @@ impl App {
                 self.tab = *tab;
                 return;
             }
+        }
+        if self.locked {
+            return;
         }
         for (rect, sub) in &self.advanced_rects {
             let hit = col >= rect.x && col < rect.x + rect.width && row == rect.y;
@@ -405,8 +472,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ry += 1;
     }
 
+    // While locked, this row renders `LOCKED_BANNER` instead (below, after the matrix, since the
+    // banner spans the full frame width and would otherwise be cut back by the matrix pane's own
+    // render over the same row): the tab's own prompt or stub does not appear at all, matching
+    // "ignore everything except quit and tab navigation" (there is nothing left to click).
     app.prompt_action_rect = None;
-    if ry < left_area.y + left_area.height {
+    if !app.locked && ry < left_area.y + left_area.height {
         match app.tab {
             Tab::ActuationPoint | Tab::RapidTrigger => {
                 let keysets_empty = match app.tab {
@@ -423,6 +494,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     keysets_empty,
                 );
                 app.prompt_action_rect = Some(action_rect);
+                ry += 1;
             }
             Tab::Mapping => render_stub(f, left_area, &mut ry, MAPPING_STUB),
             Tab::Switches => render_stub(f, left_area, &mut ry, SWITCHES_STUB),
@@ -434,6 +506,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             },
         }
     }
+    // The row the locked banner or the status note lands on: right where the tab's own prompt or
+    // stub would otherwise sit (or, while locked, right where it was skipped above). Rendered
+    // after the matrix below, full frame width, so it is never cut back by the matrix pane's own
+    // render over the same row.
+    let note_row = ry;
 
     let value_of = |usage: u8| -> CapValue {
         match app.tab {
@@ -473,6 +550,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         &mut key_rects,
     );
     app.key_rects = key_rects;
+
+    // Rendered after the matrix, and space-padded to the full frame width by hand rather than
+    // through `Line::raw`: a widget only writes as many cells as its text holds, so a text
+    // shorter than the matrix pane's own column would otherwise leave that pane's characters
+    // showing through on the same row.
+    if note_row < left_area.y + left_area.height {
+        let note_text = if app.locked {
+            Some(LOCKED_BANNER)
+        } else {
+            app.status.as_deref()
+        };
+        if let Some(text) = note_text {
+            let width = area.width as usize;
+            let mut chars: Vec<char> = text.chars().collect();
+            chars.truncate(width);
+            while chars.len() < width {
+                chars.push(' ');
+            }
+            let line: String = chars.into_iter().collect();
+            f.buffer_mut()
+                .set_string(0, note_row, &line, Style::default());
+        }
+    }
 
     f.render_widget(
         Line::raw(FOOTER),
