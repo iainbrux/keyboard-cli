@@ -162,6 +162,24 @@ Practical consequences:
 - Pin a decoder against something known-good before trusting its output.
 - If a brief contradicts what you measure, trust the measurement and say so.
 
+## The review loop is lockstep, and this rule cannot be bypassed
+
+Every task's diff gets an adversarial review, and **every fix round returns to the reviewer that
+raised the findings, until that reviewer returns an explicit approve**. The loop ends when neither
+side has anything further to raise, and nowhere earlier. Ordered by the operator on 2026-09-06 and
+not subject to judgement calls:
+
+- A fix round closed on the implementer's report alone is not closed.
+- A controller spot-check (re-running one mutation, reading the diff) supplements the confirming
+  pass and never substitutes for it. The reviewer that found a gap holds context about its subtler
+  variant; a spot-check re-runs only the obvious one.
+- This applies regardless of how small or mechanical the fix appears. The rule exists because the
+  drift happened exactly there: coverage-gap fixes that looked too simple to send back, closed
+  without the reviewer's confirmation, on the same branch where a reviewer's second look had been
+  finding real defects in every round.
+- Findings the controller fixes directly get the same confirming pass as findings an implementer
+  fixes.
+
 ## Test discipline
 
 A test that passes for the wrong reason is worse than no test. Establish that each test **fails when
