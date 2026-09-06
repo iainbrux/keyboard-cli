@@ -193,3 +193,54 @@ fn rt_sub_rows_render_dim_while_global_rt_is_off() {
         );
     }
 }
+
+/// Locates `"[RESET KEYSETS]"` on whichever rendered line contains it and returns its row and
+/// its own column span, read back from the rendered text rather than assumed from a hard-coded
+/// column: a layout change that moved the prompt line would move this test's target with it.
+fn reset_keysets_span(lines: &[String]) -> (u16, std::ops::Range<u16>) {
+    let action = "[RESET KEYSETS]";
+    let y = lines
+        .iter()
+        .position(|l| l.contains(action))
+        .expect("the prompt line's RESET KEYSETS action must render") as u16;
+    let start = lines[y as usize].find(action).unwrap() as u16;
+    (y, start..start + action.chars().count() as u16)
+}
+
+#[test]
+fn reset_keysets_is_dim_when_the_tabs_keyset_list_is_empty() {
+    // `two_key_board`'s keys both carry `ap_keyset: 0`: no AP keyset exists.
+    let mut app = App::new(two_key_board(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    let (y, span) = reset_keysets_span(&lines);
+
+    for x in span {
+        assert!(
+            buf[(x, y)].modifier.contains(Modifier::DIM),
+            "column {x} of RESET KEYSETS must be dim when the AP tab has no keyset: {lines:?}"
+        );
+    }
+}
+
+#[test]
+fn reset_keysets_is_not_dim_when_the_tab_has_a_keyset() {
+    // `ap_keyset_board` puts 'w' and 'a' in AP keyset 1: one keyset exists.
+    let mut app = App::new(ap_keyset_board(), "0.5.0-alpha");
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let lines = buffer_lines(&terminal);
+    let (y, span) = reset_keysets_span(&lines);
+
+    for x in span {
+        assert!(
+            !buf[(x, y)].modifier.contains(Modifier::DIM),
+            "column {x} of RESET KEYSETS must not be dim when the AP tab has a keyset: {lines:?}"
+        );
+    }
+}
