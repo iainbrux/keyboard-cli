@@ -175,6 +175,10 @@ pub fn render_matrix(
 
     let mut y = area.y;
     let mut prev_row_rects: Option<Vec<Rect>> = None;
+    // The last row actually drawn's own bottom border row: `merge_shared_border` never reaches it
+    // (there is no row below to reconcile it with), so it needs the same corner-to-junction fix
+    // `fix_row_edge_corners` gives the first row's own top border, applied once after the loop.
+    let mut last_row_bottom_y = area.y;
     for caps in &row_caps {
         if y.saturating_add(CAP_HEIGHT) > area.y + area.height {
             break;
@@ -233,13 +237,42 @@ pub fn render_matrix(
         // wholesale, on the very same physical line: `merge_shared_border` reconciles the two
         // rows' own boundaries there so the join is one continuous rule, not whichever row
         // happened to be drawn last.
-        if let Some(prev) = &prev_row_rects {
-            merge_shared_border(buf, prev, &row_rects, y);
+        match &prev_row_rects {
+            Some(prev) => merge_shared_border(buf, prev, &row_rects, y),
+            // The very first row drawn has no row above it, so its own top border line never
+            // goes through `merge_shared_border` at all: each cap's own `block.render` overwrote
+            // the cap to its left's own top-right corner with its own top-left corner (the same
+            // defect the vertical merge fixes, just with no second row to blame it on), so it
+            // needs the same corner-to-junction rewrite directly, right here.
+            None => fix_row_edge_corners(buf, &row_rects, y, '\u{252c}'), // ┬
         }
+        last_row_bottom_y = y + CAP_HEIGHT - 1;
         prev_row_rects = Some(row_rects);
         // Always 3, not 4: the next row's own top border reuses this row's own bottom border
         // row, so only 3 new rows of vertical space are actually spent on it.
         y += CAP_HEIGHT - 1;
+    }
+    // The last row actually drawn's own bottom border line has the identical problem as the first
+    // row's own top, just at the opposite edge: nothing below it to reconcile with, so its own
+    // internal seams need the same direct rewrite.
+    if let Some(last) = &prev_row_rects {
+        fix_row_edge_corners(buf, last, last_row_bottom_y, '\u{2534}'); // ┴
+    }
+}
+
+/// Rewrites one row's own outer edge line, its own top (the very first row drawn, which
+/// `merge_shared_border` never reaches since nothing sits above it) or its own bottom (the very
+/// last, nothing below it), at each of the row's own *internal* shared columns: the later cap's
+/// own corner there (`┌` or `└`) simply overwrote the earlier cap's own corner (`┐` or `┘`) on the
+/// very next loop iteration, since both caps draw a full `Block` and neither knows about the
+/// other. `junction` is `┬` for a top line, `┴` for a bottom one. The row's own true left and right
+/// ends are left untouched: genuine corners, shared with nothing.
+fn fix_row_edge_corners(buf: &mut Buffer, row_rects: &[Rect], y: u16, junction: char) {
+    for pair in row_rects.windows(2) {
+        let shared_col = pair[0].x + pair[0].width - 1;
+        if let Some(cell) = buf.cell_mut((shared_col, y)) {
+            cell.set_symbol(junction.encode_utf8(&mut [0u8; 4]));
+        }
     }
 }
 

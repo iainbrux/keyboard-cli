@@ -330,6 +330,22 @@ fn a_misaligned_shared_border_merges_into_one_continuous_rule() {
         "the shared line must merge into one continuous rule, containing at least one ┬, ┴ \
          and ┼, with correct end characters: {lines:?}"
     );
+    // The matrix's own outermost top and bottom lines: `merge_shared_border` never reaches
+    // either, since neither has a second row to reconcile with, so a `!contains("││")` style
+    // check cannot see the defect this guards against (the later cap's own corner silently
+    // overwriting the earlier cap's own corner, `┌` over `┐` here, `└` over `┘` below, at every
+    // internal seam, with no junction character at all). Asserted as whole exact lines: a fix
+    // that corrects only some of the row's own internal seams would still fail this.
+    assert_eq!(
+        lines[0], "┌─────┬─────┬─────┐",
+        "the matrix's own top line must read one lattice, junctions not overwritten corners: \
+         {lines:?}"
+    );
+    assert_eq!(
+        lines[6], "└─────┴────────┴─────┘",
+        "the matrix's own bottom line must read one lattice, junctions not overwritten \
+         corners: {lines:?}"
+    );
 }
 
 /// The operator's own defect (2026-09-07 00:13), vendor-verified against
@@ -486,9 +502,11 @@ fn adjacent_selections_style_the_shared_column_from_the_cap_that_draws_it_last()
     );
 }
 
-/// A one-key-per-row fixture: each row is independent, so a cap's rendered width is exactly
-/// `round(cap_units(usage) * 7)` with no cumulative interaction from a neighbour, letting these
-/// label tests pin an exact cell width by hand.
+/// A one-key-per-row fixture: each row holds a single key, so `unit_boundaries` has only one
+/// cumulative step to take (`boundaries == [0, round(cap_units(usage) * LATTICE_COLS_PER_UNIT)]`)
+/// and the width is `round(cap_units(usage) * 6) + 1`, letting these label tests pin an exact cell
+/// width by hand (see `caps_show_the_vendors_display_labels_for_punctuation_modifiers_and_fn`'s
+/// own LSHIFT case, 15, not the old, pre-lattice `round(2.25 * 7) == 16`).
 fn one_key_rows(usages: &[u8]) -> Vec<DefKeyRow> {
     usages
         .iter()
