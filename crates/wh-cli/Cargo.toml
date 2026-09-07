@@ -13,6 +13,7 @@ path = "src/main.rs"
 wh-proto = { path = "../wh-proto" }
 wh-device = { path = "../wh-device" }
 wh-config = { path = "../wh-config" }
+wh-tui = { path = "../wh-tui" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde_json.workspace = true

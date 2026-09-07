@@ -135,10 +135,12 @@ layout closely enough that someone who knows the website can drive it without re
 The vendor UI is already terminal-styled, so this is a far smaller leap than it would be for a
 typical configurator.
 
-**The header is a collaboration mark, not a copy.** The vendor's ASCII logo at the top is replaced by
-a joint one: the `wh` logo in ASCII art alongside `brux` in ASCII art. Do not reproduce Wallhack's
-logo. The Wallhack name and logo are theirs, this project is independent and unendorsed, and the
-header is the most visible place that distinction gets made.
+**The header is the vendor's own mark, used with permission.** The operator holds permission from
+Wallhack to use their ASCII logo (stated 2026-09-06), so the header renders it verbatim, extracted
+from the vendor bundle; `brux` is named as text in the banner line under it
+(`WALLHACK TERMINAL BY @BRUX - V<version>`) rather than drawn. The Wallhack name and logo remain
+theirs, this project is independent and unendorsed, and the banner line is the departure that
+still makes the distinction.
 
 **The structure to match**, read off the vendor UI:
 
@@ -156,9 +158,11 @@ since layout `0xFF` turned out to hold the actuation-point keyset index and `0xF
 equivalent. So the ACTUATION POINT and RAPID TRIGGER tabs are buildable today, keysets included.
 
 **What is blocked on protocol work.** MAPPING needs layouts `0x00` and `0x01`, which are measured but
-unmodelled. SWITCHES and ADVANCED are unmeasured entirely. Profile *select* is measured but not
-implemented. So a genuinely one to one TUI depends on the remapping work and a capture session
-covering switches and the advanced tab. Build the two tabs we can drive first rather than waiting.
+unmodelled. SWITCHES is unmeasured entirely, and so is every ADVANCED surface except DEVICE, whose
+name, serial and firmware come straight off the measured SYNC read and render live today. Profile
+*select* is measured but not implemented. So a genuinely one to one TUI depends on the remapping
+work and a capture session covering switches and the advanced tab. Build the two tabs we can drive
+first rather than waiting.
 
 **What it needs, technically.** `ratatui` 0.29 and `crossterm` 0.28 are already dependencies, used by
 the `--pick` picker, and Task 17 established the pattern of a pure state core with a thin terminal
@@ -169,31 +173,21 @@ supports mouse as well as arrows; `crossterm` can capture mouse events, so that 
 to change many settings quickly was the worst place to discover a write bug, and that risk is now
 retired.
 
-**Populate on open, and listen for the board.** Reading the whole board costs about 40ms, measured:
-a nine-layout sweep of 68 keys ran in 28ms and 41ms in two captures. So the TUI reads once at
-startup and holds that model, which is exactly what the configurator does, and needs no polling and
-no cache-invalidation machinery. An earlier draft of this entry worried about staleness; the concern
-was misplaced, because the device is exclusive and nothing else can change the board while the TUI
-holds it.
+**Populate on open, and listen for the board: built.** This landed as the TUI foundation plan
+(`docs/tasks.md` 3.5, `docs/superpowers/plans/2026-09-06-tui-foundation.md`). Reading the whole
+board costs about 40ms, measured: a nine-layout sweep of 68 keys ran in 28ms and 41ms in two
+captures. `wh tui` reads once on open and holds that model rather than polling, exactly what the
+configurator does. `Session::poll_event` and `pending_events` (3.4) receive and queue the board's
+own unsolicited `0xbe` edges, so the TUI consumes events rather than adding transport machinery of
+its own: it shows the locked banner on `be 00`, re-reads the whole board on `be 01` (never stale on
+its own read-only path), notes an unrecognised event, and notes stale values if a re-read times out.
+Mouse support turned out to be load-bearing, not a nicety, exactly as this entry predicted: while
+the board is in adjust mode it stops being a keyboard, so mouse is the only input that still works,
+and the banner is the only way an operator learns why the keys stopped.
 
-Except the board itself, and the board says so. Sub-order `0xbe` arrives unsolicited when the
-operator uses the keyboard's own AP or RT keys, `be 00` on entering adjust mode and `be 01` on
-leaving, and the configurator re-reads everything on the second one and ignores the first
-(`docs/protocol.md`). A TUI does the same and is then never stale. The architectural addition this
-needed landed as 3.4: `Session::poll_event` and `pending_events` receive and queue unsolicited
-reports, so the TUI consumes events rather than adding transport machinery of its own.
-
-**Two design consequences fall out of one measured fact.** While the board is in adjust mode it
-stops being a keyboard, so a TUI driven from that keyboard becomes unnavigable at the same instant,
-through no fault of its own. Mouse support is therefore load-bearing rather than a nicety, since it
-is the only input that still works. And the TUI should render the locked state explicitly, a banner
-saying the board is being adjusted on the device, because the alternative is an interface that
-silently stops responding to the keys.
-
-**That banner is a deliberate improvement on the target, and the first one.** The vendor UI shows
-nothing at all for this state. Diverging in what is displayed is not the same as diverging in what
-is written: the goal of matching the configurator is about frames on the wire, and a banner sends
-none.
+What is still open is everything the foundation plan deliberately left out: the editing plan
+(steppers that write, the keyset gesture, the SOCD editor, profile switching, typed-yes
+confirmation modals, the one `auto: tui` backup) has not been written yet.
 
 ### A Windows installer with a licence acceptance step
 
@@ -361,8 +355,11 @@ The board really is that fast; this is presentation.
   scripting against it.
 
 **In the TUI.** Open question, and it may not belong there at all. A TUI redraws continuously, so a
-modal spinner would be a different thing from a one-shot CLI flourish. Decide when the TUI exists
-rather than now.
+modal spinner would be a different thing from a one-shot CLI flourish. `wh tui` exists now but
+writes nothing, and it already has two long waits. The re-read on the board's leaving edge draws a
+frame saying what it is doing; the open read, which runs before the alternate screen is entered,
+shows nothing at all and is the one with no message. Decide when it starts writing rather than
+now.
 
 ### A write that sends nothing still rotates a backup
 

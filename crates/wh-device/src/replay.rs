@@ -39,18 +39,29 @@ fn unhex(s: &str) -> Result<[u8; 64], DeviceError> {
 pub enum Entry {
     Out([u8; 64]),
     In([u8; 64]),
+    Wait(u32),
 }
 
 pub fn parse_jsonl(text: &str) -> Result<Vec<Entry>, DeviceError> {
     text.lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| {
+        .enumerate()
+        .map(|(i, l)| {
             let v: serde_json::Value =
                 serde_json::from_str(l).map_err(|e| DeviceError::Replay(e.to_string()))?;
-            let bytes = unhex(v["hex"].as_str().unwrap_or_default())?;
             match v["dir"].as_str() {
-                Some("out") => Ok(Entry::Out(bytes)),
-                Some("in") => Ok(Entry::In(bytes)),
+                Some("out") => Ok(Entry::Out(unhex(v["hex"].as_str().unwrap_or_default())?)),
+                Some("in") => Ok(Entry::In(unhex(v["hex"].as_str().unwrap_or_default())?)),
+                Some("wait") => {
+                    let count = v["count"].as_u64().unwrap_or(1) as u32;
+                    if count == 0 {
+                        return Err(DeviceError::Replay(format!(
+                            "wait count 0 at line {}",
+                            i + 1
+                        )));
+                    }
+                    Ok(Entry::Wait(count))
+                }
                 other => Err(DeviceError::Replay(format!("bad dir {other:?}"))),
             }
         })
@@ -92,6 +103,10 @@ impl Transport for ReplayTransport {
                 self.pos,
                 hex(bytes)
             ))),
+            Some(Entry::Wait(n)) => Err(DeviceError::Replay(format!(
+                "unexpected send at {}: script expects {n} more empty polls here",
+                self.pos
+            ))),
             None => Err(DeviceError::Replay(format!(
                 "unexpected send at {}: script is exhausted",
                 self.pos
@@ -99,7 +114,7 @@ impl Transport for ReplayTransport {
         }
     }
     fn recv(&mut self, _timeout: Duration) -> Result<[u8; 64], DeviceError> {
-        match self.script.get(self.pos) {
+        match self.script.get_mut(self.pos) {
             Some(Entry::In(bytes)) => {
                 let b = *bytes;
                 self.pos += 1;
@@ -109,6 +124,14 @@ impl Transport for ReplayTransport {
                 "unexpected recv at {}: script expected a send here",
                 self.pos
             ))),
+            Some(Entry::Wait(n)) => {
+                if *n > 1 {
+                    *n -= 1;
+                } else {
+                    self.pos += 1;
+                }
+                Err(DeviceError::Timeout)
+            }
             None => Err(DeviceError::Timeout),
         }
     }
@@ -132,6 +155,9 @@ impl<T: Transport> RecordingTransport<T> {
             .map(|e| match e {
                 Entry::Out(b) => format!("{{\"dir\":\"out\",\"hex\":\"{}\"}}", hex(b)),
                 Entry::In(b) => format!("{{\"dir\":\"in\",\"hex\":\"{}\"}}", hex(b)),
+                // RecordingTransport never pushes a Wait onto `log`, only real sends and
+                // receives; this arm exists so the writer stays total over `Entry`.
+                Entry::Wait(n) => format!("{{\"dir\":\"wait\",\"count\":{n}}}"),
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -259,5 +285,89 @@ mod tests {
             matches!(err, DeviceError::Timeout),
             "expected Timeout, got {err:?}"
         );
+    }
+
+    #[test]
+    fn wait_entry_serves_one_timeout_then_advances() {
+        let f = wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x00]).unwrap();
+        let script = format!(
+            "{{\"dir\":\"wait\"}}\n{{\"dir\":\"in\",\"hex\":\"{}\"}}",
+            hex(&f)
+        );
+        let mut t = ReplayTransport::from_jsonl(&script).unwrap();
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert_eq!(t.recv(Duration::from_millis(1)).unwrap(), f);
+        assert!(t.finished());
+    }
+
+    #[test]
+    fn counted_wait_serves_that_many_timeouts() {
+        // A trailing `In` entry after the wait, and a `finished()` check at every step, so an
+        // implementation that consumes the whole `Wait` on the first `recv` cannot pass by
+        // having its extra recv calls land on an exhausted script (which is Timeout too).
+        let f = wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x00]).unwrap();
+        let script = format!(
+            "{{\"dir\":\"wait\",\"count\":3}}\n{{\"dir\":\"in\",\"hex\":\"{}\"}}",
+            hex(&f)
+        );
+        let mut t = ReplayTransport::from_jsonl(&script).unwrap();
+        assert!(!t.finished());
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert!(!t.finished());
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert!(!t.finished());
+        assert!(matches!(
+            t.recv(Duration::from_millis(1)),
+            Err(DeviceError::Timeout)
+        ));
+        assert!(!t.finished());
+        assert_eq!(t.recv(Duration::from_millis(1)).unwrap(), f);
+        assert!(t.finished());
+    }
+
+    #[test]
+    fn send_at_a_wait_entry_is_a_loud_replay_error() {
+        let mut t = ReplayTransport::from_jsonl("{\"dir\":\"wait\"}").unwrap();
+        let out = wh_proto::cmds::read_profile();
+        match t.send(&out) {
+            Err(DeviceError::Replay(msg)) => assert_eq!(
+                msg,
+                "unexpected send at 0: script expects 1 more empty polls here"
+            ),
+            other => panic!("expected Replay error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_count_zero_is_rejected_at_parse() {
+        assert!(matches!(
+            ReplayTransport::from_jsonl("{\"dir\":\"wait\",\"count\":0}"),
+            Err(DeviceError::Replay(_))
+        ));
+    }
+
+    #[test]
+    fn poll_event_over_a_wait_script_returns_none_then_the_edge() {
+        let f = wh_proto::frame::frame(0x80, &[0x00, 0xbe, 0x00]).unwrap();
+        let script = format!(
+            "{{\"dir\":\"wait\"}}\n{{\"dir\":\"in\",\"hex\":\"{}\"}}",
+            hex(&f)
+        );
+        let t = ReplayTransport::from_jsonl(&script).unwrap();
+        let mut s = crate::session::Session::new(t);
+        assert!(s.poll_event(Duration::from_millis(1)).unwrap().is_none());
+        assert!(matches!(
+            s.poll_event(Duration::from_millis(1)).unwrap(),
+            Some(wh_proto::event::BoardEvent::AdjustModeEntered)
+        ));
     }
 }

@@ -4,8 +4,10 @@
 
 A terminal UI, launched as `wh tui`, that replicates terminal.wallhack.com one to one: the same
 layout, the same tabs, the same gestures, driven by mouse or arrow and enter keys. Values are
-populated by reading the board on open. Nothing is cached beyond the read-modify-write window the
-CLI already has.
+populated by reading the board on open, and that model is then held for the session: unlike the
+CLI, which caches nothing beyond its read-modify-write window, the TUI cannot afford a HID
+roundtrip per redraw. It is refreshed by a full re-read on the board's `be 01` leaving edge, and
+when that read times out the old model is kept behind a note saying values may be stale.
 
 ## Decisions made with the operator (2026-09-06)
 
@@ -33,17 +35,26 @@ colour system. The vendor body font is monospace, so the web layout is already t
 
 Frame, top to bottom:
 
-- ASCII logo block, then the banner line. The vendor's reads `WH_TERMINAL V1.0.0 - WALLHACK 2026`;
-  `wh tui`'s reads `WALLHACK TERMINAL BY "@BRUX" - V<wh version>` (operator's choice, 2026-09-06),
-  the one deliberate departure from the vendor's chrome. Then
+- ASCII logo block, then the banner line. The logo is Wallhack's own mark, extracted verbatim
+  from the vendor bundle and used with Wallhack's permission (held by the operator, stated
+  2026-09-06); it is the vendor's own chrome, not a departure from it. The banner is the one
+  deliberate departure that remains. The vendor's banner reads
+  `WH_TERMINAL V1.0.0 - WALLHACK 2026`; `wh tui`'s reads
+  `WALLHACK TERMINAL BY @BRUX - V<wh version>` (operator's choice, 2026-09-06, quotes dropped
+  around `@BRUX` 2026-09-06). Then
   `NAVIGATE WITH MOUSE OR ARROW & ENTER KEYS`.
 - Device line: connection mark, `WALLHACK K-001 - V<fw>`, and a `PROFILE < n >` stepper.
 - Tab row: ACTUATION POINT, RAPID TRIGGER, MAPPING, SWITCHES, ADVANCED. The selected tab renders
   boxed or inverted; the others plain; disabled things dim.
-- Two-pane body: settings on the left, the 68-key ANSI-DK matrix on the right. Between them one
-  prompt line: left half a `> message` status, right half the contextual actions (RESET KEYSETS,
-  or ADD KEYSET [ENTER] and CANCEL [ESC] during a selection). Only ADVANCED's GAMEPAD, DEVICE and
-  SHARE sub-tabs drop the keyboard pane.
+- Two-pane body, both top-aligned: settings on the left, the 68-key ANSI-DK matrix on the right.
+  Pixel-scanned against `01-actuation-point.png` and `05-mapping.png`: the prompt line (a
+  `> message` status, contextual actions right-aligned, RESET KEYSETS or ADD KEYSET [ENTER] and
+  CANCEL [ESC] during a selection) shares the TAB ROW itself, not a row of its own; the matrix's
+  first cap row is level with the left pane's first settings row, one row below the tab row. Only
+  ADVANCED's GAMEPAD, DEVICE and SHARE sub-tabs drop the keyboard pane (and with it, the tab-row
+  prompt: their own stub, if any, stays in the left pane instead). Corrected 2026-09-06 twice: a
+  first UI-polish pass moved the prompt off the left pane's own flow but placed it and the matrix
+  one row too low; a review of the same screenshots put both back where they are stated above.
 - Footer: HELP drawer bottom left, EN JA CH language row, support email.
 
 Widget inventory, in order of leverage:
@@ -97,21 +108,28 @@ is measured, and a stub where neither exists yet. Stubs render the vendor layout
 "not built yet, see docs/tasks.md" where interaction would start. Nothing unmeasured is shown as
 a value.
 
-| Surface | State in 3.5 |
-|---|---|
-| AP tab (global, custom value, keysets) | Live |
-| RT tab (toggle, sensitivities, keysets) | Live |
-| Profile stepper | Live |
-| SOCD editor | Live (`wh socd` exists) |
-| Show Analog Output, Safety Zone toggles | Read-only (reads measured in 3.2; `wh` has no write op yet) |
-| MAPPING | Stub until 3.6; current mapping may display (reads measured) |
-| LED rows | Stub until 3.7; values may display (record decomposed) |
-| SHARE | Stub until 3.8 |
-| SWITCHES calibration and switch type | Stub (unmeasured) |
-| DKS, Mod Tap editors | Stub (write model unmeasured) |
-| GAMEPAD sub-tab | Stub |
-| Walkthrough | Stub |
-| Reset Profile, Factory Reset, RESET ALL | Stub in 3.5 (destructive, write model unmeasured) |
+3.5 is two plans, and the foundation one writes nothing at all: every control it renders is either
+a value read off the board or a stub. This table is what each surface is after the foundation
+plan, and what the editing plan is to add.
+
+| Surface | After the foundation plan | The editing plan adds |
+|---|---|---|
+| Key matrix | Read-only: laid out from the board's own DEFKEY rows, AP or RT value per cap | Click-to-select, keyset building |
+| AP tab (global, custom value, keysets) | Read-only: folded from every key's read | Live steppers and keyset gestures |
+| RT tab (toggle, sensitivities, keysets) | Read-only: same fold, toggles read ON/OFF/MIXED | Live steppers and keyset gestures |
+| ADVANCED > DEVICE | Read-only and live from the SYNC read: name, serial, firmware | Nothing, it is read-only by nature |
+| Adjust-mode banner and re-read | Live: `be 00` raises it, `be 01` re-reads the board | Refusing edits mid-lock |
+| Profile stepper | Read-only: shows the active profile | Selecting a profile (`wh profile` exists) |
+| SOCD editor | Not rendered; the ADVANCED row is a disabled SELECT | The editor (`wh socd` exists) |
+| Show Analog Output, Safety Zone toggles | Stub reading `-` (reads measured in 3.2, not wired) | Wiring the reads; `wh` still has no write op |
+| MAPPING | Stub: sub-tab labels and a one-line "not built" | Stub until 3.6 |
+| LED rows | Stub reading `-` | Stub until 3.7 |
+| SHARE | Stub | Stub until 3.8 |
+| SWITCHES calibration and switch type | Stub (unmeasured) | Stub (unmeasured) |
+| DKS, Mod Tap editors | Stub (write model unmeasured) | Stub (write model unmeasured) |
+| GAMEPAD sub-tab | Stub, and it drops the keyboard pane | Stub |
+| Walkthrough | Stub | Stub |
+| Reset Profile, Factory Reset, RESET ALL | Stub (destructive, write model unmeasured) | Stub |
 
 ## Event loop
 

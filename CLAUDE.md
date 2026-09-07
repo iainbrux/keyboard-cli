@@ -10,7 +10,7 @@ terminal.wallhack.com uses. The goal is close to 1:1 interoperability with that 
 
 ## Architecture
 
-Four crates, and the layering is the point. Keep changes in the right one.
+Five crates, and the layering is the point. Keep changes in the right one.
 
 | Crate | Owns | Never does |
 |---|---|---|
@@ -18,6 +18,7 @@ Four crates, and the layering is the point. Keep changes in the right one.
 | `wh-device` | `Transport`, `Session`, high-level operations, hidapi | Anything user-facing |
 | `wh-config` | JSON snapshots, the key-group store | Talk to the device |
 | `wh-cli` | The clap surface, output formatting | Encode frames by hand |
+| `wh-tui` | The `wh tui` full-screen UI: app state, widgets, the event loop | Encode frames by hand, open a transport itself |
 
 The hardware transport is `#[cfg(windows)]`. The binary cross-compiles to
 `x86_64-pc-windows-gnu` and is driven from WSL through `bin/wh`.
@@ -41,11 +42,17 @@ nibble silently disables a feature the user set from the vendor UI.
 
 **Only one process can hold the device.** The vendor HID collection (usage page `0xFFA0`) is
 exclusive, so `wh` fails with `DeviceError::Busy` while terminal.wallhack.com has it open. This is
-why there is no daemon and why long-running features are backlogged rather than built.
+why there is no daemon: `wh tui` is long-running and holds the device for as long as it runs, but
+nothing stays open once that one process exits.
 
-**`wh` caches no device state.** Every command reads live over HID, which is why it cannot show a
-stale value where the web configurator can. The only exception is the read-modify-write window
-above.
+**Every `wh` command reads live over HID, and there are exactly two exceptions.** The first is the
+read-modify-write window above. The second is `wh tui`: it reads the whole board once on open and
+holds that model for the session, because a TUI redrawing every frame cannot afford a HID roundtrip
+per keystroke. What bounds it: the model is re-read in full on the board's `be 01` leaving edge (the
+only device-initiated change `wh` can hear), and when that re-read times out the old model is kept
+with a status note saying values may be stale. Nothing else refreshes it, so a change the board
+makes without announcing one would not reach the screen. Everywhere else `wh` still cannot show a
+stale value where the web configurator can, because there is nothing cached to go stale.
 
 **The board can change under you, and it says so.** The keyboard's own AP and RT keys edit settings
 without the host involved, and while that is happening the board stops being a keyboard at all: it
@@ -108,10 +115,14 @@ cargo test -p wh-cli --test socd                       # the wh socd tree
 ```
 
 `--nocapture` matters for `golden`: without it cargo swallows the summary on a passing run and you
-see only `ok`. There are four integration suites: `wh-proto/tests/golden.rs`, which decodes real
+see only `ok`. There are ten integration suites: `wh-proto/tests/golden.rs`, which decodes real
 captured traffic; `wh-cli/tests/dump.rs`, which drives the real binary over scripted replays;
-`wh-cli/tests/keyset.rs`, the largest and the only end-to-end cover of the `wh keyset` tree; and
-`wh-cli/tests/socd.rs`, the same for `wh socd`.
+`wh-cli/tests/keyset.rs`, the largest and the only end-to-end cover of the `wh keyset` tree;
+`wh-cli/tests/socd.rs`, the same for `wh socd`; and six in `wh-tui/tests`. Of those six,
+`board.rs` and `events.rs` drive a replay `Session` end to end, the board-model read and
+adjust-mode event routing; `chrome.rs`, `matrix.rs`, `rows.rs` and `stubs.rs` draw a fixed
+`BoardModel` to check the rendered vendor frame, the key matrix and its hit testing, the
+dotted-leader setting rows, and the honest MAPPING, SWITCHES and ADVANCED stubs.
 
 **A `--test <name>` run is not evidence the crate compiles.** It does not build the bin target's
 unit tests, so a change breaking one of those leaves `cargo test -p wh-cli --test dump` green while

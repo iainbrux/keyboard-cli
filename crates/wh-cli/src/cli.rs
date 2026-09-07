@@ -68,6 +68,8 @@ pub enum Cmd {
         #[command(subcommand)]
         what: SocdWhat,
     },
+    /// Open the full-screen terminal UI (read-only in this phase)
+    Tui,
 }
 
 #[derive(Subcommand)]

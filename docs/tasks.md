@@ -140,15 +140,30 @@ Key remapping and the lighting build (3.6 and 3.7) can swap freely; 3.4 must lan
 - [ ] **3.5 The TUI.** Replicates terminal.wallhack.com one to one: mouse-clickable,
   arrow-navigable, values populated by reading the board on open (a full read costs ~40ms, so no
   cache), re-reading on `be 01`, and showing a locked-board banner between `be 00` and `be 01`.
-  `ratatui` and `crossterm` are already dependencies and `wh keys --pick` is the working seed.
-  Spec to be written when this task opens; it consumes 3.1, 3.3 and 3.4.
+  Split into two plans so it is written once against a settled foundation:
+  `docs/superpowers/plans/2026-09-06-tui-foundation.md` (read-only) and an editing plan written
+  after that one lands.
 
-  `poll_event` against a replay script whose cursor sits on an `Out` entry is a loud
-  `DeviceError::Replay`, not a quiet `Ok(None)`: `ReplayTransport::recv` refuses when the script
-  expects a send next, and `poll_event` propagates that rather than treating it as a timeout. The
-  TUI's poll-then-read event loop cannot be scripted against `WH_REPLAY` as it stands; 3.5 must
-  solve that scripting question (a wait/gap script entry, or an equivalent) before its own event
-  loop is testable the way every other command in this repo is.
+  The foundation plan is done. `wh tui` opens the board, reads it once, and renders the vendor
+  frame: Wallhack's own ASCII logo (used with Wallhack's permission, held by the operator, stated
+  2026-09-06, extracted verbatim from the vendor bundle), the banner
+  (`WALLHACK TERMINAL BY @BRUX - V<version>`),
+  the device and profile lines, five clickable and arrow-cyclable tabs, the 68-key matrix with
+  two-line caps and hit testing, dotted-leader setting rows, keyset rows and a prompt line. It
+  stubs MAPPING, SWITCHES and ADVANCED's GENERAL/GAMEPAD/SHARE honestly and shows ADVANCED/DEVICE
+  live. It routes the board's adjust-mode edges: a locked banner on `be 00`, a full re-read on
+  `be 01`, a status note on an unrecognised event, and a stale-values note if a re-read times out.
+  Nothing writes to the device anywhere in this plan.
+
+  The replay-scripting blocker this entry used to describe is resolved. `poll_event` against a
+  replay script whose cursor sat on an `Out` entry used to be a loud `DeviceError::Replay` rather
+  than a quiet `Ok(None)`, so a poll-then-read event loop could not be scripted. A `wait` entry in
+  the replay script format (`{"dir":"wait"}`, `{"dir":"wait","count":N}`) now serves that many
+  timeouts before the script's cursor advances, and the TUI's own event-loop tests run against it.
+
+  What remains before 3.5 closes: the editing plan, covering the steppers that actually write,
+  the keyset gesture, the SOCD editor, profile switching, typed-yes confirmation modals, and the
+  one `auto: tui` backup per session.
 
 - [ ] **3.6 Key remapping, base layer and FN layer.** Layouts `0x00` and `0x01`, both measured
   (`remap-one-key`, `initial-load`, and the FN-layer table in `docs/protocol-inventory.md`). `wh`

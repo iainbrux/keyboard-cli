@@ -305,6 +305,32 @@ fn run_wh_stdin(
 }
 
 #[test]
+fn tui_refuses_without_an_interactive_terminal_before_opening_any_transport() {
+    let dir = scratch_config_dir("tui-refuse");
+    let script = write_script("tui-refuse", &[]);
+    let out = run_wh(&["tui"], &script, &dir);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    // `main.rs` prints `error: {e:#}`, lowercase, not the capitalized `Error: ` form: verified by
+    // running the built binary directly against a failing command before writing this assertion.
+    assert!(
+        stderr.lines().any(|l| {
+            l
+            == "error: wh tui needs an interactive terminal, but stdout here is redirected or piped"
+        }),
+        "unexpected stderr: {stderr}"
+    );
+    // No transport may have been opened. `with_session` announces every transport it opens on
+    // stderr, so its absence is the evidence, and the error line alone is not: moving this check
+    // inside `with_session` would still print it, having first taken the exclusive vendor HID
+    // collection on Windows and locked the operator out of the configurator to say no.
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("transport:")),
+        "the refusal must come before any transport is opened: {stderr}"
+    );
+}
+
+#[test]
 fn dump_json_via_replay() {
     let path = write_script("dump", &build_script());
     let config_home = scratch_config_dir("dump-json");
@@ -403,8 +429,8 @@ fn dump_with_no_flags_is_json() {
     let _ = std::fs::remove_dir_all(&config_home);
 }
 
-/// The table survives behind `--table`, since nothing else renders 68 keys readably until the
-/// TUI exists.
+/// The table survives behind `--table`: `wh tui` renders 68 keys readably too, but it needs an
+/// interactive terminal, and this is the form a pipe or a script can read.
 #[test]
 fn dump_table_flag_prints_the_human_table() {
     let path = write_script("dump-table", &build_script());

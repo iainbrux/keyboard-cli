@@ -852,6 +852,7 @@ dependencies = [
  "wh-config",
  "wh-device",
  "wh-proto",
+ "wh-tui",
 ]
 
 [[package]]
@@ -883,6 +884,17 @@ version = "0.5.0-alpha"
 dependencies = [
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "wh-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "ratatui",
+ "wh-device",
+ "wh-proto",
 ]
 
 [[package]]

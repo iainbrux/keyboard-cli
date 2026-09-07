@@ -131,6 +131,9 @@ mod tests {
                 crate::replay::Entry::In(b) => {
                     format!("{{\"dir\":\"in\",\"hex\":\"{}\"}}", hex(b))
                 }
+                crate::replay::Entry::Wait(n) => {
+                    format!("{{\"dir\":\"wait\",\"count\":{n}}}")
+                }
             })
             .collect::<Vec<_>>()
             .join("\n");
